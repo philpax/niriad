@@ -4670,29 +4670,29 @@ impl<W: LayoutElement> Column<W> {
             .map(|size| axis.size_in(size))
             .collect();
 
-        // Compute the column width.
-        let min_width = min_size
+        // Compute the column main-axis span.
+        let min_main_span = min_size
             .iter()
             .map(|size| NotNan::new(size.w).unwrap())
             .max()
             .map(NotNan::into_inner)
             .unwrap();
-        let max_width = max_size
+        let max_main_span = max_size
             .iter()
             .filter_map(|size| {
-                let w = size.w;
-                if w == 0. {
+                let main_span = size.w;
+                if main_span == 0. {
                     None
                 } else {
-                    Some(NotNan::new(w).unwrap())
+                    Some(NotNan::new(main_span).unwrap())
                 }
             })
             .min()
             .map(NotNan::into_inner)
             .unwrap_or(f64::from(i32::MAX));
-        let max_width = f64::max(max_width, min_width);
+        let max_main_span = f64::max(max_main_span, min_main_span);
 
-        let width = if self.is_full_width {
+        let desired_width = if self.is_full_width {
             ColumnWidth::Proportion(1.)
         } else {
             self.width
@@ -4701,20 +4701,20 @@ impl<W: LayoutElement> Column<W> {
         let working_size = self.working_area.size;
         let extra_size = self.extra_size();
 
-        let width = self.resolve_column_main_span(width);
-        let width = f64::max(f64::min(width, max_width), min_width);
-        let max_tile_height = working_size.h - self.options.layout.gaps * 2. - extra_size.h;
+        let column_main_span = self.resolve_column_main_span(desired_width);
+        let column_main_span = f64::max(f64::min(column_main_span, max_main_span), min_main_span);
+        let max_tile_cross_span = working_size.h - self.options.layout.gaps * 2. - extra_size.h;
 
-        // If there are multiple windows in a column, clamp the non-auto window's height according
-        // to other windows' min sizes.
-        let mut max_non_auto_window_height = None;
+        // If there are multiple windows in a column, clamp the non-auto window's cross span
+        // according to other windows' min spans.
+        let mut max_non_auto_window_cross_span = None;
         if self.tiles.len() > 1 && !is_tabbed {
             if let Some(non_auto_idx) = self
                 .data
                 .iter()
                 .position(|data| !matches!(data.height, WindowHeight::Auto { .. }))
             {
-                let min_height_taken = min_size
+                let min_cross_span_taken = min_size
                     .iter()
                     .enumerate()
                     .filter(|(idx, _)| *idx != non_auto_idx)
@@ -4722,60 +4722,61 @@ impl<W: LayoutElement> Column<W> {
                     .sum::<f64>();
 
                 let tile = &self.tiles[non_auto_idx];
-                let height_left = max_tile_height - min_height_taken;
-                max_non_auto_window_height = Some(f64::max(
+                let cross_span_left = max_tile_cross_span - min_cross_span_taken;
+                max_non_auto_window_cross_span = Some(f64::max(
                     1.,
-                    self.window_cross_span_for_tile_cross_span(tile, height_left)
+                    self.window_cross_span_for_tile_cross_span(tile, cross_span_left)
                         .round(),
                 ));
             }
         }
 
-        // Compute the tile heights. Start by converting window heights to tile heights.
-        let mut heights = zip(&self.tiles, &self.data)
+        // Compute the tile cross spans. Start by converting window cross spans to tile cross spans.
+        let mut cross_spans = zip(&self.tiles, &self.data)
             .map(|(tile, data)| match data.height {
                 auto @ WindowHeight::Auto { .. } => auto,
-                WindowHeight::Fixed(height) => {
-                    let mut window_height = height.round().max(1.);
-                    if let Some(max) = max_non_auto_window_height {
-                        window_height = f64::min(window_height, max);
+                WindowHeight::Fixed(window_cross_span) => {
+                    let mut window_cross_span = window_cross_span.round().max(1.);
+                    if let Some(max_cross_span) = max_non_auto_window_cross_span {
+                        window_cross_span = f64::min(window_cross_span, max_cross_span);
                     } else {
-                        // In any case, clamp to the working area height.
-                        let max = self
-                            .window_cross_span_for_tile_cross_span(tile, max_tile_height)
+                        // In any case, clamp to the working area cross span.
+                        let max_cross_span = self
+                            .window_cross_span_for_tile_cross_span(tile, max_tile_cross_span)
                             .round();
-                        window_height = f64::min(window_height, max);
+                        window_cross_span = f64::min(window_cross_span, max_cross_span);
                     }
 
                     WindowHeight::Fixed(
-                        self.tile_cross_span_for_window_cross_span(tile, window_height),
+                        self.tile_cross_span_for_window_cross_span(tile, window_cross_span),
                     )
                 }
                 WindowHeight::Preset(idx) => {
                     let preset = self.options.layout.preset_window_heights[idx];
-                    let window_height = match self.resolve_preset_cross_span(preset) {
-                        ResolvedSize::Tile(h) => {
-                            self.window_cross_span_for_tile_cross_span(tile, h)
+                    let window_cross_span = match self.resolve_preset_cross_span(preset) {
+                        ResolvedSize::Tile(cross_span) => {
+                            self.window_cross_span_for_tile_cross_span(tile, cross_span)
                         }
-                        ResolvedSize::Window(h) => h,
+                        ResolvedSize::Window(cross_span) => cross_span,
                     };
 
-                    let mut window_height = window_height.round().clamp(1., 100000.);
-                    if let Some(max) = max_non_auto_window_height {
-                        window_height = f64::min(window_height, max);
+                    let mut window_cross_span = window_cross_span.round().clamp(1., 100000.);
+                    if let Some(max_cross_span) = max_non_auto_window_cross_span {
+                        window_cross_span = f64::min(window_cross_span, max_cross_span);
                     }
 
-                    let tile_height =
-                        self.tile_cross_span_for_window_cross_span(tile, window_height);
-                    WindowHeight::Fixed(tile_height)
+                    let tile_cross_span =
+                        self.tile_cross_span_for_window_cross_span(tile, window_cross_span);
+                    WindowHeight::Fixed(tile_cross_span)
                 }
             })
             .collect::<Vec<_>>();
 
-        // In tabbed display mode, fill fixed heights right away.
+        // In tabbed display mode, fill fixed cross spans right away.
         if is_tabbed {
-            // All tiles have the same height, equal to the height of the only fixed tile (if any).
-            let tabbed_height = heights
+            // All tiles have the same cross span, equal to the cross span of the only fixed tile
+            // (if any).
+            let tabbed_cross_span = cross_spans
                 .iter()
                 .find_map(|h| {
                     if let WindowHeight::Fixed(h) = h {
@@ -4784,32 +4785,32 @@ impl<W: LayoutElement> Column<W> {
                         None
                     }
                 })
-                .unwrap_or(max_tile_height);
+                .unwrap_or(max_tile_cross_span);
 
-            // We also take min height of all tabs into account.
-            let min_height = min_size
+            // We also take min cross span of all tabs into account.
+            let min_cross_span = min_size
                 .iter()
                 .map(|size| NotNan::new(size.h).unwrap())
                 .max()
                 .map(NotNan::into_inner)
                 .unwrap();
             // But, if there's a larger-than-workspace tab, we don't want to force all tabs to that
-            // size.
-            let min_height = f64::min(max_tile_height, min_height);
-            let tabbed_height = f64::max(tabbed_height, min_height);
+            // span.
+            let min_cross_span = f64::min(max_tile_cross_span, min_cross_span);
+            let tabbed_cross_span = f64::max(tabbed_cross_span, min_cross_span);
 
-            heights.fill(WindowHeight::Fixed(tabbed_height));
+            cross_spans.fill(WindowHeight::Fixed(tabbed_cross_span));
 
-            // The following logic will apply individual min/max height, etc.
+            // The following logic will apply individual min/max cross span, etc.
         }
 
-        let gaps_left = self.options.layout.gaps * (self.tiles.len() + 1) as f64;
-        let mut height_left = working_size.h - gaps_left;
+        let gap_span_left = self.options.layout.gaps * (self.tiles.len() + 1) as f64;
+        let mut cross_span_left = working_size.h - gap_span_left;
         let mut auto_tiles_left = self.tiles.len();
 
-        // Subtract all fixed-height tiles.
-        for (h, (min_size, max_size)) in zip(&mut heights, zip(&min_size, &max_size)) {
-            // Check if the tile has an exact height constraint.
+        // Subtract all fixed cross-span tiles.
+        for (h, (min_size, max_size)) in zip(&mut cross_spans, zip(&min_size, &max_size)) {
+            // Check if the tile has an exact cross-span constraint.
             if min_size.h == max_size.h {
                 *h = WindowHeight::Fixed(min_size.h);
             }
@@ -4820,12 +4821,12 @@ impl<W: LayoutElement> Column<W> {
                 }
                 *h = f64::max(*h, min_size.h);
 
-                height_left -= *h;
+                cross_span_left -= *h;
                 auto_tiles_left -= 1;
             }
         }
 
-        let mut total_weight: f64 = heights
+        let mut total_weight: f64 = cross_spans
             .iter()
             .filter_map(|h| {
                 if let WindowHeight::Auto { weight } = *h {
@@ -4836,65 +4837,61 @@ impl<W: LayoutElement> Column<W> {
             })
             .sum();
 
-        // Iteratively try to distribute the remaining height, checking against tile min heights.
-        // Pick an auto height according to the current sizes, then check if it satisfies all
-        // remaining min heights. If not, allocate fixed height to those tiles and repeat the
-        // loop. On each iteration the auto height will get smaller.
+        // Iteratively try to distribute the remaining cross span, checking against tile min cross
+        // spans. Pick an auto cross span according to the current sizes, then check if it
+        // satisfies all remaining minimums. If not, allocate fixed cross span to those tiles and
+        // repeat the loop. On each iteration the auto cross span will get smaller.
         //
-        // NOTE: we do not respect max height here. Doing so would complicate things: if the current
-        // auto height is above some tile's max height, then the auto height can become larger.
-        // Combining this with the min height loop is where the complexity appears.
+        // NOTE: we do not respect max cross span here. Doing so would complicate things: if the
+        // current auto cross span is above some tile's max span, then the auto cross span can
+        // become larger. Combining this with the min cross-span loop is where the complexity
+        // appears.
         //
-        // However, most max height uses are for fixed-size dialogs, where min height == max_height.
-        // This case is separately handled above.
+        // However, most max cross-span uses are for fixed-size dialogs, where min cross span ==
+        // max cross span. This case is separately handled above.
         'outer: while auto_tiles_left > 0 {
             // Wayland requires us to round the requested size for a window to integer logical
-            // pixels, therefore we compute the remaining auto height dynamically.
-            let mut height_left_2 = height_left;
-            let mut total_weight_2 = total_weight;
-            for ((h, tile), min_size) in zip(zip(&mut heights, &self.tiles), &min_size) {
+            // pixels, therefore we compute the remaining auto cross span dynamically.
+            let mut remaining_cross_span = cross_span_left;
+            let mut remaining_weight = total_weight;
+            for ((h, tile), min_size) in zip(zip(&mut cross_spans, &self.tiles), &min_size) {
                 let weight = match *h {
                     WindowHeight::Auto { weight } => weight,
                     WindowHeight::Fixed(_) => continue,
                     WindowHeight::Preset(_) => unreachable!(),
                 };
-                let factor = weight / total_weight_2;
+                let factor = weight / remaining_weight;
 
-                // Compute the current auto height.
-                let mut auto = height_left_2 * factor;
+                // Compute the current auto cross span.
+                let mut auto_cross_span = remaining_cross_span * factor;
 
-                // Check if the auto height satisfies the min height.
-                if min_size.h > auto {
-                    auto = min_size.h;
-                    *h = WindowHeight::Fixed(auto);
-                    height_left -= auto;
+                // Check if the auto cross span satisfies the min cross span.
+                if min_size.h > auto_cross_span {
+                    auto_cross_span = min_size.h;
+                    *h = WindowHeight::Fixed(auto_cross_span);
+                    cross_span_left -= auto_cross_span;
                     total_weight -= weight;
                     auto_tiles_left -= 1;
 
-                    // If a min height was unsatisfied, then we allocate the tile more than the
-                    // auto height, which means that the remaining auto tiles now have less height
-                    // to work with, and the loop must run again.
-                    //
-                    // If we keep going in this loop and break out later, we may allocate less
-                    // height to the subsequent tiles than would be available next iteration and
-                    // potentially trip their min height check earlier than necessary, leading to
-                    // visible snapping.
+                    // If a min cross span was unsatisfied, then we allocate the tile more than the
+                    // auto cross span, which means that the remaining auto tiles now have less
+                    // cross span to work with, and the loop must run again.
                     continue 'outer;
                 }
 
-                auto = self.tile_cross_span_for_window_cross_span(
+                auto_cross_span = self.tile_cross_span_for_window_cross_span(
                     tile,
-                    self.window_cross_span_for_tile_cross_span(tile, auto)
+                    self.window_cross_span_for_tile_cross_span(tile, auto_cross_span)
                         .round()
                         .max(1.),
                 );
 
-                height_left_2 -= auto;
-                total_weight_2 -= weight;
+                remaining_cross_span -= auto_cross_span;
+                remaining_weight -= weight;
             }
 
-            // All min heights were satisfied, fill them in.
-            for (h, tile) in zip(&mut heights, &self.tiles) {
+            // All min cross spans were satisfied, fill them in.
+            for (h, tile) in zip(&mut cross_spans, &self.tiles) {
                 let weight = match *h {
                     WindowHeight::Auto { weight } => weight,
                     WindowHeight::Fixed(_) => continue,
@@ -4902,17 +4899,17 @@ impl<W: LayoutElement> Column<W> {
                 };
                 let factor = weight / total_weight;
 
-                // Compute the current auto height.
-                let auto = height_left * factor;
-                let auto = self.tile_cross_span_for_window_cross_span(
+                // Compute the current auto cross span.
+                let auto_cross_span = cross_span_left * factor;
+                let auto_cross_span = self.tile_cross_span_for_window_cross_span(
                     tile,
-                    self.window_cross_span_for_tile_cross_span(tile, auto)
+                    self.window_cross_span_for_tile_cross_span(tile, auto_cross_span)
                         .round()
                         .max(1.),
                 );
 
-                *h = WindowHeight::Fixed(auto);
-                height_left -= auto;
+                *h = WindowHeight::Fixed(auto_cross_span);
+                cross_span_left -= auto_cross_span;
                 total_weight -= weight;
                 auto_tiles_left -= 1;
             }
@@ -4920,12 +4917,12 @@ impl<W: LayoutElement> Column<W> {
             assert_eq!(auto_tiles_left, 0);
         }
 
-        for (tile_idx, (tile, h)) in zip(&mut self.tiles, heights).enumerate() {
-            let WindowHeight::Fixed(height) = h else {
+        for (tile_idx, (tile, h)) in zip(&mut self.tiles, cross_spans).enumerate() {
+            let WindowHeight::Fixed(tile_cross_span) = h else {
                 unreachable!()
             };
 
-            let size = axis.size_out(Size::from((width, height)));
+            let size = axis.size_out(Size::from((column_main_span, tile_cross_span)));
 
             // In tabbed mode, only the visible window participates in the transaction.
             let is_active = tile_idx == self.active_tile_idx;
@@ -5446,12 +5443,13 @@ impl<W: LayoutElement> Column<W> {
         // FIXME: this should take into account always-center-single-column, which means that
         // Column should somehow know when it is being centered due to being the single column on
         // the workspace or some other reason.
-        let center = self.options.layout.center_focused_column == CenterFocusedColumn::Always;
-        let gaps = self.options.layout.gaps;
+        let center_tiles_on_main_axis =
+            self.options.layout.center_focused_column == CenterFocusedColumn::Always;
+        let gap_span = self.options.layout.gaps;
         let tabbed = self.display_mode == ColumnDisplay::Tabbed;
 
         // Does not include extra size from the tab indicator.
-        let tiles_width = self
+        let max_tile_main_span = self
             .data
             .iter()
             .map(|data| NotNan::new(data.size.w).unwrap())
@@ -5461,7 +5459,7 @@ impl<W: LayoutElement> Column<W> {
 
         let mut origin = self.tiles_origin();
 
-        // Chain with a dummy value to be able to get one past all tiles' Y.
+        // Chain with a dummy value to be able to get one past all tiles' cross-axis offsets.
         let dummy = TileData {
             height: WindowHeight::auto_1(),
             size: Size::default(),
@@ -5472,14 +5470,14 @@ impl<W: LayoutElement> Column<W> {
         data.map(move |data| {
             let mut pos = origin;
 
-            if center {
-                pos.x += (tiles_width - data.size.w) / 2.;
+            if center_tiles_on_main_axis {
+                pos.x += (max_tile_main_span - data.size.w) / 2.;
             } else if data.interactively_resizing_by_left_edge {
-                pos.x += tiles_width - data.size.w;
+                pos.x += max_tile_main_span - data.size.w;
             }
 
             if !tabbed {
-                origin.y += data.size.h + gaps;
+                origin.y += data.size.h + gap_span;
             }
 
             pos
@@ -5552,28 +5550,28 @@ impl<W: LayoutElement> Column<W> {
         // to be mindful of the case where the active tile is smaller than some other tile in the
         // column. The column assumes the size of the largest tile.
         //
-        // We expect users to mainly resize tabbed columns by width, so matching the animated size
-        // is more important here. Besides, we always try to resize all windows in a column to the
-        // same width when possible, and also the animation for going into tabbed mode doesn't move
-        // tiles horizontally as much.
+        // We expect users to mainly resize tabbed columns by their main-axis span, so matching the
+        // animated size is more important here. Besides, we always try to resize all windows in a
+        // column to the same main-axis span when possible, and also the animation for going into
+        // tabbed mode doesn't move tiles along the main axis as much.
         //
-        // For height though, it's a different story. First, users probably aren't resizing a
-        // tabbed column by height. Second, we don't match windows by height, so it's easy to have
-        // a smaller active tile than the rest of the column, e.g. by adding a fixed-size dialog.
-        // Then, switching to that dialog and back should ideally keep the tab indicator position
-        // fixed. Third, the animation for making a column tabbed moves tiles vertically, and using
-        // the active tile's animated size in this case only works for the topmost tile, and looks
-        // broken otherwise.
-        let mut max_height = 0.;
+        // For cross span though, it's a different story. First, users probably aren't resizing a
+        // tabbed column by cross span. Second, we don't match windows by cross span, so it's easy
+        // to have a smaller active tile than the rest of the column, e.g. by adding a fixed-size
+        // dialog. Then, switching to that dialog and back should ideally keep the tab indicator
+        // position fixed. Third, the animation for making a column tabbed moves tiles along the
+        // cross axis, and using the active tile's animated size in this case only works for the
+        // topmost tile, and looks broken otherwise.
+        let mut max_tile_cross_span = 0.;
         for data in &self.data {
-            max_height = f64::max(max_height, data.size.h);
+            max_tile_cross_span = f64::max(max_tile_cross_span, data.size.h);
         }
 
         let tile = &self.tiles[self.active_tile_idx];
         let active_size = self.map_size_in(tile.animated_tile_size());
-        let area_size = Size::from((active_size.w, max_height));
+        let indicator_size = Size::from((active_size.w, max_tile_cross_span));
 
-        Rectangle::new(self.tiles_origin(), area_size)
+        Rectangle::new(self.tiles_origin(), indicator_size)
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
