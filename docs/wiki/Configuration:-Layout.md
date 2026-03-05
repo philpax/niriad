@@ -7,6 +7,7 @@ Here are the contents of this section at a glance:
 ```kdl
 layout {
     gaps 16
+    main-axis "horizontal"
     center-focused-column "never"
     always-center-single-column
     empty-workspace-above-first
@@ -112,6 +113,21 @@ For example, `gaps 0.5` on an output with `scale 2` will result in one physical-
 ```kdl
 layout {
     gaps 16
+}
+```
+
+### `main-axis`
+
+<sup>Since: next release</sup>
+
+Sets the main axis of the scrolling layout.
+
+- `"horizontal"` (the default): columns are laid out from left to right, and the view scrolls horizontally.
+- `"vertical"`: columns are laid out from top to bottom, and the view scrolls vertically.
+
+```kdl
+layout {
+    main-axis "vertical"
 }
 ```
 

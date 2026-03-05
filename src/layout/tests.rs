@@ -3,8 +3,8 @@ use std::cell::{Cell, OnceCell, RefCell};
 use niri_config::utils::{Flag, MergeWith as _};
 use niri_config::workspace::WorkspaceName;
 use niri_config::{
-    CenterFocusedColumn, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
-    WorkspaceReference,
+    CenterFocusedColumn, FloatOrInt, MainAxis, OutputName, Struts, TabIndicatorLength,
+    TabIndicatorPosition, WorkspaceReference,
 };
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
@@ -1652,6 +1652,40 @@ fn check_ops_with_options(
     let mut layout = Layout::with_options(Clock::with_time(Duration::ZERO), options);
     check_ops_on_layout(&mut layout, ops);
     layout
+}
+
+#[test]
+fn vertical_main_axis_places_columns_vertically() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+        ],
+    );
+
+    let ws = layout.active_workspace().unwrap();
+    let positions: Vec<_> = ws
+        .tiles_with_render_positions()
+        .map(|(_, pos, _)| pos)
+        .collect();
+
+    assert_eq!(positions.len(), 2);
+
+    let dx = (positions[0].x - positions[1].x).abs();
+    let dy = (positions[0].y - positions[1].y).abs();
+    assert!(
+        dy > dx,
+        "expected vertical separation, got dx={dx}, dy={dy}"
+    );
 }
 
 #[test]

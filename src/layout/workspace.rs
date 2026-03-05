@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    CenterFocusedColumn, CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig,
+    CenterFocusedColumn, CornerRadius, MainAxis, OutputName, PresetSize,
+    Workspace as WorkspaceConfig,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
@@ -887,7 +888,15 @@ impl<W: LayoutElement> Workspace<W> {
         window: &W,
         width: Option<PresetSize>,
     ) -> ColumnWidth {
-        let width = width.unwrap_or_else(|| PresetSize::Fixed(window.size().w));
+        let width = width.unwrap_or_else(|| {
+            let size = window.size();
+            let fixed = if self.options.layout.main_axis == MainAxis::Vertical {
+                size.h
+            } else {
+                size.w
+            };
+            PresetSize::Fixed(fixed)
+        });
         match width {
             PresetSize::Fixed(fixed) => {
                 let mut fixed = f64::from(fixed);
@@ -1895,16 +1904,19 @@ impl<W: LayoutElement> Workspace<W> {
         let trigger_width = config.trigger_width;
 
         // This working area intentionally does not include extra struts from Options.
-        let x = pos.x - self.working_area.loc.x;
-        let width = self.working_area.size.w;
+        let (coord, span) = if self.options.layout.main_axis == MainAxis::Vertical {
+            (pos.y - self.working_area.loc.y, self.working_area.size.h)
+        } else {
+            (pos.x - self.working_area.loc.x, self.working_area.size.w)
+        };
 
-        let x = x.clamp(0., width);
-        let trigger_width = trigger_width.clamp(0., width / 2.);
+        let coord = coord.clamp(0., span);
+        let trigger_width = trigger_width.clamp(0., span / 2.);
 
-        let delta = if x < trigger_width {
-            -(trigger_width - x)
-        } else if width - x < trigger_width {
-            trigger_width - (width - x)
+        let delta = if coord < trigger_width {
+            -(trigger_width - coord)
+        } else if span - coord < trigger_width {
+            trigger_width - (span - coord)
         } else {
             0.
         };
@@ -2012,8 +2024,22 @@ impl<W: LayoutElement> Workspace<W> {
             options.layout.background_color.to_array_unpremul(),
         );
 
-        assert_eq!(self.view_size, self.scrolling.view_size());
-        assert_eq!(self.working_area, self.scrolling.parent_area());
+        let scrolling_view_size = if options.layout.main_axis == MainAxis::Vertical {
+            Size::from((self.view_size.h, self.view_size.w))
+        } else {
+            self.view_size
+        };
+        let scrolling_parent_area = if options.layout.main_axis == MainAxis::Vertical {
+            Rectangle::new(
+                Point::from((self.working_area.loc.y, self.working_area.loc.x)),
+                Size::from((self.working_area.size.h, self.working_area.size.w)),
+            )
+        } else {
+            self.working_area
+        };
+
+        assert_eq!(scrolling_view_size, self.scrolling.view_size());
+        assert_eq!(scrolling_parent_area, self.scrolling.parent_area());
         assert_eq!(&self.clock, self.scrolling.clock());
         assert!(Rc::ptr_eq(&self.options, self.scrolling.options()));
         self.scrolling.verify_invariants();
