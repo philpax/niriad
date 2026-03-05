@@ -442,7 +442,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
-        let view_pos = Point::from((self.view_pos(), 0.));
+        let view_pos = Point::from((self.view_main_pos(), 0.));
         let view_size = self.view_size;
         let active_idx = self.active_column_idx;
         for (col_idx, (col, col_x)) in self.columns_mut().enumerate() {
@@ -606,7 +606,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             (self.working_area, self.options.layout.gaps)
         };
 
-        let target_x = target_x.unwrap_or_else(|| self.target_view_pos());
+        let target_x = target_x.unwrap_or_else(|| self.target_view_main_pos());
 
         let new_offset =
             compute_new_view_offset(target_x + area.loc.x, area.size.w, col_x, width, padding);
@@ -644,7 +644,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &self.columns[idx];
         self.compute_new_view_offset_fit(
             target_x,
-            self.column_x(idx),
+            self.column_main_pos(idx),
             col.width(),
             col.sizing_mode(),
         )
@@ -658,7 +658,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &self.columns[idx];
         self.compute_new_view_offset_centered(
             target_x,
-            self.column_x(idx),
+            self.column_main_pos(idx),
             col.width(),
             col.sizing_mode(),
         )
@@ -695,10 +695,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     idx.saturating_sub(1)
                 };
 
-                let source_col_x = self.column_x(source_idx);
+                let source_col_x = self.column_main_pos(source_idx);
                 let source_col_width = self.columns[source_idx].width();
 
-                let target_col_x = self.column_x(idx);
+                let target_col_x = self.column_main_pos(idx);
                 let target_col_width = self.columns[idx].width();
 
                 // NOTE: This logic won't work entirely correctly with small fixed-size maximized
@@ -738,8 +738,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         new_view_offset: f64,
         config: niri_config::Animation,
     ) {
-        let new_col_x = self.column_x(idx);
-        let old_col_x = self.column_x(self.active_column_idx);
+        let new_col_x = self.column_main_pos(idx);
+        let old_col_x = self.column_main_pos(self.active_column_idx);
         let offset_delta = old_col_x - new_col_x;
         self.view_offset.offset(offset_delta);
 
@@ -851,29 +851,29 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let pos = self.map_point_in(pos);
-        let x = pos.x + self.view_pos();
+        let main = pos.x + self.view_main_pos();
 
         // Aim for the center of the gap.
-        let x = x + self.options.layout.gaps / 2.;
-        let y = pos.y + self.options.layout.gaps / 2.;
+        let main = main + self.options.layout.gaps / 2.;
+        let cross = pos.y + self.options.layout.gaps / 2.;
 
         // Insert position is before the first column.
-        if x < 0. {
+        if main < 0. {
             return InsertPosition::NewColumn(0);
         }
 
         // Find the closest gap between columns.
-        let (closest_col_idx, col_x) = self
-            .column_xs(self.data.iter().copied())
+        let (closest_col_idx, closest_col_main) = self
+            .column_main_positions(self.data.iter().copied())
             .enumerate()
-            .min_by_key(|(_, col_x)| NotNan::new((col_x - x).abs()).unwrap())
+            .min_by_key(|(_, col_main)| NotNan::new((col_main - main).abs()).unwrap())
             .unwrap();
 
         // Find the column containing the position.
         let (col_idx, _) = self
-            .column_xs(self.data.iter().copied())
+            .column_main_positions(self.data.iter().copied())
             .enumerate()
-            .take_while(|(_, col_x)| *col_x <= x)
+            .take_while(|(_, col_main)| *col_main <= main)
             .last()
             .unwrap_or((0, 0.));
 
@@ -885,12 +885,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Find the closest gap between tiles.
         let col = &self.columns[col_idx];
 
-        let (closest_tile_idx, tile_y) = if col.display_mode == ColumnDisplay::Tabbed {
+        let (closest_tile_idx, closest_tile_cross) = if col.display_mode == ColumnDisplay::Tabbed {
             // In tabbed mode, there's only one tile visible, and we want to check its top and
             // bottom.
             let top = col.tile_offsets().nth(col.active_tile_idx).unwrap().y;
             let bottom = top + col.data[col.active_tile_idx].size.h;
-            if (top - y).abs() <= (bottom - y).abs() {
+            if (top - cross).abs() <= (bottom - cross).abs() {
                 (col.active_tile_idx, top)
             } else {
                 (col.active_tile_idx + 1, bottom)
@@ -899,14 +899,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             col.tile_offsets()
                 .map(|tile_off| tile_off.y)
                 .enumerate()
-                .min_by_key(|(_, tile_y)| NotNan::new((tile_y - y).abs()).unwrap())
+                .min_by_key(|(_, tile_cross)| NotNan::new((tile_cross - cross).abs()).unwrap())
                 .unwrap()
         };
 
-        // Return the closest among the vertical and the horizontal gap.
-        let vert_dist = (col_x - x).abs();
-        let hor_dist = (tile_y - y).abs();
-        if vert_dist <= hor_dist {
+        // Return whichever gap is closer in main/cross space.
+        let main_dist = (closest_col_main - main).abs();
+        let cross_dist = (closest_tile_cross - cross).abs();
+        if main_dist <= cross_dist {
             InsertPosition::NewColumn(closest_col_idx)
         } else {
             InsertPosition::InColumn(col_idx, closest_tile_idx)
@@ -942,7 +942,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) {
-        let prev_next_x = self.column_x(col_idx + 1);
+        let prev_next_x = self.column_main_pos(col_idx + 1);
 
         let target_column = &mut self.columns[col_idx];
         let tile_idx = tile_idx.unwrap_or(target_column.tiles.len());
@@ -978,7 +978,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Adding a wider window into a column increases its width now (even if the window will
         // shrink later). Move the columns to account for this.
-        let offset = self.column_x(col_idx + 1) - prev_next_x;
+        let offset = self.column_main_pos(col_idx + 1) - prev_next_x;
         if self.active_column_idx <= col_idx {
             for col in &mut self.columns[col_idx + 1..] {
                 col.animate_move_from(-offset);
@@ -1040,7 +1040,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Animate movement of other columns.
-        let offset = self.column_x(idx + 1) - self.column_x(idx);
+        let offset = self.column_main_pos(idx + 1) - self.column_main_pos(idx);
         let config = anim_config.unwrap_or(self.options.animations.window_movement.0);
         if self.active_column_idx <= idx {
             for col in &mut self.columns[idx + 1..] {
@@ -1214,7 +1214,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> Column<W> {
         // Animate movement of the other columns.
         let movement_config = anim_config.unwrap_or(self.options.animations.window_movement.0);
-        let offset = self.column_x(column_idx + 1) - self.column_x(column_idx);
+        let offset = self.column_main_pos(column_idx + 1) - self.column_main_pos(column_idx);
         if self.active_column_idx <= column_idx {
             for col in &mut self.columns[column_idx + 1..] {
                 col.animate_move_from_with_config(offset, movement_config);
@@ -1467,14 +1467,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Consider the end of an ongoing animation because that's what compute to fit does too.
-        let target_x = self.target_view_pos();
+        let target_x = self.target_view_main_pos();
         let new_view_offset = self.compute_new_view_offset_for_column(
             Some(target_x),
             column_idx,
             Some(self.active_column_idx),
         );
 
-        let new_col_x = self.column_x(column_idx);
+        let new_col_x = self.column_main_pos(column_idx);
         let from_view_offset = target_x - new_col_x;
 
         (from_view_offset - new_view_offset).abs() / self.working_area.size.w
@@ -1531,11 +1531,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        tile_pos = self.offset_point_main_axis_out(tile_pos, self.view_pos());
+        tile_pos = self.offset_point_main_axis_out(tile_pos, self.view_main_pos());
 
         if col_idx < self.active_column_idx {
             let offset = if removing_last {
-                self.column_x(col_idx + 1) - self.column_x(col_idx)
+                self.column_main_pos(col_idx + 1) - self.column_main_pos(col_idx)
             } else {
                 self.data[col_idx].width
                     - col
@@ -1731,8 +1731,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let current_col_x = self.column_x(self.active_column_idx);
-        let next_col_x = self.column_x(self.active_column_idx + 1);
+        let current_col_x = self.column_main_pos(self.active_column_idx);
+        let next_col_x = self.column_main_pos(self.active_column_idx + 1);
 
         let mut column = self.columns.remove(self.active_column_idx);
         let data = self.data.remove(self.active_column_idx);
@@ -1741,11 +1741,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.data.insert(new_idx, data);
 
         // Preserve the camera position when moving to the left.
-        let view_offset_delta = -self.column_x(self.active_column_idx) + current_col_x;
+        let view_offset_delta = -self.column_main_pos(self.active_column_idx) + current_col_x;
         self.view_offset.offset(view_offset_delta);
 
         // The column we just moved is offset by the difference between its new and old position.
-        let new_col_x = self.column_x(new_idx);
+        let new_col_x = self.column_main_pos(new_idx);
         self.columns[new_idx].animate_move_from(current_col_x - new_col_x);
 
         // All columns in between moved by the width of the column that we just moved.
@@ -1849,7 +1849,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let offset = if self.active_column_idx <= source_col_idx {
                 // Tiles to the right animate from the following column.
-                self.column_x(source_col_idx) - self.column_x(target_column_idx)
+                self.column_main_pos(source_col_idx) - self.column_main_pos(target_column_idx)
             } else {
                 // Tiles to the left animate to preserve their right edge position.
                 f64::max(
@@ -1910,7 +1910,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             if target_column_idx <= self.active_column_idx {
                 // Tiles to the left animate from the following column.
-                offset.x += self.column_x(target_column_idx + 1) - self.column_x(target_column_idx);
+                offset.x += self.column_main_pos(target_column_idx + 1)
+                    - self.column_main_pos(target_column_idx);
             }
 
             let new_col = &mut self.columns[target_column_idx];
@@ -1941,7 +1942,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             (source_col_idx, source_tile_idx)
         };
 
-        let cur_x = self.column_x(source_col_idx);
+        let cur_x = self.column_main_pos(source_col_idx);
 
         let source_column = &self.columns[source_col_idx];
         let mut offset = Point::from((source_column.render_offset().x, 0.));
@@ -1958,7 +1959,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // Move into adjacent column.
             let target_column_idx = source_col_idx;
 
-            offset.x += cur_x - self.column_x(source_col_idx + 1);
+            offset.x += cur_x - self.column_main_pos(source_col_idx + 1);
             offset.x -= self.columns[source_col_idx + 1].render_offset().x;
 
             if source_tile_was_active {
@@ -1999,7 +2000,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             offset.x += if self.active_column_idx <= target_column_idx {
                 // Tiles to the right animate to the following column.
-                cur_x - self.column_x(target_column_idx)
+                cur_x - self.column_main_pos(target_column_idx)
             } else {
                 // Tiles to the left animate for a change in width.
                 -f64::max(0., prev_width - self.data[target_column_idx].width)
@@ -2023,9 +2024,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let target_column_idx = self.active_column_idx;
         let source_column_idx = self.active_column_idx + 1;
 
-        let offset = self.column_x(source_column_idx)
+        let offset = self.column_main_pos(source_column_idx)
             + self.columns[source_column_idx].render_offset().x
-            - self.column_x(target_column_idx);
+            - self.column_main_pos(target_column_idx);
         let mut offset = Point::from((offset, 0.));
         let prev_off = self.columns[source_column_idx].tile_offset(0);
 
@@ -2047,7 +2048,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let source_col_idx = self.active_column_idx;
         let target_col_idx = self.active_column_idx + 1;
-        let cur_x = self.column_x(source_col_idx);
+        let cur_x = self.column_main_pos(source_col_idx);
 
         let source_column = &self.columns[self.active_column_idx];
         if source_column.tiles.len() == 1 {
@@ -2071,7 +2072,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             Some(self.options.animations.window_movement.0),
         );
 
-        offset.x += cur_x - self.column_x(target_col_idx);
+        offset.x += cur_x - self.column_main_pos(target_col_idx);
 
         let new_col = &mut self.columns[target_col_idx];
         offset += prev_off - new_col.tile_offset(0);
@@ -2123,8 +2124,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.columns[target_column_idx].render_offset()
                 + self.columns[target_column_idx].tile_offset(target_tile_idx),
         );
-        source_pt.x += self.column_x(source_column_idx);
-        target_pt.x += self.column_x(target_column_idx);
+        source_pt.x += self.column_main_pos(source_column_idx);
+        target_pt.x += self.column_main_pos(target_column_idx);
 
         let transaction = Transaction::new();
 
@@ -2292,7 +2293,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Consider the end of an ongoing animation because that's what compute to fit does too.
-        let view_x = self.target_view_pos();
+        let view_x = self.target_view_main_pos();
         let working_x = self.working_area.loc.x;
         let working_w = self.working_area.size.w;
 
@@ -2302,7 +2303,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let mut active_col_x = None;
 
         let gap = self.options.layout.gaps;
-        let col_xs = self.column_xs(self.data.iter().copied());
+        let col_xs = self.column_main_positions(self.data.iter().copied());
         for (idx, col_x) in col_xs.take(self.columns.len()).enumerate() {
             if col_x < view_x + working_x + gap {
                 // Column goes off-screen to the left.
@@ -2340,45 +2341,56 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.animate_view_offset_to_column(None, self.active_column_idx, None);
     }
 
+    pub fn view_main_pos(&self) -> f64 {
+        self.column_main_pos(self.active_column_idx) + self.view_offset.current()
+    }
+
     pub fn view_pos(&self) -> f64 {
-        self.column_x(self.active_column_idx) + self.view_offset.current()
+        self.view_main_pos()
+    }
+
+    pub fn target_view_main_pos(&self) -> f64 {
+        self.column_main_pos(self.active_column_idx) + self.view_offset.target()
     }
 
     pub fn target_view_pos(&self) -> f64 {
-        self.column_x(self.active_column_idx) + self.view_offset.target()
+        self.target_view_main_pos()
     }
 
     // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
     // borrowing. Note that this method's return value does not borrow the entire &Self!
-    fn column_xs(&self, data: impl Iterator<Item = ColumnData>) -> impl Iterator<Item = f64> {
+    fn column_main_positions(
+        &self,
+        data: impl Iterator<Item = ColumnData>,
+    ) -> impl Iterator<Item = f64> {
         let gaps = self.options.layout.gaps;
-        let mut x = 0.;
+        let mut main = 0.;
 
-        // Chain with a dummy value to be able to get one past all columns' X.
+        // Chain with a dummy value to be able to get one past all columns' position.
         let dummy = ColumnData { width: 0. };
         let data = data.chain(iter::once(dummy));
 
         data.map(move |data| {
-            let rv = x;
-            x += data.width + gaps;
+            let rv = main;
+            main += data.width + gaps;
             rv
         })
     }
 
-    fn column_x(&self, column_idx: usize) -> f64 {
-        self.column_xs(self.data.iter().copied())
+    fn column_main_pos(&self, column_idx: usize) -> f64 {
+        self.column_main_positions(self.data.iter().copied())
             .nth(column_idx)
             .unwrap()
     }
 
-    fn column_xs_in_render_order(
+    fn column_main_positions_in_render_order(
         &self,
         data: impl Iterator<Item = ColumnData>,
     ) -> impl Iterator<Item = f64> {
         let active_idx = self.active_column_idx;
-        let active_pos = self.column_x(active_idx);
+        let active_pos = self.column_main_pos(active_idx);
         let offsets = self
-            .column_xs(data)
+            .column_main_positions(data)
             .enumerate()
             .filter_map(move |(idx, pos)| (idx != active_idx).then_some(pos));
         iter::once(active_pos).chain(offsets)
@@ -2389,12 +2401,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     fn columns_mut(&mut self) -> impl Iterator<Item = (&mut Column<W>, f64)> + '_ {
-        let offsets = self.column_xs(self.data.iter().copied());
+        let offsets = self.column_main_positions(self.data.iter().copied());
         zip(&mut self.columns, offsets)
     }
 
     fn columns_in_render_order(&self) -> impl Iterator<Item = (&Column<W>, f64)> + '_ {
-        let offsets = self.column_xs_in_render_order(self.data.iter().copied());
+        let offsets = self.column_main_positions_in_render_order(self.data.iter().copied());
 
         let (first, active, rest) = if self.columns.is_empty() {
             (&[][..], &[][..], &[][..])
@@ -2409,7 +2421,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     fn columns_in_render_order_mut(&mut self) -> impl Iterator<Item = (&mut Column<W>, f64)> + '_ {
-        let offsets = self.column_xs_in_render_order(self.data.iter().copied());
+        let offsets = self.column_main_positions_in_render_order(self.data.iter().copied());
 
         let (first, active, rest) = if self.columns.is_empty() {
             (&mut [][..], &mut [][..], &mut [][..])
@@ -2428,7 +2440,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
         let axis = self.axis();
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_main_pos(), 0.));
         self.columns_in_render_order()
             .flat_map(move |(col, col_x)| {
                 let col_off = Point::from((col_x, 0.));
@@ -2451,7 +2463,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
         let axis = self.axis();
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_main_pos(), 0.));
         self.columns_in_render_order_mut()
             .flat_map(move |(col, col_x)| {
                 let col_off = Point::from((col_x, 0.));
@@ -2473,9 +2485,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
         let scale = self.scale;
         let axis = self.axis();
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_main_pos(), 0.));
 
-        let col_xs = self.column_xs(self.data.iter().copied());
+        let col_xs = self.column_main_positions(self.data.iter().copied());
         zip(self.columns.iter(), col_xs)
             .enumerate()
             .flat_map(move |(col_idx, (col, col_x))| {
@@ -2511,7 +2523,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         self.working_area.size.h - self.options.layout.gaps * 2.,
                     ));
                     let mut loc = Point::from((
-                        self.column_x(column_index),
+                        self.column_main_pos(column_index),
                         self.working_area.loc.y + self.options.layout.gaps,
                     ));
                     if column_index == 0 && !self.columns.is_empty() {
@@ -2527,7 +2539,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         self.working_area.size.h - self.options.layout.gaps * 2.,
                     ));
                     let loc = Point::from((
-                        self.column_x(column_index) - size.w / 2. - self.options.layout.gaps / 2.,
+                        self.column_main_pos(column_index)
+                            - size.w / 2.
+                            - self.options.layout.gaps / 2.,
                         self.working_area.loc.y + self.options.layout.gaps,
                     ));
                     Rectangle::new(loc, size)
@@ -2579,7 +2593,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 };
 
                 let size = Size::from((self.data[column_index].width - extra_w, height));
-                let loc = Point::from((self.column_x(column_index) + origin_x, y));
+                let loc = Point::from((self.column_main_pos(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
             InsertPosition::Floating => return None,
@@ -2600,7 +2614,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             };
             hint_area.loc.x -= view_offset;
         } else {
-            hint_area.loc.x -= self.view_pos();
+            hint_area.loc.x -= self.view_main_pos();
         }
 
         Some(self.map_rect_out(hint_area))
@@ -2820,7 +2834,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // (they have a different area and padding).
 
         // Consider the end of an ongoing animation because that's what compute to fit does too.
-        let view_x = self.target_view_pos();
+        let view_x = self.target_view_main_pos();
         let working_x = self.working_area.loc.x;
         let working_w = self.working_area.size.w;
 
@@ -2831,7 +2845,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let mut counted_non_active_column = false;
 
         let gap = self.options.layout.gaps;
-        let col_xs = self.column_xs(self.data.iter().copied());
+        let col_xs = self.column_main_positions(self.data.iter().copied());
         for (idx, col_x) in col_xs.take(self.columns.len()).enumerate() {
             if col_x < view_x + working_x + gap {
                 // Column goes off-screen to the left.
@@ -2979,7 +2993,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Draw the closing windows on top of the other windows.
         let view_size = self.map_size_out(self.view_size);
-        let view_loc = self.main_axis_point_out(self.view_pos());
+        let view_loc = self.main_axis_point_out(self.view_main_pos());
         let view_rect = Rectangle::new(view_loc, view_size);
         for closing in self.closing_windows.iter().rev() {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
@@ -2993,7 +3007,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let mut first = true;
 
         // This matches self.tiles_in_render_order().
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_main_pos(), 0.));
         for (col, col_x) in self.columns_in_render_order() {
             let col_off = Point::from((col_x, 0.));
             let col_render_off = col.render_offset();
@@ -3042,7 +3056,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // This matches self.tiles_with_render_positions().
         let pos_in = self.map_point_in(pos);
         let scale = self.scale;
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_main_pos(), 0.));
         for (col, col_x) in self.columns_in_render_order() {
             let col_off = Point::from((col_x, 0.));
             let col_render_off = col.render_offset();
@@ -3456,7 +3470,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Find the closest snapping point.
         snapping_points.sort_by_key(|snap| NotNan::new(snap.view_pos).unwrap());
 
-        let active_col_x = self.column_x(self.active_column_idx);
+        let active_col_x = self.column_main_pos(self.active_column_idx);
         let target_view_pos = active_col_x + target_view_offset;
         let target_snap = snapping_points
             .iter()
@@ -3470,7 +3484,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             if target_view_offset >= current_view_offset {
                 for col_idx in (new_col_idx + 1)..self.columns.len() {
                     let col = &self.columns[col_idx];
-                    let col_x = self.column_x(col_idx);
+                    let col_x = self.column_main_pos(col_idx);
                     let col_w = col.width();
                     let mode = col.sizing_mode();
 
@@ -3504,7 +3518,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             } else {
                 for col_idx in (0..new_col_idx).rev() {
                     let col = &self.columns[col_idx];
-                    let col_x = self.column_x(col_idx);
+                    let col_x = self.column_main_pos(col_idx);
                     let col_w = col.width();
                     let mode = col.sizing_mode();
 
@@ -3537,7 +3551,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        let new_col_x = self.column_x(new_col_idx);
+        let new_col_x = self.column_main_pos(new_col_idx);
         let delta = active_col_x - new_col_x;
 
         if self.active_column_idx != new_col_idx {
@@ -5575,36 +5589,36 @@ impl<W: LayoutElement> Column<W> {
 }
 
 fn compute_new_view_offset(
-    cur_x: f64,
-    view_width: f64,
-    new_col_x: f64,
-    new_col_width: f64,
+    current_view_main: f64,
+    view_main_span: f64,
+    new_column_main: f64,
+    new_column_span: f64,
     gaps: f64,
 ) -> f64 {
-    // If the column is wider than the view, always left-align it.
-    if view_width <= new_col_width {
+    // If the column is wider than the view, always align it to the start of the main axis.
+    if view_main_span <= new_column_span {
         return 0.;
     }
 
-    // Compute the padding in case it needs to be smaller due to large tile width.
-    let padding = ((view_width - new_col_width) / 2.).clamp(0., gaps);
+    // Compute the padding in case it needs to be smaller due to large column span.
+    let padding = ((view_main_span - new_column_span) / 2.).clamp(0., gaps);
 
-    // Compute the desired new X with padding.
-    let new_x = new_col_x - padding;
-    let new_right_x = new_col_x + new_col_width + padding;
+    // Compute the desired start/end positions with padding.
+    let desired_start = new_column_main - padding;
+    let desired_end = new_column_main + new_column_span + padding;
 
     // If the column is already fully visible, leave the view as is.
-    if cur_x <= new_x && new_right_x <= cur_x + view_width {
-        return -(new_col_x - cur_x);
+    if current_view_main <= desired_start && desired_end <= current_view_main + view_main_span {
+        return -(new_column_main - current_view_main);
     }
 
     // Otherwise, prefer the alignment that results in less motion from the current position.
-    let dist_to_left = (cur_x - new_x).abs();
-    let dist_to_right = ((cur_x + view_width) - new_right_x).abs();
-    if dist_to_left <= dist_to_right {
+    let dist_to_start = (current_view_main - desired_start).abs();
+    let dist_to_end = ((current_view_main + view_main_span) - desired_end).abs();
+    if dist_to_start <= dist_to_end {
         -padding
     } else {
-        -(view_width - padding - new_col_width)
+        -(view_main_span - padding - new_column_span)
     }
 }
 
