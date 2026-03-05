@@ -397,6 +397,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         map_rect_for_axis(self.main_axis(), rect)
     }
 
+    fn main_axis_point_out(&self, main: f64) -> Point<f64, Logical> {
+        self.map_point_out(Point::from((main, 0.)))
+    }
+
+    fn offset_point_main_axis_out(
+        &self,
+        point: Point<f64, Logical>,
+        delta: f64,
+    ) -> Point<f64, Logical> {
+        let mut mapped = self.map_point_in(point);
+        mapped.x += delta;
+        self.map_point_out(mapped)
+    }
+
     pub fn update_shaders(&mut self) {
         for col in &mut self.columns {
             col.update_shaders();
@@ -1547,11 +1561,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        if axis == MainAxis::Vertical {
-            tile_pos.y += self.view_pos();
-        } else {
-            tile_pos.x += self.view_pos();
-        }
+        tile_pos = self.offset_point_main_axis_out(tile_pos, self.view_pos());
 
         if col_idx < self.active_column_idx {
             let offset = if removing_last {
@@ -1569,11 +1579,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         .map(NotNan::into_inner)
                         .unwrap()
             };
-            if axis == MainAxis::Vertical {
-                tile_pos.y -= offset;
-            } else {
-                tile_pos.x -= offset;
-            }
+            tile_pos = self.offset_point_main_axis_out(tile_pos, -offset);
         }
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
@@ -2987,11 +2993,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Draw the closing windows on top of the other windows.
         let view_size = self.map_size_out(self.view_size);
-        let view_loc = if self.main_axis() == MainAxis::Vertical {
-            Point::from((0., self.view_pos()))
-        } else {
-            Point::from((self.view_pos(), 0.))
-        };
+        let view_loc = self.main_axis_point_out(self.view_pos());
         let view_rect = Rectangle::new(view_loc, view_size);
         for closing in self.closing_windows.iter().rev() {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);

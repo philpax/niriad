@@ -95,16 +95,6 @@ pub(super) fn map_view_workspace_deltas(
     }
 }
 
-pub(super) fn map_overview_scroll_swipe_deltas(
-    horizontal: f64,
-    vertical: f64,
-    view_axis_vertical: bool,
-) -> (f64, f64, f64, f64) {
-    let (view_delta, workspace_delta) =
-        map_view_workspace_deltas(horizontal, vertical, view_axis_vertical);
-    (view_delta, workspace_delta, view_delta, workspace_delta)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
     pub aspect_ratio: f64,
@@ -273,6 +263,32 @@ impl State {
             }
             _ => (),
         }
+    }
+
+    fn view_axis_vertical_on_output(&self, output: &Output) -> Option<bool> {
+        let mon = self.niri.layout.monitor_for_output(output)?;
+        Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
+    }
+
+    fn view_axis_vertical_under_cursor_or_active_workspace(&self) -> Option<bool> {
+        self.niri
+            .workspace_under_cursor(true)
+            .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+            .or_else(|| {
+                let output = self.niri.output_under_cursor()?;
+                self.view_axis_vertical_on_output(&output)
+            })
+    }
+
+    fn view_axis_vertical_for_swipe(&self, is_overview_open: bool) -> bool {
+        if is_overview_open {
+            self.view_axis_vertical_under_cursor_or_active_workspace()
+        } else {
+            self.niri
+                .output_under_cursor()
+                .and_then(|output| self.view_axis_vertical_on_output(&output))
+        }
+        .unwrap_or(false)
     }
 
     fn on_device_added(&mut self, device: impl Device) {
@@ -3354,17 +3370,12 @@ impl State {
                 let mut redraw = false;
 
                 let view_axis_vertical = self
-                    .niri
-                    .workspace_under_cursor(true)
-                    .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
-                    .or_else(|| {
-                        let output = self.niri.output_under_cursor()?;
-                        let mon = self.niri.layout.monitor_for_output(&output)?;
-                        Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
-                    })
+                    .view_axis_vertical_under_cursor_or_active_workspace()
                     .unwrap_or(false);
-                let (gesture_dx, gesture_dy, view_delta, workspace_delta) =
-                    map_overview_scroll_swipe_deltas(horizontal, vertical, view_axis_vertical);
+                let (gesture_dx, gesture_dy) =
+                    map_view_workspace_deltas(horizontal, vertical, view_axis_vertical);
+                let view_delta = gesture_dx;
+                let workspace_delta = gesture_dy;
 
                 let action = self
                     .niri
@@ -3958,25 +3969,7 @@ impl State {
         }
 
         let is_overview_open = self.niri.layout.is_overview_open();
-        let view_axis_vertical = if is_overview_open {
-            self.niri
-                .workspace_under_cursor(true)
-                .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
-                .or_else(|| {
-                    let output = self.niri.output_under_cursor()?;
-                    let mon = self.niri.layout.monitor_for_output(&output)?;
-                    Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
-                })
-                .unwrap_or(false)
-        } else {
-            self.niri
-                .output_under_cursor()
-                .and_then(|output| {
-                    let mon = self.niri.layout.monitor_for_output(&output)?;
-                    Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
-                })
-                .unwrap_or(false)
-        };
+        let view_axis_vertical = self.view_axis_vertical_for_swipe(is_overview_open);
 
         if let Some((cx, cy)) = &mut self.niri.gesture_swipe_3f_cumulative {
             *cx += delta_x;
@@ -5278,18 +5271,6 @@ mod tests {
     fn map_view_workspace_deltas_respects_main_axis() {
         assert_eq!(map_view_workspace_deltas(3., -7., false), (3., -7.));
         assert_eq!(map_view_workspace_deltas(3., -7., true), (-7., 3.));
-    }
-
-    #[test]
-    fn map_overview_scroll_swipe_deltas_respects_main_axis() {
-        assert_eq!(
-            map_overview_scroll_swipe_deltas(4., -9., false),
-            (4., -9., 4., -9.)
-        );
-        assert_eq!(
-            map_overview_scroll_swipe_deltas(4., -9., true),
-            (-9., 4., -9., 4.)
-        );
     }
 
     #[test]
