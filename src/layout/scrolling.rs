@@ -3982,18 +3982,18 @@ impl ColumnData {
 }
 
 impl TileData {
-    pub fn new<W: LayoutElement>(tile: &Tile<W>, height: WindowHeight) -> Self {
+    pub fn new<W: LayoutElement>(tile: &Tile<W>, height: WindowHeight, axis: MainAxis) -> Self {
         let mut rv = Self {
             height,
             size: Size::default(),
             interactively_resizing_by_left_edge: false,
         };
-        rv.update(tile);
+        rv.update(tile, axis);
         rv
     }
 
-    pub fn update<W: LayoutElement>(&mut self, tile: &Tile<W>) {
-        self.size = tile.tile_size();
+    pub fn update<W: LayoutElement>(&mut self, tile: &Tile<W>, axis: MainAxis) {
+        self.size = map_size_for_axis(axis, tile.tile_size());
         self.interactively_resizing_by_left_edge = tile
             .window()
             .interactive_resize_data()
@@ -4103,6 +4103,9 @@ impl<W: LayoutElement> Column<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
+        let axis = options.layout.main_axis;
+        let tile_view_size = map_size_for_axis(axis, view_size);
+
         let mut update_sizes = false;
 
         if self.view_size != view_size
@@ -4138,8 +4141,8 @@ impl<W: LayoutElement> Column<W> {
         }
 
         for (tile, data) in zip(&mut self.tiles, &mut self.data) {
-            tile.update_config(view_size, scale, options.clone());
-            data.update(tile);
+            tile.update_config(tile_view_size, scale, options.clone());
+            data.update(tile, axis);
         }
 
         self.tab_indicator
@@ -4243,6 +4246,14 @@ impl<W: LayoutElement> Column<W> {
         } else {
             SizingMode::Normal
         }
+    }
+
+    fn map_size_in(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
+        map_size_for_axis(self.options.layout.main_axis, size)
+    }
+
+    fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
+        map_size_for_axis(self.options.layout.main_axis, size)
     }
 
     pub fn render_offset(&self) -> Point<f64, Logical> {
@@ -4387,7 +4398,11 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn add_tile_at(&mut self, idx: usize, mut tile: Tile<W>) {
-        tile.update_config(self.view_size, self.scale, self.options.clone());
+        tile.update_config(
+            self.map_size_out(self.view_size),
+            self.scale,
+            self.options.clone(),
+        );
 
         // Inserting a tile pushes down all tiles below it, but also in always-centering mode it
         // will affect the X position of all tiles in the column.
@@ -4399,8 +4414,10 @@ impl<W: LayoutElement> Column<W> {
             self.is_pending_maximized = false;
         }
 
-        self.data
-            .insert(idx, TileData::new(&tile, WindowHeight::auto_1()));
+        self.data.insert(
+            idx,
+            TileData::new(&tile, WindowHeight::auto_1(), self.options.layout.main_axis),
+        );
         self.tiles.insert(idx, tile);
         self.update_tile_sizes(true);
 
@@ -4426,7 +4443,7 @@ impl<W: LayoutElement> Column<W> {
         let prev_height = self.data[tile_idx].size.h;
 
         tile.update_window();
-        self.data[tile_idx].update(tile);
+        self.data[tile_idx].update(tile, self.options.layout.main_axis);
 
         let offset = prev_height - self.data[tile_idx].size.h;
 
@@ -5488,7 +5505,7 @@ impl<W: LayoutElement> Column<W> {
             tile.verify_invariants();
 
             let mut data2 = *data;
-            data2.update(tile);
+            data2.update(tile, self.options.layout.main_axis);
             assert_eq!(data, &data2, "tile data must be up to date");
 
             if matches!(data.height, WindowHeight::Fixed(_)) {
