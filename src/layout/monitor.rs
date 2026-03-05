@@ -33,7 +33,7 @@ use crate::utils::{
     output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
 };
 
-/// Amount of touchpad movement to scroll the height of one workspace.
+/// Amount of touchpad movement to scroll the cross-axis span of one workspace.
 const WORKSPACE_GESTURE_MOVEMENT: f64 = 300.;
 
 const WORKSPACE_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
@@ -41,7 +41,7 @@ const WORKSPACE_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
     limit: 0.05,
 };
 
-/// Amount of DnD edge scrolling to scroll the height of one workspace.
+/// Amount of DnD edge scrolling to scroll the cross-axis span of one workspace.
 ///
 /// This constant is tied to the default dnd-edge-workspace-switch max-speed setting.
 const WORKSPACE_DND_EDGE_SCROLL_MOVEMENT: f64 = 1500.;
@@ -1443,40 +1443,40 @@ impl<W: LayoutElement> Monitor<W> {
                 //   These are render_idx values, so first workspace to second would have switch
                 //   from = 0. and to = 1. regardless of the zoom level.
                 //
-                // - At the start, the point at "from" is at Y = 0. We're moving the point at "to"
-                //   to Y = 0. We want this to be a monotonic motion in apparent coordinates (after
-                //   zoom).
+                // - At the start, the point at "from" is at cross = 0. We're moving the point at
+                //   "to" to cross = 0. We want this to be a monotonic motion in apparent
+                //   coordinates (after zoom).
                 //
-                // - Height at the start:
-                //   from_height = (size.h + gap) * from_zoom.
+                // - Workspace-switch span at the start:
+                //   from_span = (cross_span + gap) * from_zoom.
                 //
-                // - Current height:
-                //   current_height = (size.h + gap) * zoom.
+                // - Current workspace-switch span:
+                //   current_span = (cross_span + gap) * zoom.
                 //
-                // - We're moving the "to" point to Y = 0:
-                //   to_y = 0.
+                // - We're moving the "to" point to cross = 0:
+                //   to_cross = 0.
                 //
                 // - The initial position of the point we're moving:
-                //   from_y = (to - from) * from_height.
+                //   from_cross = (to - from) * from_span.
                 //
                 // - We want this point to travel monotonically in apparent coordinates:
-                //   current_y = from_y + (to_y - from_y) * progress,
+                //   current_cross = from_cross + (to_cross - from_cross) * progress,
                 //   where progress is from 0 to 1, equals to the animation progress (switch and
                 //   zoom are the same since they are synchronized).
                 //
-                // - Derive the Y of the first workspace from this:
-                //   first_y = current_y - to * current_height.
+                // - Derive the cross-axis position of the first workspace from this:
+                //   first_cross = current_cross - to * current_span.
                 //
                 // Now, let's substitute and rearrange the terms.
                 //
-                // - current_y = from_y + (0 - (to - from) * from_height) * progress
+                // - current_cross = from_cross + (0 - (to - from) * from_span) * progress
                 // - progress = (switch_anim.value() - from) / (to - from)
-                // - current_y = from_y - (to - from) * from_height * (switch_anim.value() - from) / (to - from)
-                // - current_y = from_y - from_height * (switch_anim.value() - from)
-                // - first_y = from_y - from_height * (switch_anim.value() - from) - to * current_height
-                // - first_y = (to - from) * from_height - from_height * (switch_anim.value() - from) - to * current_height
-                // - first_y = to * from_height - switch_anim.value() * from_height - to * current_height
-                // - first_y = -switch_anim.value() * from_height + to * (from_height - current_height)
+                // - current_cross = from_cross - (to - from) * from_span * (switch_anim.value() - from) / (to - from)
+                // - current_cross = from_cross - from_span * (switch_anim.value() - from)
+                // - first_cross = from_cross - from_span * (switch_anim.value() - from) - to * current_span
+                // - first_cross = (to - from) * from_span - from_span * (switch_anim.value() - from) - to * current_span
+                // - first_cross = to * from_span - switch_anim.value() * from_span - to * current_span
+                // - first_cross = -switch_anim.value() * from_span + to * (from_span - current_span)
                 let from = progress_anim.from();
                 let from_zoom = compute_overview_zoom(&self.options, Some(from));
                 let from_ws_switch_span = self.workspace_switch_span_with_gap(from_zoom);

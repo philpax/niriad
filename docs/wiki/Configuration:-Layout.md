@@ -125,6 +125,13 @@ Sets the main axis of the scrolling layout.
 - `"horizontal"` (the default): columns are laid out from left to right, and the view scrolls horizontally.
 - `"vertical"`: columns are laid out from top to bottom, and the view scrolls vertically.
 
+This setting also changes what niri considers the main axis for size actions and presets:
+
+- `column width` settings and actions affect the main-axis span of a column.
+- `window height` settings and actions affect the cross-axis span of a window inside a column.
+
+So in the default horizontal layout these still correspond to physical width and height, while in vertical layout they correspond to physical height and width respectively.
+
 ```kdl
 layout {
     main-axis "vertical"
@@ -136,7 +143,7 @@ layout {
 When to center a column when changing focus.
 This can be set to:
 
-- `"never"`: no special centering, focusing an off-screen column will scroll it to the left or right edge of the screen. This is the default.
+- `"never"`: no special centering, focusing an off-screen column will scroll it to the start or end edge of the screen. This is the default.
 - `"always"`, the focused column will always be centered.
 - `"on-overflow"`, focusing a column will center it if it doesn't fit on screen together with the previously focused column.
 
@@ -192,14 +199,14 @@ layout {
 
 ### `preset-column-widths`
 
-Set the widths that the `switch-preset-column-width` action (Mod+R) toggles between.
+Set the main-axis spans that the `switch-preset-column-width` action (Mod+R) toggles between.
 <sup>Since: 25.08</sup> You can use the `switch-preset-column-width-back` action (Mod+Shift+R) to toggle in reverse.
 
-`proportion` sets the width as a fraction of the output width, taking gaps into account.
-For example, you can perfectly fit four windows sized `proportion 0.25` on an output, regardless of the gaps setting.
-The default preset widths are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
+`proportion` sets the span as a fraction of the output along the main axis, taking gaps into account.
+For example, you can perfectly fit four windows sized `proportion 0.25` along the main axis of an output, regardless of the gaps setting.
+The default preset spans are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output along the main axis.
 
-`fixed` sets the window width in logical pixels exactly.
+`fixed` sets the window span on the main axis in logical pixels exactly.
 
 ```kdl
 layout {
@@ -215,22 +222,22 @@ layout {
 
 ### `default-column-width`
 
-Set the default width of the new windows.
+Set the default main-axis span of new windows.
 
 The syntax is the same as in `preset-column-widths` above.
 
 ```kdl
 layout {
-    // Open new windows sized 1/3 of the output.
+    // Open new windows sized 1/3 of the output along the main axis.
     default-column-width { proportion 0.33333; }
 }
 ```
 
-You can also leave the brackets empty, then the windows themselves will decide their initial width.
+You can also leave the brackets empty, then the windows themselves will decide their initial main-axis span.
 
 ```kdl
 layout {
-    // New windows decide their initial width themselves.
+    // New windows decide their initial main-axis span themselves.
     default-column-width {}
 }
 ```
@@ -245,13 +252,13 @@ layout {
 
 <sup>Since: 0.1.9</sup>
 
-Set the heights that the `switch-preset-window-height` action (Mod+Ctrl+Shift+R) toggles between.
+Set the cross-axis spans that the `switch-preset-window-height` action (Mod+Ctrl+Shift+R) toggles between.
 <sup>Since: 25.08</sup> You can use the `switch-preset-window-height-back` action (not bound by default) to toggle in reverse.
 
-`proportion` sets the height as a fraction of the output height, taking gaps into account.
-The default preset heights are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
+`proportion` sets the span as a fraction of the output along the cross axis, taking gaps into account.
+The default preset cross-axis spans are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output along the cross axis.
 
-`fixed` sets the height in logical pixels exactly.
+`fixed` sets the cross-axis span in logical pixels exactly.
 
 ```kdl
 layout {

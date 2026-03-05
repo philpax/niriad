@@ -28,11 +28,15 @@ use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
 
-/// Amount of touchpad movement to scroll the view for the width of one working area.
+/// Amount of touchpad movement to scroll the view for the main-axis span of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
 
 fn main_axis_point(main: f64) -> Point<f64, Logical> {
     Point::from((main, 0.))
+}
+
+fn cross_axis_point(cross: f64) -> Point<f64, Logical> {
+    Point::from((0., cross))
 }
 
 /// A scrollable-tiling space for windows.
@@ -110,7 +114,7 @@ niri_render_elements! {
 /// Extra per-column data.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ColumnData {
-    /// Cached actual column width.
+    /// Cached actual column main-axis span.
     width: f64,
 }
 
@@ -236,38 +240,39 @@ struct TileData {
     interactively_resizing_by_left_edge: bool,
 }
 
-/// Width of a column.
+/// Main-axis span of a column.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ColumnWidth {
-    /// Proportion of the current view width.
+    /// Proportion of the current view along the main axis.
     Proportion(f64),
-    /// Fixed width in logical pixels.
+    /// Fixed main-axis span in logical pixels.
     Fixed(f64),
 }
 
-/// Height of a window in a column.
+/// Cross-axis span of a window in a column.
 ///
-/// Every window but one in a column must be `Auto`-sized so that the total height can add up to
-/// the workspace height. Resizing a window converts all other windows to `Auto`, weighted to
-/// preserve their visual heights at the moment of the conversion.
+/// Every window but one in a column must be `Auto`-sized so that the total cross-axis span can add
+/// up to the workspace cross-axis span. Resizing a window converts all other windows to `Auto`,
+/// weighted to preserve their visual spans at the moment of the conversion.
 ///
-/// In contrast to column widths, proportional height changes are converted to, and stored as,
-/// fixed height right away. With column widths you frequently want e.g. two columns side-by-side
-/// with 50% width each, and you want them to remain this way when moving to a differently sized
-/// monitor. Windows in a column, however, already auto-size to fill the available height, giving
-/// you this behavior. The main reason to set a different window height, then, is when you want
-/// something in the window to fit exactly, e.g. to fit 30 lines in a terminal, which corresponds
-/// to the `Fixed` variant.
+/// In contrast to column widths, proportional cross-axis changes are converted to, and stored as,
+/// fixed spans right away. With column widths you frequently want e.g. two columns side-by-side
+/// with 50% main-axis span each, and you want them to remain this way when moving to a differently
+/// sized monitor. Windows in a column, however, already auto-size to fill the available cross-axis
+/// span, giving you this behavior. The main reason to set a different window cross-axis span,
+/// then, is when you want something in the window to fit exactly, e.g. to fit 30 lines in a
+/// terminal, which corresponds to the `Fixed` variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowHeight {
-    /// Automatically computed *tile* height, distributed across the column according to weights.
+    /// Automatically computed *tile* cross span, distributed across the column according to
+    /// weights.
     ///
-    /// This controls the tile height rather than the window height because it's easier in the auto
-    /// height distribution algorithm.
+    /// This controls the tile cross span rather than the window cross span because it's easier in
+    /// the auto-size distribution algorithm.
     Auto { weight: f64 },
-    /// Fixed *window* height in logical pixels.
+    /// Fixed *window* cross span in logical pixels.
     Fixed(f64),
-    /// One of the preset heights (tile or window).
+    /// One of the preset cross spans (tile or window).
     Preset(usize),
 }
 
@@ -1428,7 +1433,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let movement_config = anim_config.unwrap_or(self.options.animations.window_movement.0);
 
         // Animate movement of other tiles.
-        // FIXME: tiles can move by X too, in a centered or resizing layout with one window smaller
+        // FIXME: tiles can move along the main axis too, in a centered or resizing layout with
+        // one window smaller
         // than the others.
         let offset_y = column.tile_offset(tile_idx + 1).y - column.tile_offset(tile_idx).y;
         for tile in &mut column.tiles[tile_idx + 1..] {
@@ -1680,7 +1686,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // When a column goes between fullscreen and non-fullscreen, the tiles origin can change.
         // The change comes from things like ignoring struts and hiding the tab indicator in
-        // fullscreen, so both in X and Y directions.
+        // fullscreen, so it can happen on both the main and cross axes.
         let column = &mut self.columns[col_idx];
         let new_origin = column.tiles_origin();
         let origin_delta = prev_origin - new_origin;
@@ -1742,8 +1748,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // We might need to move the view to ensure the resized window is still visible. But
             // only do it when the view isn't frozen by an interactive resize or a view gesture.
             if self.interactive_resize.is_none() && !self.view_offset.is_gesture() {
-                // Synchronize the horizontal view movement with the resize so that it looks nice.
-                // This is especially important for always-centered view.
+                // Synchronize the view movement along the main axis with the resize so that it
+                // looks nice. This is especially important for always-centered view.
                 let config = if ongoing_resize_anim {
                     self.options.animations.window_resize.anim
                 } else {
@@ -4491,7 +4497,7 @@ impl<W: LayoutElement> Column<W> {
         );
 
         // Inserting a tile pushes down all tiles below it, but also in always-centering mode it
-        // will affect the X position of all tiles in the column.
+        // will affect the main-axis position of all tiles in the column.
         let mut prev_offsets = Vec::with_capacity(self.tiles.len() + 1);
         prev_offsets.extend(self.tile_offsets().take(self.tiles.len()));
 
@@ -4547,7 +4553,7 @@ impl<W: LayoutElement> Column<W> {
             if tile.resize_animation().is_some() {
                 // If there's a resize animation (that may have just started in
                 // tile.update_window()), then the apparent size change is smooth with no sudden
-                // jumps. This corresponds to adding an Y animation to tiles below.
+                // jumps. This corresponds to adding a cross-axis animation to tiles below.
                 for tile in &mut self.tiles[tile_idx + 1..] {
                     tile.animate_move_y_from_with_config(
                         offset,
@@ -4563,9 +4569,9 @@ impl<W: LayoutElement> Column<W> {
                 // The latter case could also cancel an ongoing resize animation.
                 //
                 // Now, stationary tiles below shouldn't react to this offset change in any way,
-                // i.e. their apparent Y position should jump together with the resize. However,
-                // tiles below that are already animating an Y movement should offset their
-                // animations to avoid the jump.
+                // i.e. their apparent cross-axis position should jump together with the resize.
+                // However, tiles below that are already animating a cross-axis movement should
+                // offset their animations to avoid the jump.
                 //
                 // Notably, this is necessary to fix the animation jump when resizing height back
                 // and forth in quick succession (in a way that cancels the resize animation).
@@ -4937,7 +4943,7 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn width(&self) -> f64 {
-        let mut tiles_width = self
+        let mut max_tile_main_span = self
             .data
             .iter()
             .map(|data| NotNan::new(data.size.w).unwrap())
@@ -4947,10 +4953,10 @@ impl<W: LayoutElement> Column<W> {
 
         if self.display_mode == ColumnDisplay::Tabbed && self.sizing_mode().is_normal() {
             let extra_size = self.tab_indicator.extra_size(self.tiles.len(), self.scale);
-            tiles_width += extra_size.w;
+            max_tile_main_span += extra_size.w;
         }
 
-        tiles_width
+        max_tile_main_span
     }
 
     fn focus_index(&mut self, index: u8) {
@@ -4974,50 +4980,39 @@ impl<W: LayoutElement> Column<W> {
         self.activate_idx(self.tiles.len() - 1);
     }
 
-    fn move_up(&mut self) -> bool {
-        let new_idx = self.active_tile_idx.saturating_sub(1);
-        if self.active_tile_idx == new_idx {
+    fn move_active_tile_to_adjacent(&mut self, new_idx: usize) -> bool {
+        let old_idx = self.active_tile_idx;
+        if old_idx == new_idx {
             return false;
         }
 
-        let mut ys = self.tile_offsets().skip(self.active_tile_idx);
-        let active_y = ys.next().unwrap().y;
-        let next_y = ys.next().unwrap().y;
-        drop(ys);
+        let active_cross_pos = self.tile_offset(old_idx).y;
+        let adjacent_cross_pos = self.tile_offset(new_idx).y;
 
-        self.tiles.swap(self.active_tile_idx, new_idx);
-        self.data.swap(self.active_tile_idx, new_idx);
+        self.tiles.swap(old_idx, new_idx);
+        self.data.swap(old_idx, new_idx);
         self.active_tile_idx = new_idx;
 
-        // Animate the movement.
-        let new_active_y = self.tile_offset(new_idx).y;
-        self.tiles[new_idx].animate_move_y_from(active_y - new_active_y);
-        self.tiles[new_idx + 1].animate_move_y_from(active_y - next_y);
+        // Animate the movement along the cross axis.
+        let new_active_cross_pos = self.tile_offset(new_idx).y;
+        self.tiles[new_idx].animate_move_y_from(active_cross_pos - new_active_cross_pos);
+        if new_idx < old_idx {
+            self.tiles[new_idx + 1].animate_move_y_from(active_cross_pos - adjacent_cross_pos);
+        } else {
+            self.tiles[new_idx - 1].animate_move_y_from(adjacent_cross_pos - active_cross_pos);
+        }
 
         true
     }
 
+    fn move_up(&mut self) -> bool {
+        let new_idx = self.active_tile_idx.saturating_sub(1);
+        self.move_active_tile_to_adjacent(new_idx)
+    }
+
     fn move_down(&mut self) -> bool {
         let new_idx = min(self.active_tile_idx + 1, self.tiles.len() - 1);
-        if self.active_tile_idx == new_idx {
-            return false;
-        }
-
-        let mut ys = self.tile_offsets().skip(self.active_tile_idx);
-        let active_y = ys.next().unwrap().y;
-        let next_y = ys.next().unwrap().y;
-        drop(ys);
-
-        self.tiles.swap(self.active_tile_idx, new_idx);
-        self.data.swap(self.active_tile_idx, new_idx);
-        self.active_tile_idx = new_idx;
-
-        // Animate the movement.
-        let new_active_y = self.tile_offset(new_idx).y;
-        self.tiles[new_idx].animate_move_y_from(active_y - new_active_y);
-        self.tiles[new_idx - 1].animate_move_y_from(next_y - active_y);
-
-        true
+        self.move_active_tile_to_adjacent(new_idx)
     }
 
     fn toggle_width(&mut self, tile_idx: Option<usize>, forwards: bool) {
@@ -5361,7 +5356,7 @@ impl<W: LayoutElement> Column<W> {
         // Animate the movement.
         //
         // We're doing some shortcuts here because we know that currently normal vs. tabbed can
-        // only cause a vertical shift + a shift to the origin.
+        // only cause a cross-axis shift + a shift to the origin.
         //
         // Doing it this way to avoid storing all tile positions in a vector. If more display modes
         // are added it might be simpler to just collect everything into a smallvec.
@@ -5370,18 +5365,17 @@ impl<W: LayoutElement> Column<W> {
         let new_origin = self.tiles_origin();
         let origin_delta = prev_origin - new_origin;
 
-        // When need to walk the tiles in the normal display mode to get the right offsets.
+        // We need to walk the tiles in the normal display mode to get the right offsets.
         self.display_mode = ColumnDisplay::Normal;
         for (tile, pos) in self.tiles_mut() {
-            let mut y_delta = pos.y - prev_origin.y;
+            let mut cross_delta = pos.y - prev_origin.y;
 
-            // Invert the Y motion when transitioning *to* normal display mode.
+            // Invert the cross-axis motion when transitioning *to* normal display mode.
             if display == ColumnDisplay::Normal {
-                y_delta *= -1.;
+                cross_delta *= -1.;
             }
 
-            let mut delta = origin_delta;
-            delta.y += y_delta;
+            let delta = origin_delta + cross_axis_point(cross_delta);
             tile.animate_move_from(delta);
         }
 
@@ -5417,13 +5411,13 @@ impl<W: LayoutElement> Column<W> {
         match self.sizing_mode() {
             SizingMode::Normal => (),
             SizingMode::Maximized => {
-                origin.y += self.parent_area.loc.y;
+                origin += cross_axis_point(self.parent_area.loc.y);
                 return origin;
             }
             SizingMode::Fullscreen => return origin,
         }
 
-        origin.y += self.working_area.loc.y + self.options.layout.gaps;
+        origin += cross_axis_point(self.working_area.loc.y + self.options.layout.gaps);
 
         if self.display_mode == ColumnDisplay::Tabbed {
             origin += self
@@ -5457,7 +5451,8 @@ impl<W: LayoutElement> Column<W> {
             .map(NotNan::into_inner)
             .unwrap_or(0.);
 
-        let mut origin = self.tiles_origin();
+        let origin = self.tiles_origin();
+        let mut next_tile_cross_pos = origin.y;
 
         // Chain with a dummy value to be able to get one past all tiles' cross-axis offsets.
         let dummy = TileData {
@@ -5468,16 +5463,17 @@ impl<W: LayoutElement> Column<W> {
         let data = data.chain(iter::once(dummy));
 
         data.map(move |data| {
-            let mut pos = origin;
-
-            if center_tiles_on_main_axis {
-                pos.x += (max_tile_main_span - data.size.w) / 2.;
+            let main_pos = if center_tiles_on_main_axis {
+                origin.x + (max_tile_main_span - data.size.w) / 2.
             } else if data.interactively_resizing_by_left_edge {
-                pos.x += max_tile_main_span - data.size.w;
-            }
+                origin.x + max_tile_main_span - data.size.w
+            } else {
+                origin.x
+            };
+            let pos = Point::from((main_pos, next_tile_cross_pos));
 
             if !tabbed {
-                origin.y += data.size.h + gap_span;
+                next_tile_cross_pos += data.size.h + gap_span;
             }
 
             pos
