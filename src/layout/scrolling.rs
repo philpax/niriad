@@ -385,6 +385,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         map_point_for_axis(self.main_axis(), point)
     }
 
+    fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
+        map_size_for_axis(self.main_axis(), size)
+    }
+
     fn map_size_i32_out(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
         map_size_i32_for_axis(self.main_axis(), size)
     }
@@ -1516,13 +1520,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .tiles_with_render_positions_mut(false)
             .find(|(tile, _)| tile.window().id() == window)
             .unwrap();
-        tile_pos = map_point_for_axis(axis, tile_pos);
 
         let Some(snapshot) = tile.take_unmap_snapshot() else {
             return;
         };
 
-        let tile_size = tile.tile_size();
+        let tile_size = map_size_for_axis(axis, tile.tile_size());
 
         let (col_idx, tile_idx) = self
             .columns
@@ -1544,7 +1547,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        tile_pos.x += self.view_pos();
+        if axis == MainAxis::Vertical {
+            tile_pos.y += self.view_pos();
+        } else {
+            tile_pos.x += self.view_pos();
+        }
 
         if col_idx < self.active_column_idx {
             let offset = if removing_last {
@@ -1562,7 +1569,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         .map(NotNan::into_inner)
                         .unwrap()
             };
-            tile_pos.x -= offset;
+            if axis == MainAxis::Vertical {
+                tile_pos.y -= offset;
+            } else {
+                tile_pos.x -= offset;
+            }
         }
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
@@ -2975,12 +2986,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let scale = Scale::from(self.scale);
 
         // Draw the closing windows on top of the other windows.
-        if self.main_axis() == MainAxis::Horizontal {
-            let view_rect = Rectangle::new(Point::from((self.view_pos(), 0.)), self.view_size);
-            for closing in self.closing_windows.iter().rev() {
-                let elem = closing.render(ctx.as_gles(), view_rect, scale);
-                push(elem.into());
-            }
+        let view_size = self.map_size_out(self.view_size);
+        let view_loc = if self.main_axis() == MainAxis::Vertical {
+            Point::from((0., self.view_pos()))
+        } else {
+            Point::from((self.view_pos(), 0.))
+        };
+        let view_rect = Rectangle::new(view_loc, view_size);
+        for closing in self.closing_windows.iter().rev() {
+            let elem = closing.render(ctx.as_gles(), view_rect, scale);
+            push(elem.into());
         }
 
         if self.columns.is_empty() {

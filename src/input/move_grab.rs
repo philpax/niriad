@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use niri_config::MainAxis;
 use smithay::backend::input::ButtonState;
 use smithay::desktop::Window;
 use smithay::input::pointer::{
@@ -188,19 +189,27 @@ impl MoveGrab {
             // Check if the gesture moved far enough to decide.
             let c = self.new_location - self.start_data.location();
             if c.x * c.x + c.y * c.y >= 8. * 8. {
-                let is_floating = data
+                let (is_floating, view_axis_vertical) = data
                     .niri
                     .layout
                     .workspaces()
                     .find_map(|(_, _, ws)| {
-                        ws.windows()
-                            .any(|w| w.window == self.window)
-                            .then(|| ws.is_floating(&self.window))
+                        ws.windows().any(|w| w.window == self.window).then(|| {
+                            (
+                                ws.is_floating(&self.window),
+                                ws.main_axis() == MainAxis::Vertical,
+                            )
+                        })
                     })
-                    .unwrap_or(false);
+                    .unwrap_or((false, false));
 
-                let is_view_offset =
-                    self.enable_view_offset && !is_floating && c.x.abs() > c.y.abs();
+                let is_view_offset = self.enable_view_offset
+                    && !is_floating
+                    && if view_axis_vertical {
+                        c.y.abs() > c.x.abs()
+                    } else {
+                        c.x.abs() > c.y.abs()
+                    };
 
                 let started = if is_view_offset {
                     self.begin_view_offset(data)
@@ -241,11 +250,26 @@ impl MoveGrab {
                 }
             }
             GestureState::ViewOffset => {
-                let res = data.niri.layout.view_offset_gesture_update(
-                    -relative_delta.x,
-                    timestamp,
-                    false,
-                );
+                let view_axis_vertical = data
+                    .niri
+                    .layout
+                    .workspaces()
+                    .find_map(|(_, _, ws)| {
+                        ws.windows()
+                            .any(|w| w.window == self.window)
+                            .then(|| ws.main_axis() == MainAxis::Vertical)
+                    })
+                    .unwrap_or(false);
+                let view_delta = if view_axis_vertical {
+                    -relative_delta.y
+                } else {
+                    -relative_delta.x
+                };
+
+                let res = data
+                    .niri
+                    .layout
+                    .view_offset_gesture_update(view_delta, timestamp, false);
                 if let Some(output) = res {
                     if let Some(output) = output {
                         data.niri.queue_redraw(&output);

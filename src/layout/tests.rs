@@ -1689,6 +1689,83 @@ fn vertical_main_axis_places_columns_vertically() {
 }
 
 #[test]
+fn vertical_main_axis_insert_position_follows_y() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+        ],
+    );
+
+    let ws = layout.active_workspace().unwrap();
+    let mut centers: Vec<_> = ws
+        .tiles_with_render_positions()
+        .map(|(tile, pos, _)| {
+            let size = tile.window().size().to_f64();
+            Point::from((pos.x + size.w / 2., pos.y + size.h / 2.))
+        })
+        .collect();
+    centers.sort_by(|a, b| a.y.total_cmp(&b.y));
+
+    assert_eq!(centers.len(), 2);
+
+    let insert_col_idx = |center| match ws.scrolling_insert_position(center) {
+        super::monitor::InsertPosition::NewColumn(idx)
+        | super::monitor::InsertPosition::InColumn(idx, _) => idx,
+        super::monitor::InsertPosition::Floating => unreachable!(),
+    };
+
+    let upper_idx = insert_col_idx(centers[0]);
+    let lower_idx = insert_col_idx(centers[1]);
+
+    assert!(
+        lower_idx > upper_idx,
+        "expected insert position to progress with y, got upper={upper_idx}, lower={lower_idx}"
+    );
+}
+
+#[test]
+fn vertical_main_axis_dnd_edge_scroll_uses_vertical_edges() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+        ],
+    );
+
+    let ws = layout.active_workspace_mut().unwrap();
+    let area = ws.working_area();
+
+    ws.dnd_scroll_gesture_begin();
+
+    let center =
+        Point::<f64, Logical>::from((area.loc.x + area.size.w / 2., area.loc.y + area.size.h / 2.));
+    let left = Point::from((area.loc.x + 1., center.y));
+    let top = Point::from((center.x, area.loc.y + 1.));
+
+    assert!(!ws.dnd_scroll_gesture_scroll(left, 1.));
+    assert!(ws.dnd_scroll_gesture_scroll(top, 1.));
+}
+
+#[test]
 fn operations_dont_panic() {
     if std::env::var_os("RUN_SLOW_TESTS").is_none() {
         eprintln!("ignoring slow test");

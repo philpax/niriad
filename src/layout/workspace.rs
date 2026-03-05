@@ -347,6 +347,10 @@ impl<W: LayoutElement> Workspace<W> {
         self.id
     }
 
+    pub fn main_axis(&self) -> MainAxis {
+        self.options.layout.main_axis
+    }
+
     pub fn name(&self) -> Option<&String> {
         self.name.as_ref()
     }

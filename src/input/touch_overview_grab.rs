@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use niri_config::MainAxis;
 use smithay::desktop::Window;
 use smithay::input::touch::{
     DownEvent, GrabStartData as TouchGrabStartData, MotionEvent, OrientationEvent, ShapeEvent,
@@ -191,7 +192,20 @@ impl TouchGrab<State> for TouchOverviewGrab {
 
             // Check if the gesture moved far enough to decide. Threshold copied from libadwaita.
             if c.x * c.x + c.y * c.y >= 16. * 16. {
-                if let Some(ws_id) = self.workspace_id.filter(|_| c.x.abs() > c.y.abs()) {
+                let start_view_offset = self
+                    .workspace_id
+                    .and_then(|ws_id| {
+                        layout.find_workspace_by_id(ws_id).map(|(_, ws)| {
+                            if ws.main_axis() == MainAxis::Vertical {
+                                c.y.abs() > c.x.abs()
+                            } else {
+                                c.x.abs() > c.y.abs()
+                            }
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if let Some(ws_id) = self.workspace_id.filter(|_| start_view_offset) {
                     if let Some((ws_idx, ws)) = layout.find_workspace_by_id(ws_id) {
                         if ws.current_output() == Some(&self.output) {
                             layout.view_offset_gesture_begin(&self.output, Some(ws_idx), false);
@@ -215,13 +229,32 @@ impl TouchGrab<State> for TouchOverviewGrab {
         let delta = event.location - self.last_location;
         self.last_location = event.location;
 
+        let view_axis_vertical = self
+            .workspace_id
+            .and_then(|ws_id| {
+                layout
+                    .find_workspace_by_id(ws_id)
+                    .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+            })
+            .unwrap_or(false);
+        let view_delta = if view_axis_vertical {
+            -delta.y
+        } else {
+            -delta.x
+        };
+        let workspace_delta = if view_axis_vertical {
+            -delta.x
+        } else {
+            -delta.y
+        };
+
         let ongoing = match self.gesture {
             GestureState::Recognizing => unreachable!(),
             GestureState::ViewOffset => layout
-                .view_offset_gesture_update(-delta.x, timestamp, false)
+                .view_offset_gesture_update(view_delta, timestamp, false)
                 .is_some(),
             GestureState::WorkspaceSwitch => layout
-                .workspace_switch_gesture_update(-delta.y, timestamp, false)
+                .workspace_switch_gesture_update(workspace_delta, timestamp, false)
                 .is_some(),
             GestureState::InteractiveMove => {
                 let window = self.window.as_ref().unwrap();

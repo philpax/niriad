@@ -6,7 +6,8 @@ use std::time::Duration;
 use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
-    Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
+    Action, Bind, Binds, Config, Key, MainAxis, ModKey, Modifiers, MruDirection, SwitchBinds,
+    Trigger,
 };
 use niri_ipc::LayoutSwitchTarget;
 use smithay::backend::input::{
@@ -2826,6 +2827,7 @@ impl State {
                 if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
                     let ws_id = ws.id();
                     let ws_idx = self.niri.layout.find_workspace_by_id(ws_id).unwrap().0;
+                    let view_axis_vertical = ws.main_axis() == MainAxis::Vertical;
 
                     self.niri.layout.focus_output(&output);
 
@@ -2838,7 +2840,13 @@ impl State {
                     self.niri
                         .layout
                         .view_offset_gesture_begin(&output, Some(ws_idx), false);
-                    let grab = SpatialMovementGrab::new(start_data, output, ws_id, true);
+                    let grab = SpatialMovementGrab::new(
+                        start_data,
+                        output,
+                        ws_id,
+                        view_axis_vertical,
+                        true,
+                    );
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -2864,6 +2872,7 @@ impl State {
 
                 if let Some((output, ws)) = output_ws {
                     let ws_id = ws.id();
+                    let view_axis_vertical = ws.main_axis() == MainAxis::Vertical;
 
                     self.niri.layout.focus_output(&output);
 
@@ -2873,7 +2882,13 @@ impl State {
                         button: button_code,
                         location,
                     };
-                    let grab = SpatialMovementGrab::new(start_data, output, ws_id, false);
+                    let grab = SpatialMovementGrab::new(
+                        start_data,
+                        output,
+                        ws_id,
+                        view_axis_vertical,
+                        false,
+                    );
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -3304,10 +3319,20 @@ impl State {
             if should_handle_in_overview && modifiers.is_empty() {
                 let mut redraw = false;
 
+                let view_axis_vertical = self
+                    .niri
+                    .workspace_under_cursor(true)
+                    .is_some_and(|(_, ws)| ws.main_axis() == MainAxis::Vertical);
+                let (gesture_dx, gesture_dy, view_delta, workspace_delta) = if view_axis_vertical {
+                    (vertical, horizontal, vertical, horizontal)
+                } else {
+                    (horizontal, vertical, horizontal, vertical)
+                };
+
                 let action = self
                     .niri
                     .overview_scroll_swipe_gesture
-                    .update(horizontal, vertical);
+                    .update(gesture_dx, gesture_dy);
                 let is_vertical = self.niri.overview_scroll_swipe_gesture.is_vertical();
 
                 if action.end() {
@@ -3336,10 +3361,11 @@ impl State {
                             }
                         }
 
-                        let res = self
-                            .niri
-                            .layout
-                            .workspace_switch_gesture_update(vertical, timestamp, true);
+                        let res = self.niri.layout.workspace_switch_gesture_update(
+                            workspace_delta,
+                            timestamp,
+                            true,
+                        );
                         if let Some(Some(_)) = res {
                             redraw = true;
                         }
@@ -3362,7 +3388,7 @@ impl State {
                         let res = self
                             .niri
                             .layout
-                            .view_offset_gesture_update(horizontal, timestamp, true);
+                            .view_offset_gesture_update(view_delta, timestamp, true);
                         if let Some(Some(_)) = res {
                             redraw = true;
                         }
@@ -3895,6 +3921,19 @@ impl State {
         }
 
         let is_overview_open = self.niri.layout.is_overview_open();
+        let view_axis_vertical = if is_overview_open {
+            self.niri
+                .workspace_under_cursor(true)
+                .is_some_and(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+        } else {
+            self.niri
+                .output_under_cursor()
+                .and_then(|output| {
+                    let mon = self.niri.layout.monitor_for_output(&output)?;
+                    Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
+                })
+                .unwrap_or(false)
+        };
 
         if let Some((cx, cy)) = &mut self.niri.gesture_swipe_3f_cumulative {
             *cx += delta_x;
@@ -3906,7 +3945,13 @@ impl State {
                 self.niri.gesture_swipe_3f_cumulative = None;
 
                 if let Some(output) = self.niri.output_under_cursor() {
-                    if cx.abs() > cy.abs() {
+                    let start_view_offset = if view_axis_vertical {
+                        cy.abs() > cx.abs()
+                    } else {
+                        cx.abs() > cy.abs()
+                    };
+
+                    if start_view_offset {
                         let output_ws = if is_overview_open {
                             self.niri.workspace_under_cursor(true)
                         } else {
@@ -3934,12 +3979,17 @@ impl State {
         }
 
         let timestamp = Duration::from_micros(event.time());
+        let (view_delta, workspace_delta) = if view_axis_vertical {
+            (delta_y, delta_x)
+        } else {
+            (delta_x, delta_y)
+        };
 
         let mut handled = false;
-        let res = self
-            .niri
-            .layout
-            .workspace_switch_gesture_update(delta_y, timestamp, true);
+        let res =
+            self.niri
+                .layout
+                .workspace_switch_gesture_update(workspace_delta, timestamp, true);
         if let Some(output) = res {
             if let Some(output) = output {
                 self.niri.queue_redraw(&output);
@@ -3950,7 +4000,7 @@ impl State {
         let res = self
             .niri
             .layout
-            .view_offset_gesture_update(delta_x, timestamp, true);
+            .view_offset_gesture_update(view_delta, timestamp, true);
         if let Some(output) = res {
             if let Some(output) = output {
                 self.niri.queue_redraw(&output);
