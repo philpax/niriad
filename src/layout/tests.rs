@@ -1766,6 +1766,44 @@ fn vertical_main_axis_dnd_edge_scroll_uses_vertical_edges() {
 }
 
 #[test]
+fn vertical_main_axis_overview_places_workspaces_horizontally() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::FocusWorkspaceDown,
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::ToggleOverview,
+        ],
+    );
+
+    let output = layout
+        .outputs()
+        .find(|output| output.name() == "output1")
+        .cloned()
+        .unwrap();
+    let monitor = layout.monitor_for_output(&output).unwrap();
+
+    let geos: Vec<_> = monitor.workspaces_render_geo().take(2).collect();
+    assert_eq!(geos.len(), 2);
+
+    let dx = (geos[0].loc.x - geos[1].loc.x).abs();
+    let dy = (geos[0].loc.y - geos[1].loc.y).abs();
+    assert!(
+        dx > dy,
+        "expected overview workspaces to be arranged horizontally, got dx={dx}, dy={dy}"
+    );
+}
+
+#[test]
 fn vertical_main_axis_set_column_width_changes_tile_height() {
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;

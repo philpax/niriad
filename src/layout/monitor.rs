@@ -3,7 +3,7 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart};
+use niri_config::{CornerRadius, LayoutPart, MainAxis};
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
@@ -44,6 +44,29 @@ const WORKSPACE_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
 ///
 /// This constant is tied to the default dnd-edge-workspace-switch max-speed setting.
 const WORKSPACE_DND_EDGE_SCROLL_MOVEMENT: f64 = 1500.;
+
+fn map_point_for_axis(axis: MainAxis, point: Point<f64, Logical>) -> Point<f64, Logical> {
+    if axis == MainAxis::Vertical {
+        Point::from((point.y, point.x))
+    } else {
+        point
+    }
+}
+
+fn map_size_for_axis(axis: MainAxis, size: Size<f64, Logical>) -> Size<f64, Logical> {
+    if axis == MainAxis::Vertical {
+        Size::from((size.h, size.w))
+    } else {
+        size
+    }
+}
+
+fn map_rect_for_axis(axis: MainAxis, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+    Rectangle::new(
+        map_point_for_axis(axis, rect.loc),
+        map_size_for_axis(axis, rect.size),
+    )
+}
 
 #[derive(Debug)]
 pub struct Monitor<W: LayoutElement> {
@@ -373,6 +396,34 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn active_workspace_ref(&self) -> &Workspace<W> {
         &self.workspaces[self.active_workspace_idx]
+    }
+
+    fn overview_axis(&self) -> MainAxis {
+        self.active_workspace_ref().main_axis()
+    }
+
+    fn map_point_in(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+        map_point_for_axis(self.overview_axis(), point)
+    }
+
+    fn map_point_out(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+        map_point_for_axis(self.overview_axis(), point)
+    }
+
+    fn map_size_in(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
+        map_size_for_axis(self.overview_axis(), size)
+    }
+
+    fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
+        map_size_for_axis(self.overview_axis(), size)
+    }
+
+    fn map_rect_in(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+        map_rect_for_axis(self.overview_axis(), rect)
+    }
+
+    fn map_rect_out(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+        map_rect_for_axis(self.overview_axis(), rect)
     }
 
     pub fn find_named_workspace(&self, workspace_name: &str) -> Option<&Workspace<W>> {
@@ -1152,6 +1203,7 @@ impl<W: LayoutElement> Monitor<W> {
                     let hint_height = gap - hint_gap * 2.;
 
                     let next_ws_geo = self.workspaces_render_geo().nth(ws_idx).unwrap();
+                    let next_ws_geo = self.map_rect_in(next_ws_geo);
                     let hint_width = round_logical_in_physical(scale, next_ws_geo.size.w * 0.75);
                     let hint_x =
                         round_logical_in_physical(scale, (next_ws_geo.size.w - hint_width) / 2.);
@@ -1169,14 +1221,14 @@ impl<W: LayoutElement> Monitor<W> {
                     let view_rect = Rectangle::new(hint_loc_diff, next_ws_geo.size);
 
                     self.insert_hint_element.update_render_elements(
-                        hint_size,
-                        view_rect,
+                        self.map_size_out(hint_size),
+                        self.map_rect_out(view_rect),
                         CornerRadius::default(),
                         scale,
                     );
                     self.insert_hint_render_loc = Some(InsertHintRenderLoc {
                         workspace: hint.workspace,
-                        location: hint_loc,
+                        location: self.map_point_out(hint_loc),
                     });
                 }
             }
@@ -1354,14 +1406,16 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     fn workspace_size(&self, zoom: f64) -> Size<f64, Logical> {
-        let ws_size = self.view_size.upscale(zoom);
+        let view_size = self.map_size_in(self.view_size);
+        let ws_size = view_size.upscale(zoom);
         let scale = self.scale.fractional_scale();
         ws_size.to_physical_precise_ceil(scale).to_logical(scale)
     }
 
     fn workspace_gap(&self, zoom: f64) -> f64 {
+        let view_size = self.map_size_in(self.view_size);
         let scale = self.scale.fractional_scale();
-        let gap = self.view_size.h * 0.1 * zoom;
+        let gap = view_size.h * 0.1 * zoom;
         round_logical_in_physical_max1(scale, gap)
     }
 
@@ -1475,11 +1529,14 @@ impl<W: LayoutElement> Monitor<W> {
         let scale = self.scale.fractional_scale();
         let zoom = self.overview_zoom();
 
+        let axis = self.overview_axis();
+        let view_size = map_size_for_axis(axis, self.view_size);
+
         let ws_size = self.workspace_size(zoom);
         let gap = self.workspace_gap(zoom);
         let ws_height_with_gap = ws_size.h + gap;
 
-        let static_offset = (self.view_size.to_point() - ws_size.to_point()).downscale(2.);
+        let static_offset = (view_size.to_point() - ws_size.to_point()).downscale(2.);
         let static_offset = static_offset
             .to_physical_precise_round(scale)
             .to_logical(scale);
@@ -1498,7 +1555,7 @@ impl<W: LayoutElement> Monitor<W> {
             // monitor edge with y = 0. So, post-round the location too.
             let loc = loc.to_physical_precise_round(scale).to_logical(scale);
 
-            Rectangle::new(loc, ws_size)
+            map_rect_for_axis(axis, Rectangle::new(loc, ws_size))
         })
     }
 
@@ -1540,23 +1597,33 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<(&Workspace<W>, Rectangle<f64, Logical>)> {
+        let pos_within_output = self.map_point_in(pos_within_output);
+        let view_size = self.map_size_in(self.view_size);
+
         let (ws, geo) = self.workspaces_with_render_geo().find_map(|(ws, geo)| {
+            let geo = self.map_rect_in(geo);
+
             // Extend width to entire output.
             let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((self.view_size.w, geo.size.h));
+            let size = Size::from((view_size.w, geo.size.h));
             let bounds = Rectangle::new(loc, size);
 
             bounds.contains(pos_within_output).then_some((ws, geo))
         })?;
-        Some((ws, geo))
+
+        Some((ws, self.map_rect_out(geo)))
     }
 
     pub fn workspace_under_narrow(
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<&Workspace<W>> {
-        self.workspaces_with_render_geo()
-            .find_map(|(ws, geo)| geo.contains(pos_within_output).then_some(ws))
+        let pos_within_output = self.map_point_in(pos_within_output);
+
+        self.workspaces_with_render_geo().find_map(|(ws, geo)| {
+            let geo = self.map_rect_in(geo);
+            geo.contains(pos_within_output).then_some(ws)
+        })
     }
 
     pub fn window_under(&self, pos_within_output: Point<f64, Logical>) -> Option<(&W, HitType)> {
@@ -1588,12 +1655,15 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> (InsertWorkspace, Rectangle<f64, Logical>) {
+        let pos_within_output = self.map_point_in(pos_within_output);
+
         let mut iter = self.workspaces_with_render_geo_idx();
 
         let dummy = Rectangle::default();
 
         // Monitors always have at least one workspace.
         let ((idx, ws), geo) = iter.next().unwrap();
+        let geo = self.map_rect_in(geo);
 
         // Check if above first.
         if pos_within_output.y < geo.loc.y {
@@ -1606,12 +1676,14 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Check first.
         if contains(geo) {
-            return (InsertWorkspace::Existing(ws.id()), geo);
+            return (InsertWorkspace::Existing(ws.id()), self.map_rect_out(geo));
         }
 
         let mut last_geo = geo;
         let mut last_idx = idx;
         for ((idx, ws), geo) in iter {
+            let geo = self.map_rect_in(geo);
+
             // Check gap above.
             let gap_loc = Point::from((last_geo.loc.x, last_geo.loc.y + last_geo.size.h));
             let gap_size = Size::from((geo.size.w, geo.loc.y - gap_loc.y));
@@ -1622,7 +1694,7 @@ impl<W: LayoutElement> Monitor<W> {
 
             // Check workspace itself.
             if contains(geo) {
-                return (InsertWorkspace::Existing(ws.id()), geo);
+                return (InsertWorkspace::Existing(ws.id()), self.map_rect_out(geo));
             }
 
             last_geo = geo;
@@ -1884,6 +1956,10 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn dnd_scroll_gesture_scroll(&mut self, pos: Point<f64, Logical>, speed: f64) -> bool {
         let zoom = self.overview_zoom();
 
+        let pos = self.map_point_in(pos);
+        let view_size = self.map_size_in(self.view_size);
+        let working_area = self.map_rect_in(self.working_area);
+
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
             return false;
         };
@@ -1898,12 +1974,12 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
         // after using the hot corner or during horizontal scroll.
-        let width = self.view_size.w * zoom;
-        let x = pos.x - (self.view_size.w - width) / 2.;
+        let width = view_size.w * zoom;
+        let x = pos.x - (view_size.w - width) / 2.;
 
         // Consider the working area so layer-shell docks and such don't prevent scrolling.
-        let y = pos.y - self.working_area.loc.y;
-        let height = self.working_area.size.h;
+        let y = pos.y - working_area.loc.y;
+        let height = working_area.size.h;
 
         let y = y.clamp(0., height);
         let trigger_height = trigger_height.clamp(0., height / 2.);
