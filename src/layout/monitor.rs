@@ -3,13 +3,14 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart, MainAxis};
+use niri_config::{CornerRadius, LayoutPart};
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use super::axis::AxisMap;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::scrolling::{Column, ColumnWidth};
 use super::tile::Tile;
@@ -44,29 +45,6 @@ const WORKSPACE_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
 ///
 /// This constant is tied to the default dnd-edge-workspace-switch max-speed setting.
 const WORKSPACE_DND_EDGE_SCROLL_MOVEMENT: f64 = 1500.;
-
-fn map_point_for_axis(axis: MainAxis, point: Point<f64, Logical>) -> Point<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Point::from((point.y, point.x))
-    } else {
-        point
-    }
-}
-
-fn map_size_for_axis(axis: MainAxis, size: Size<f64, Logical>) -> Size<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Size::from((size.h, size.w))
-    } else {
-        size
-    }
-}
-
-fn map_rect_for_axis(axis: MainAxis, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
-    Rectangle::new(
-        map_point_for_axis(axis, rect.loc),
-        map_size_for_axis(axis, rect.size),
-    )
-}
 
 #[derive(Debug)]
 pub struct Monitor<W: LayoutElement> {
@@ -398,32 +376,32 @@ impl<W: LayoutElement> Monitor<W> {
         &self.workspaces[self.active_workspace_idx]
     }
 
-    fn overview_axis(&self) -> MainAxis {
-        self.active_workspace_ref().main_axis()
+    fn overview_axis(&self) -> AxisMap {
+        AxisMap::new(self.active_workspace_ref().main_axis())
     }
 
     fn map_point_in(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        map_point_for_axis(self.overview_axis(), point)
+        self.overview_axis().point_in(point)
     }
 
     fn map_point_out(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        map_point_for_axis(self.overview_axis(), point)
+        self.overview_axis().point_out(point)
     }
 
     fn map_size_in(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        map_size_for_axis(self.overview_axis(), size)
+        self.overview_axis().size_in(size)
     }
 
     fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        map_size_for_axis(self.overview_axis(), size)
+        self.overview_axis().size_out(size)
     }
 
     fn map_rect_in(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
-        map_rect_for_axis(self.overview_axis(), rect)
+        self.overview_axis().rect_in(rect)
     }
 
     fn map_rect_out(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
-        map_rect_for_axis(self.overview_axis(), rect)
+        self.overview_axis().rect_out(rect)
     }
 
     pub fn find_named_workspace(&self, workspace_name: &str) -> Option<&Workspace<W>> {
@@ -1530,7 +1508,7 @@ impl<W: LayoutElement> Monitor<W> {
         let zoom = self.overview_zoom();
 
         let axis = self.overview_axis();
-        let view_size = map_size_for_axis(axis, self.view_size);
+        let view_size = axis.size_in(self.view_size);
 
         let ws_size = self.workspace_size(zoom);
         let gap = self.workspace_gap(zoom);
@@ -1555,7 +1533,7 @@ impl<W: LayoutElement> Monitor<W> {
             // monitor edge with y = 0. So, post-round the location too.
             let loc = loc.to_physical_precise_round(scale).to_logical(scale);
 
-            map_rect_for_axis(axis, Rectangle::new(loc, ws_size))
+            axis.rect_out(Rectangle::new(loc, ws_size))
         })
     }
 
@@ -1764,7 +1742,7 @@ impl<W: LayoutElement> Monitor<W> {
         //
         // FIXME: use proper bounds after fixing the Crop element.
         let crop_bounds = if self.workspace_switch.is_some() || self.overview_progress.is_some() {
-            if self.overview_axis() == MainAxis::Vertical {
+            if self.overview_axis().is_vertical() {
                 Rectangle::new(
                     Point::from((0, -i32::MAX / 2)),
                     Size::from((width, i32::MAX)),

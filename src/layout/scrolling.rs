@@ -4,12 +4,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedColumn, MainAxis, PresetSize, Struts};
+use niri_config::{CenterFocusedColumn, PresetSize, Struts};
 use niri_ipc::{ColumnDisplay, SizeChange, WindowLayout};
 use ordered_float::NotNan;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
+use super::axis::AxisMap;
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
@@ -29,58 +30,6 @@ use crate::window::ResolvedWindowRules;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
-
-fn map_point_for_axis(axis: MainAxis, point: Point<f64, Logical>) -> Point<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Point::from((point.y, point.x))
-    } else {
-        point
-    }
-}
-
-fn map_size_for_axis(axis: MainAxis, size: Size<f64, Logical>) -> Size<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Size::from((size.h, size.w))
-    } else {
-        size
-    }
-}
-
-fn map_size_i32_for_axis(axis: MainAxis, size: Size<i32, Logical>) -> Size<i32, Logical> {
-    if axis == MainAxis::Vertical {
-        Size::from((size.h, size.w))
-    } else {
-        size
-    }
-}
-
-fn map_resize_edges_for_axis(axis: MainAxis, edges: ResizeEdge) -> ResizeEdge {
-    if axis != MainAxis::Vertical {
-        return edges;
-    }
-
-    let mut mapped = ResizeEdge::empty();
-    if edges.contains(ResizeEdge::LEFT) {
-        mapped |= ResizeEdge::TOP;
-    }
-    if edges.contains(ResizeEdge::RIGHT) {
-        mapped |= ResizeEdge::BOTTOM;
-    }
-    if edges.contains(ResizeEdge::TOP) {
-        mapped |= ResizeEdge::LEFT;
-    }
-    if edges.contains(ResizeEdge::BOTTOM) {
-        mapped |= ResizeEdge::RIGHT;
-    }
-    mapped
-}
-
-fn map_rect_for_axis(axis: MainAxis, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
-    Rectangle::new(
-        map_point_for_axis(axis, rect.loc),
-        map_size_for_axis(axis, rect.size),
-    )
-}
 
 /// A scrollable-tiling space for windows.
 #[derive(Debug)]
@@ -342,9 +291,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         clock: Clock,
         options: Rc<Options>,
     ) -> Self {
-        let axis = options.layout.main_axis;
-        let view_size = map_size_for_axis(axis, view_size);
-        let parent_area = map_rect_for_axis(axis, parent_area);
+        let axis = AxisMap::new(options.layout.main_axis);
+        let view_size = axis.size_in(view_size);
+        let parent_area = axis.rect_in(parent_area);
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
         Self {
@@ -372,9 +321,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
-        let axis = options.layout.main_axis;
-        let view_size = map_size_for_axis(axis, view_size);
-        let parent_area = map_rect_for_axis(axis, parent_area);
+        let axis = AxisMap::new(options.layout.main_axis);
+        let view_size = axis.size_in(view_size);
+        let parent_area = axis.rect_in(parent_area);
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
         for (column, data) in zip(&mut self.columns, &mut self.data) {
@@ -394,28 +343,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
     }
 
-    fn main_axis(&self) -> MainAxis {
-        self.options.layout.main_axis
+    fn axis(&self) -> AxisMap {
+        AxisMap::new(self.options.layout.main_axis)
     }
 
     fn map_point_in(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        map_point_for_axis(self.main_axis(), point)
+        self.axis().point_in(point)
     }
 
     fn map_point_out(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        map_point_for_axis(self.main_axis(), point)
+        self.axis().point_out(point)
     }
 
     fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        map_size_for_axis(self.main_axis(), size)
+        self.axis().size_out(size)
     }
 
     fn map_size_i32_out(&self, size: Size<i32, Logical>) -> Size<i32, Logical> {
-        map_size_i32_for_axis(self.main_axis(), size)
+        self.axis().size_out(size)
     }
 
     fn map_rect_out(&self, rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
-        map_rect_for_axis(self.main_axis(), rect)
+        self.axis().rect_out(rect)
     }
 
     fn main_axis_point_out(&self, main: f64) -> Point<f64, Logical> {
@@ -1550,7 +1499,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         window: &W::Id,
         blocker: TransactionBlocker,
     ) {
-        let axis = self.main_axis();
+        let axis = self.axis();
         let (tile, mut tile_pos) = self
             .tiles_with_render_positions_mut(false)
             .find(|(tile, _)| tile.window().id() == window)
@@ -1560,7 +1509,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         };
 
-        let tile_size = map_size_for_axis(axis, tile.tile_size());
+        let tile_size = axis.size_out(tile.tile_size());
 
         let (col_idx, tile_idx) = self
             .columns
@@ -2478,7 +2427,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
-        let axis = self.main_axis();
+        let axis = self.axis();
         let view_off = Point::from((-self.view_pos(), 0.));
         self.columns_in_render_order()
             .flat_map(move |(col, col_x)| {
@@ -2488,7 +2437,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .map(move |(tile, tile_off, visible)| {
                         let pos =
                             view_off + col_off + col_render_off + tile_off + tile.render_offset();
-                        let pos = map_point_for_axis(axis, pos);
+                        let pos = axis.point_out(pos);
                         // Round to physical pixels.
                         let pos = pos.to_physical_precise_round(scale).to_logical(scale);
                         (tile, pos, visible)
@@ -2501,7 +2450,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         round: bool,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
-        let axis = self.main_axis();
+        let axis = self.axis();
         let view_off = Point::from((-self.view_pos(), 0.));
         self.columns_in_render_order_mut()
             .flat_map(move |(col, col_x)| {
@@ -2511,7 +2460,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .map(move |(tile, tile_off)| {
                         let mut pos =
                             view_off + col_off + col_render_off + tile_off + tile.render_offset();
-                        pos = map_point_for_axis(axis, pos);
+                        pos = axis.point_out(pos);
                         // Round to physical pixels.
                         if round {
                             pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -2523,7 +2472,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
         let scale = self.scale;
-        let axis = self.main_axis();
+        let axis = self.axis();
         let view_off = Point::from((-self.view_pos(), 0.));
 
         let col_xs = self.column_xs(self.data.iter().copied());
@@ -2535,7 +2484,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .enumerate()
                     .map(move |(tile_idx, (tile, tile_off))| {
                         let pos = view_off + col_off + tile_off;
-                        let pos = map_point_for_axis(axis, pos);
+                        let pos = axis.point_out(pos);
                         // Round to physical pixels.
                         let pos = pos.to_physical_precise_round(scale).to_logical(scale);
 
@@ -2669,7 +2618,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let (tile, tile_off) = col.tiles().nth(col.active_tile_idx).unwrap();
 
         let window_pos = view_off + tile_off + self.map_point_in(tile.window_loc());
-        let window_size = map_size_for_axis(self.main_axis(), tile.window_size());
+        let window_size = self.axis().size_in(tile.window_size());
         let window_rect = Rectangle::new(window_pos, window_size);
 
         let view = Rectangle::from_size(self.view_size);
@@ -2685,8 +2634,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     // window geometry (so they remain visible even if the window scrolls flush with
                     // the left/right edge of the screen), and vertically within the whole parent
                     // working area.
-                    let window_size = map_size_for_axis(self.main_axis(), tile.window_size());
-                    let window_loc = map_point_for_axis(self.main_axis(), tile.window_loc());
+                    let axis = self.axis();
+                    let window_size = axis.size_out(tile.window_size());
+                    let window_loc = axis.point_out(tile.window_loc());
                     let width = window_size.w;
                     let height = self.parent_area.size.h;
 
@@ -3645,7 +3595,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        let axis = self.main_axis();
+        let axis = self.axis();
 
         let col = self
             .columns
@@ -3663,8 +3613,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .find(|tile| tile.window().id() == &window)
             .unwrap();
 
-        let original_window_size = map_size_for_axis(axis, tile.window_size());
-        let edges = map_resize_edges_for_axis(axis, edges);
+        let original_window_size = axis.size_in(tile.window_size());
+        let edges = axis.resize_edges_in(edges);
 
         let resize = InteractiveResize {
             window,
@@ -3691,7 +3641,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        let delta = map_point_for_axis(self.main_axis(), delta);
+        let delta = self.axis().point_in(delta);
         let is_centering = self.is_centering_focused_column();
 
         let col = self
@@ -4020,7 +3970,7 @@ impl ColumnData {
 }
 
 impl TileData {
-    pub fn new<W: LayoutElement>(tile: &Tile<W>, height: WindowHeight, axis: MainAxis) -> Self {
+    pub fn new<W: LayoutElement>(tile: &Tile<W>, height: WindowHeight, axis: AxisMap) -> Self {
         let mut rv = Self {
             height,
             size: Size::default(),
@@ -4030,8 +3980,8 @@ impl TileData {
         rv
     }
 
-    pub fn update<W: LayoutElement>(&mut self, tile: &Tile<W>, axis: MainAxis) {
-        self.size = map_size_for_axis(axis, tile.tile_size());
+    pub fn update<W: LayoutElement>(&mut self, tile: &Tile<W>, axis: AxisMap) {
+        self.size = axis.size_in(tile.tile_size());
         self.interactively_resizing_by_left_edge = tile
             .window()
             .interactive_resize_data()
@@ -4141,8 +4091,8 @@ impl<W: LayoutElement> Column<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
-        let axis = options.layout.main_axis;
-        let tile_view_size = map_size_for_axis(axis, view_size);
+        let axis = AxisMap::new(options.layout.main_axis);
+        let tile_view_size = axis.size_out(view_size);
 
         let mut update_sizes = false;
 
@@ -4290,12 +4240,16 @@ impl<W: LayoutElement> Column<W> {
         }
     }
 
+    fn axis(&self) -> AxisMap {
+        AxisMap::new(self.options.layout.main_axis)
+    }
+
     fn map_size_in(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        map_size_for_axis(self.options.layout.main_axis, size)
+        self.axis().size_in(size)
     }
 
     fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        map_size_for_axis(self.options.layout.main_axis, size)
+        self.axis().size_out(size)
     }
 
     pub fn render_offset(&self) -> Point<f64, Logical> {
@@ -4458,7 +4412,7 @@ impl<W: LayoutElement> Column<W> {
 
         self.data.insert(
             idx,
-            TileData::new(&tile, WindowHeight::auto_1(), self.options.layout.main_axis),
+            TileData::new(&tile, WindowHeight::auto_1(), self.axis()),
         );
         self.tiles.insert(idx, tile);
         self.update_tile_sizes(true);
@@ -4475,6 +4429,8 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn update_window(&mut self, window: &W::Id) {
+        let axis = self.axis();
+
         let (tile_idx, tile) = self
             .tiles
             .iter_mut()
@@ -4485,7 +4441,7 @@ impl<W: LayoutElement> Column<W> {
         let prev_height = self.data[tile_idx].size.h;
 
         tile.update_window();
-        self.data[tile_idx].update(tile, self.options.layout.main_axis);
+        self.data[tile_idx].update(tile, axis);
 
         let offset = prev_height - self.data[tile_idx].size.h;
 
@@ -4567,7 +4523,7 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn update_tile_sizes_with_transaction(&mut self, animate: bool, transaction: Transaction) {
-        let axis = self.options.layout.main_axis;
+        let axis = self.axis();
         let sizing_mode = self.pending_sizing_mode();
         if matches!(sizing_mode, SizingMode::Fullscreen | SizingMode::Maximized) {
             for (tile_idx, tile) in self.tiles.iter_mut().enumerate() {
@@ -4583,7 +4539,7 @@ impl<W: LayoutElement> Column<W> {
                     tile.request_fullscreen(animate, transaction);
                 } else {
                     tile.request_maximized(
-                        map_size_for_axis(axis, self.parent_area.size),
+                        axis.size_out(self.parent_area.size),
                         animate,
                         transaction,
                     );
@@ -4598,7 +4554,7 @@ impl<W: LayoutElement> Column<W> {
             .tiles
             .iter()
             .map(Tile::min_size_nonfullscreen)
-            .map(|size| map_size_for_axis(axis, size))
+            .map(|size| axis.size_in(size))
             .map(|mut size| {
                 size.w = size.w.max(1.);
                 size.h = size.h.max(1.);
@@ -4609,7 +4565,7 @@ impl<W: LayoutElement> Column<W> {
             .tiles
             .iter()
             .map(Tile::max_size_nonfullscreen)
-            .map(|size| map_size_for_axis(axis, size))
+            .map(|size| axis.size_in(size))
             .collect();
 
         // Compute the column width.
@@ -4853,7 +4809,7 @@ impl<W: LayoutElement> Column<W> {
                 unreachable!()
             };
 
-            let size = map_size_for_axis(axis, Size::from((width, height)));
+            let size = axis.size_out(Size::from((width, height)));
 
             // In tabbed mode, only the visible window participates in the transaction.
             let is_active = tile_idx == self.active_tile_idx;
@@ -5559,7 +5515,7 @@ impl<W: LayoutElement> Column<W> {
             tile.verify_invariants();
 
             let mut data2 = *data;
-            data2.update(tile, self.options.layout.main_axis);
+            data2.update(tile, self.axis());
             assert_eq!(data, &data2, "tile data must be up to date");
 
             if matches!(data.height, WindowHeight::Fixed(_)) {
@@ -5575,8 +5531,7 @@ impl<W: LayoutElement> Column<W> {
             }
 
             let requested_size = tile.window().requested_size().unwrap();
-            let requested_size =
-                map_size_i32_for_axis(self.options.layout.main_axis, requested_size);
+            let requested_size = self.axis().size_in(requested_size);
             let requested_tile_height =
                 tile.tile_height_for_window_height(f64::from(requested_size.h));
             let min_tile_height = f64::max(1., self.map_size_in(tile.min_size_nonfullscreen()).h);

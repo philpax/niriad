@@ -18,6 +18,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
+use super::axis::AxisMap;
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
@@ -349,6 +350,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn main_axis(&self) -> MainAxis {
         self.options.layout.main_axis
+    }
+
+    fn axis(&self) -> AxisMap {
+        AxisMap::new(self.main_axis())
     }
 
     pub fn name(&self) -> Option<&String> {
@@ -893,13 +898,8 @@ impl<W: LayoutElement> Workspace<W> {
         width: Option<PresetSize>,
     ) -> ColumnWidth {
         let width = width.unwrap_or_else(|| {
-            let size = window.size();
-            let fixed = if self.options.layout.main_axis == MainAxis::Vertical {
-                size.h
-            } else {
-                size.w
-            };
-            PresetSize::Fixed(fixed)
+            let size = self.axis().size_in(window.size());
+            PresetSize::Fixed(size.w)
         });
         match width {
             PresetSize::Fixed(fixed) => {
@@ -1908,11 +1908,9 @@ impl<W: LayoutElement> Workspace<W> {
         let trigger_width = config.trigger_width;
 
         // This working area intentionally does not include extra struts from Options.
-        let (coord, span) = if self.options.layout.main_axis == MainAxis::Vertical {
-            (pos.y - self.working_area.loc.y, self.working_area.size.h)
-        } else {
-            (pos.x - self.working_area.loc.x, self.working_area.size.w)
-        };
+        let pos = self.axis().point_in(pos);
+        let working_area = self.axis().rect_in(self.working_area);
+        let (coord, span) = (pos.x - working_area.loc.x, working_area.size.w);
 
         let coord = coord.clamp(0., span);
         let trigger_width = trigger_width.clamp(0., span / 2.);
@@ -2028,19 +2026,9 @@ impl<W: LayoutElement> Workspace<W> {
             options.layout.background_color.to_array_unpremul(),
         );
 
-        let scrolling_view_size = if options.layout.main_axis == MainAxis::Vertical {
-            Size::from((self.view_size.h, self.view_size.w))
-        } else {
-            self.view_size
-        };
-        let scrolling_parent_area = if options.layout.main_axis == MainAxis::Vertical {
-            Rectangle::new(
-                Point::from((self.working_area.loc.y, self.working_area.loc.x)),
-                Size::from((self.working_area.size.h, self.working_area.size.w)),
-            )
-        } else {
-            self.working_area
-        };
+        let axis = AxisMap::new(options.layout.main_axis);
+        let scrolling_view_size = axis.size_in(self.view_size);
+        let scrolling_parent_area = axis.rect_in(self.working_area);
 
         assert_eq!(scrolling_view_size, self.scrolling.view_size());
         assert_eq!(scrolling_parent_area, self.scrolling.parent_area());

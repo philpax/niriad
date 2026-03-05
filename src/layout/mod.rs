@@ -39,8 +39,7 @@ use std::time::Duration;
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    Config, CornerRadius, LayoutPart, MainAxis, PresetSize, Workspace as WorkspaceConfig,
-    WorkspaceReference,
+    Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use scrolling::{Column, ColumnWidth};
@@ -53,6 +52,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
 use tile::{Tile, TileRenderElement};
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
 
+use self::axis::AxisMap;
 pub use self::monitor::MonitorRenderElement;
 use self::monitor::{Monitor, WorkspaceSwitch};
 use self::workspace::{OutputId, Workspace};
@@ -76,6 +76,7 @@ use crate::utils::{
 };
 use crate::window::ResolvedWindowRules;
 
+pub mod axis;
 pub mod closing_window;
 pub mod floating;
 pub mod focus_ring;
@@ -107,22 +108,6 @@ const OVERVIEW_GESTURE_RUBBER_BAND: RubberBand = RubberBand {
     stiffness: 0.5,
     limit: 0.05,
 };
-
-fn map_point_for_main_axis(axis: MainAxis, point: Point<f64, Logical>) -> Point<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Point::from((point.y, point.x))
-    } else {
-        point
-    }
-}
-
-fn map_size_for_main_axis(axis: MainAxis, size: Size<f64, Logical>) -> Size<f64, Logical> {
-    if axis == MainAxis::Vertical {
-        Size::from((size.h, size.w))
-    } else {
-        size
-    }
-}
 
 /// Size-relative units.
 pub struct SizeFrac;
@@ -615,9 +600,9 @@ impl<W: LayoutElement> InteractiveMoveData<W> {
         let mut window_size = self.tile.window_size();
         let mut window_loc = self.tile.window_loc();
         if !self.is_floating {
-            let axis = self.tile.options.layout.main_axis;
-            window_size = map_size_for_main_axis(axis, window_size);
-            window_loc = map_point_for_main_axis(axis, window_loc);
+            let axis = AxisMap::new(self.tile.options.layout.main_axis);
+            window_size = axis.size_out(window_size);
+            window_loc = axis.point_out(window_loc);
         }
 
         let pointer_offset_within_window = Point::from((
@@ -3839,7 +3824,7 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = mon.overview_zoom();
 
         let is_floating = ws.is_floating(&window_id);
-        let axis = ws.main_axis();
+        let axis = AxisMap::new(ws.main_axis());
 
         let (tile, tile_offset, _visible) = ws
             .tiles_with_render_positions()
@@ -3849,8 +3834,8 @@ impl<W: LayoutElement> Layout<W> {
         let mut window_offset = tile.window_loc();
         let mut window_size = tile.window_size();
         if !is_floating {
-            window_offset = map_point_for_main_axis(axis, window_offset);
-            window_size = map_size_for_main_axis(axis, window_size);
+            window_offset = axis.point_out(window_offset);
+            window_size = axis.size_out(window_size);
         }
 
         let tile_pos = ws_geo.loc + tile_offset.upscale(zoom);
@@ -3930,7 +3915,7 @@ impl<W: LayoutElement> Layout<W> {
                         let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
                         (
                             ws.is_floating(&window_id),
-                            ws.main_axis(),
+                            AxisMap::new(ws.main_axis()),
                             ws.tiles_mut()
                                 .find(|tile| *tile.window().id() == window_id)
                                 .unwrap(),
@@ -3941,7 +3926,7 @@ impl<W: LayoutElement> Layout<W> {
 
                 let mut move_offset = pointer_delta.upscale(factor);
                 if !is_floating {
-                    move_offset = map_point_for_main_axis(main_axis, move_offset);
+                    move_offset = main_axis.point_out(move_offset);
                 }
                 tile.interactive_move_offset = move_offset;
 
