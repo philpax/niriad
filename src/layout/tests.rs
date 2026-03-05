@@ -1843,6 +1843,60 @@ fn vertical_main_axis_interactive_resize_bottom_changes_tile_height() {
 }
 
 #[test]
+fn vertical_main_axis_interactive_move_tracks_pointer_along_y() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+        ],
+    );
+
+    let output = layout
+        .outputs()
+        .find(|o| o.name() == "output1")
+        .cloned()
+        .unwrap();
+
+    let (tile_pos, start) = {
+        let ws = layout.active_workspace().unwrap();
+        let (tile, tile_pos, _) = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| *tile.window().id() == 1)
+            .unwrap();
+
+        let start = tile_pos + tile.window_loc() + Point::from((10., 10.));
+        (tile_pos, start)
+    };
+
+    assert!(layout.interactive_move_begin(1, &output, start));
+
+    let delta = Point::from((0., 220.));
+    let pointer_pos = start + delta;
+    assert!(layout.interactive_move_update(&1, delta, output.clone(), pointer_pos));
+
+    let tile_pos_after = {
+        let ws = layout.active_workspace().unwrap();
+        ws.tiles_with_render_positions()
+            .find(|(tile, _, _)| *tile.window().id() == 1)
+            .unwrap()
+            .1
+    };
+
+    let moved_x = (tile_pos_after.x - tile_pos.x).abs();
+    let moved_y = (tile_pos_after.y - tile_pos.y).abs();
+    assert!(
+        moved_y > moved_x,
+        "expected move gesture to follow y in vertical mode, got dx={moved_x}, dy={moved_y}"
+    );
+}
+
+#[test]
 fn scrolling_windows_have_ipc_tile_positions() {
     let layout = check_ops([
         Op::AddOutput(1),
