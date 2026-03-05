@@ -898,8 +898,8 @@ impl<W: LayoutElement> Workspace<W> {
         width: Option<PresetSize>,
     ) -> ColumnWidth {
         let width = width.unwrap_or_else(|| {
-            let size = self.axis().size_in(window.size());
-            PresetSize::Fixed(size.w)
+            let fixed = self.axis().size_main(window.size());
+            PresetSize::Fixed(fixed)
         });
         match width {
             PresetSize::Fixed(fixed) => {
@@ -1908,9 +1908,9 @@ impl<W: LayoutElement> Workspace<W> {
         let trigger_width = config.trigger_width;
 
         // This working area intentionally does not include extra struts from Options.
-        let pos = self.axis().point_in(pos);
-        let working_area = self.axis().rect_in(self.working_area);
-        let (coord, span) = (pos.x - working_area.loc.x, working_area.size.w);
+        let axis = self.axis();
+        let coord = axis.point_main(pos) - axis.point_main(self.working_area.loc);
+        let span = axis.size_main(self.working_area.size);
 
         let coord = coord.clamp(0., span);
         let trigger_width = trigger_width.clamp(0., span / 2.);

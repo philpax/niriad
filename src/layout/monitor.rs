@@ -380,16 +380,8 @@ impl<W: LayoutElement> Monitor<W> {
         AxisMap::new(self.active_workspace_ref().main_axis())
     }
 
-    fn map_point_in(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        self.overview_axis().point_in(point)
-    }
-
     fn map_point_out(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
         self.overview_axis().point_out(point)
-    }
-
-    fn map_size_in(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
-        self.overview_axis().size_in(size)
     }
 
     fn map_size_out(&self, size: Size<f64, Logical>) -> Size<f64, Logical> {
@@ -1384,22 +1376,25 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     fn workspace_size(&self, zoom: f64) -> Size<f64, Logical> {
-        let view_size = self.map_size_in(self.view_size);
-        let ws_size = view_size.upscale(zoom);
+        let axis = self.overview_axis();
+        let main = axis.size_main(self.view_size) * zoom;
+        let cross = axis.size_cross(self.view_size) * zoom;
         let scale = self.scale.fractional_scale();
-        ws_size.to_physical_precise_ceil(scale).to_logical(scale)
+        axis.size_from_main_cross(main, cross)
+            .to_physical_precise_ceil(scale)
+            .to_logical(scale)
     }
 
     fn workspace_gap(&self, zoom: f64) -> f64 {
-        let view_size = self.map_size_in(self.view_size);
+        let axis = self.overview_axis();
         let scale = self.scale.fractional_scale();
-        let gap = view_size.h * 0.1 * zoom;
+        let gap = axis.size_cross(self.view_size) * 0.1 * zoom;
         round_logical_in_physical_max1(scale, gap)
     }
 
-    fn workspace_size_with_gap(&self, zoom: f64) -> Size<f64, Logical> {
-        let gap = self.workspace_gap(zoom);
-        self.workspace_size(zoom) + Size::from((0., gap))
+    fn workspace_switch_span_with_gap(&self, zoom: f64) -> f64 {
+        let axis = self.overview_axis();
+        axis.size_cross(self.workspace_size(zoom)) + self.workspace_gap(zoom)
     }
 
     pub fn overview_zoom(&self) -> f64 {
@@ -1484,15 +1479,15 @@ impl<W: LayoutElement> Monitor<W> {
                 // - first_y = -switch_anim.value() * from_height + to * (from_height - current_height)
                 let from = progress_anim.from();
                 let from_zoom = compute_overview_zoom(&self.options, Some(from));
-                let from_ws_height_with_gap = self.workspace_size_with_gap(from_zoom).h;
+                let from_ws_switch_span = self.workspace_switch_span_with_gap(from_zoom);
 
                 let zoom = self.overview_zoom();
-                let ws_height_with_gap = self.workspace_size_with_gap(zoom).h;
+                let ws_switch_span = self.workspace_switch_span_with_gap(zoom);
 
-                let first_ws_y = -switch_anim.value() * from_ws_height_with_gap
-                    + switch_anim.to() * (from_ws_height_with_gap - ws_height_with_gap);
+                let first_ws_cross = -switch_anim.value() * from_ws_switch_span
+                    + switch_anim.to() * (from_ws_switch_span - ws_switch_span);
 
-                return -first_ws_y / ws_height_with_gap;
+                return -first_ws_cross / ws_switch_span;
             }
         };
 
@@ -1508,32 +1503,30 @@ impl<W: LayoutElement> Monitor<W> {
         let zoom = self.overview_zoom();
 
         let axis = self.overview_axis();
-        let view_size = axis.size_in(self.view_size);
-
         let ws_size = self.workspace_size(zoom);
         let gap = self.workspace_gap(zoom);
-        let ws_height_with_gap = ws_size.h + gap;
+        let ws_switch_span = axis.size_cross(ws_size) + gap;
 
-        let static_offset = (view_size.to_point() - ws_size.to_point()).downscale(2.);
-        let static_offset = static_offset
-            .to_physical_precise_round(scale)
-            .to_logical(scale);
+        let static_main = (axis.size_main(self.view_size) - axis.size_main(ws_size)) / 2.;
+        let static_main = round_logical_in_physical(scale, static_main);
+        let static_cross = (axis.size_cross(self.view_size) - axis.size_cross(ws_size)) / 2.;
+        let static_cross = round_logical_in_physical(scale, static_cross);
 
-        let first_ws_y = -self.workspace_render_idx() * ws_height_with_gap;
-        let first_ws_y = round_logical_in_physical(scale, first_ws_y);
+        let first_ws_cross = static_cross - self.workspace_render_idx() * ws_switch_span;
+        let first_ws_cross = round_logical_in_physical(scale, first_ws_cross);
 
         // Return position for one-past-last workspace too.
         (0..=self.workspaces.len()).map(move |idx| {
-            let y = first_ws_y + idx as f64 * ws_height_with_gap;
-            let loc = Point::from((0., y)) + static_offset;
+            let cross = first_ws_cross + idx as f64 * ws_switch_span;
+            let loc = axis.point_from_main_cross(static_main, cross);
 
             // Even though all components that go into loc are rounded to physical pixels, the
             // floating point addition may lose precision. This can result for example in the
-            // current workspace having y = 0.0000000000002 and thus missing pointer hits at the
-            // monitor edge with y = 0. So, post-round the location too.
+            // current workspace having subpixel coordinates and thus missing pointer hits at the
+            // monitor edge. So, post-round the location too.
             let loc = loc.to_physical_precise_round(scale).to_logical(scale);
 
-            axis.rect_out(Rectangle::new(loc, ws_size))
+            Rectangle::new(loc, ws_size)
         })
     }
 
@@ -1575,33 +1568,31 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<(&Workspace<W>, Rectangle<f64, Logical>)> {
-        let pos_within_output = self.map_point_in(pos_within_output);
-        let view_size = self.map_size_in(self.view_size);
+        let axis = self.overview_axis();
+        let pos_cross = axis.point_cross(pos_within_output);
+        let output_main_span = axis.size_main(self.view_size);
 
-        let (ws, geo) = self.workspaces_with_render_geo().find_map(|(ws, geo)| {
-            let geo = self.map_rect_in(geo);
+        self.workspaces_with_render_geo().find_map(|(ws, geo)| {
+            let geo_cross = axis.point_cross(geo.loc);
+            let geo_cross_end = geo_cross + axis.size_cross(geo.size);
+            if !(geo_cross <= pos_cross && pos_cross < geo_cross_end) {
+                return None;
+            }
 
-            // Extend width to entire output.
-            let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((view_size.w, geo.size.h));
-            let bounds = Rectangle::new(loc, size);
-
+            let bounds = Rectangle::new(
+                axis.point_from_main_cross(0., geo_cross),
+                axis.size_from_main_cross(output_main_span, axis.size_cross(geo.size)),
+            );
             bounds.contains(pos_within_output).then_some((ws, geo))
-        })?;
-
-        Some((ws, self.map_rect_out(geo)))
+        })
     }
 
     pub fn workspace_under_narrow(
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<&Workspace<W>> {
-        let pos_within_output = self.map_point_in(pos_within_output);
-
-        self.workspaces_with_render_geo().find_map(|(ws, geo)| {
-            let geo = self.map_rect_in(geo);
-            geo.contains(pos_within_output).then_some(ws)
-        })
+        self.workspaces_with_render_geo()
+            .find_map(|(ws, geo)| geo.contains(pos_within_output).then_some(ws))
     }
 
     pub fn window_under(&self, pos_within_output: Point<f64, Logical>) -> Option<(&W, HitType)> {
@@ -1633,7 +1624,8 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> (InsertWorkspace, Rectangle<f64, Logical>) {
-        let pos_within_output = self.map_point_in(pos_within_output);
+        let axis = self.overview_axis();
+        let pos_cross = axis.point_cross(pos_within_output);
 
         let mut iter = self.workspaces_with_render_geo_idx();
 
@@ -1641,45 +1633,42 @@ impl<W: LayoutElement> Monitor<W> {
 
         // Monitors always have at least one workspace.
         let ((idx, ws), geo) = iter.next().unwrap();
-        let geo = self.map_rect_in(geo);
+        let geo_cross = axis.point_cross(geo.loc);
+        let geo_cross_end = geo_cross + axis.size_cross(geo.size);
 
-        // Check if above first.
-        if pos_within_output.y < geo.loc.y {
+        // Check before first workspace along the overview-switch axis.
+        if pos_cross < geo_cross {
             return (InsertWorkspace::NewAt(idx), dummy);
         }
 
-        let contains = move |geo: Rectangle<f64, Logical>| {
-            geo.loc.y <= pos_within_output.y && pos_within_output.y < geo.loc.y + geo.size.h
-        };
+        let contains = move |start: f64, end: f64| start <= pos_cross && pos_cross < end;
 
         // Check first.
-        if contains(geo) {
-            return (InsertWorkspace::Existing(ws.id()), self.map_rect_out(geo));
+        if contains(geo_cross, geo_cross_end) {
+            return (InsertWorkspace::Existing(ws.id()), geo);
         }
 
-        let mut last_geo = geo;
+        let mut last_cross_end = geo_cross_end;
         let mut last_idx = idx;
         for ((idx, ws), geo) in iter {
-            let geo = self.map_rect_in(geo);
+            let geo_cross = axis.point_cross(geo.loc);
+            let geo_cross_end = geo_cross + axis.size_cross(geo.size);
 
-            // Check gap above.
-            let gap_loc = Point::from((last_geo.loc.x, last_geo.loc.y + last_geo.size.h));
-            let gap_size = Size::from((geo.size.w, geo.loc.y - gap_loc.y));
-            let gap_geo = Rectangle::new(gap_loc, gap_size);
-            if contains(gap_geo) {
+            // Check gap before the current workspace.
+            if contains(last_cross_end, geo_cross) {
                 return (InsertWorkspace::NewAt(idx), dummy);
             }
 
             // Check workspace itself.
-            if contains(geo) {
-                return (InsertWorkspace::Existing(ws.id()), self.map_rect_out(geo));
+            if contains(geo_cross, geo_cross_end) {
+                return (InsertWorkspace::Existing(ws.id()), geo);
             }
 
-            last_geo = geo;
+            last_cross_end = geo_cross_end;
             last_idx = idx;
         }
 
-        // Anything below.
+        // Anything after the last workspace along the overview-switch axis.
         (InsertWorkspace::NewAt(last_idx + 1), dummy)
     }
 
@@ -1902,10 +1891,10 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let zoom = self.overview_zoom();
-        let total_height = if gesture.is_touchpad {
+        let total_cross_span = if gesture.is_touchpad {
             WORKSPACE_GESTURE_MOVEMENT
         } else {
-            self.workspace_size_with_gap(1.).h
+            self.workspace_switch_span_with_gap(1.)
         };
 
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
@@ -1919,13 +1908,13 @@ impl<W: LayoutElement> Monitor<W> {
             zoom
         };
 
-        let delta_y = delta_y / delta_scale;
+        let delta_cross = delta_y / delta_scale;
         let mut rubber_band = WORKSPACE_GESTURE_RUBBER_BAND;
         rubber_band.limit /= zoom;
 
-        gesture.tracker.push(delta_y, timestamp);
+        gesture.tracker.push(delta_cross, timestamp);
 
-        let pos = gesture.tracker.pos() / total_height;
+        let pos = gesture.tracker.pos() / total_cross_span;
 
         let (min, max) = gesture.min_max(self.workspaces.len());
         let new_idx = gesture.start_idx + pos;
@@ -1941,10 +1930,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn dnd_scroll_gesture_scroll(&mut self, pos: Point<f64, Logical>, speed: f64) -> bool {
         let zoom = self.overview_zoom();
-
-        let pos = self.map_point_in(pos);
-        let view_size = self.map_size_in(self.view_size);
-        let working_area = self.map_rect_in(self.working_area);
+        let axis = self.overview_axis();
 
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
             return false;
@@ -1956,37 +1942,37 @@ impl<W: LayoutElement> Monitor<W> {
         };
 
         let config = &self.options.gestures.dnd_edge_workspace_switch;
-        let trigger_height = config.trigger_height;
+        let trigger_span = config.trigger_height;
 
-        // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
-        // after using the hot corner or during horizontal scroll.
-        let width = view_size.w * zoom;
-        let x = pos.x - (view_size.w - width) / 2.;
+        // Restrict the scrolling to the visible workspace strip to avoid unwanted trigger after
+        // using the hot corner or during orthogonal scroll.
+        let strip_main_span = axis.size_main(self.view_size) * zoom;
+        let main = axis.point_main(pos) - (axis.size_main(self.view_size) - strip_main_span) / 2.;
 
         // Consider the working area so layer-shell docks and such don't prevent scrolling.
-        let y = pos.y - working_area.loc.y;
-        let height = working_area.size.h;
+        let cross = axis.point_cross(pos) - axis.point_cross(self.working_area.loc);
+        let cross_span = axis.size_cross(self.working_area.size);
 
-        let y = y.clamp(0., height);
-        let trigger_height = trigger_height.clamp(0., height / 2.);
+        let cross = cross.clamp(0., cross_span);
+        let trigger_span = trigger_span.clamp(0., cross_span / 2.);
 
-        let delta = if x < 0. || width <= x {
-            // Outside the bounds horizontally.
+        let delta = if main < 0. || strip_main_span <= main {
+            // Outside the bounds along the workspace strip.
             0.
-        } else if y < trigger_height {
-            -(trigger_height - y)
-        } else if height - y < trigger_height {
-            trigger_height - (height - y)
+        } else if cross < trigger_span {
+            -(trigger_span - cross)
+        } else if cross_span - cross < trigger_span {
+            trigger_span - (cross_span - cross)
         } else {
             0.
         };
 
-        let delta = if trigger_height < 0.01 {
+        let delta = if trigger_span < 0.01 {
             // Sanity check for trigger-height 0 or small window sizes.
             0.
         } else {
             // Normalize to [0, 1].
-            delta / trigger_height
+            delta / trigger_span
         };
         let delta = delta * speed;
 
@@ -2014,8 +2000,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         gesture.tracker.push(delta, now);
 
-        let total_height = WORKSPACE_DND_EDGE_SCROLL_MOVEMENT;
-        let pos = gesture.tracker.pos() / total_height;
+        let total_cross_span = WORKSPACE_DND_EDGE_SCROLL_MOVEMENT;
+        let pos = gesture.tracker.pos() / total_cross_span;
         let unclamped = gesture.start_idx + pos;
 
         let (min, max) = gesture.min_max(self.workspaces.len());
@@ -2038,12 +2024,12 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         let zoom = self.overview_zoom();
-        let total_height = if gesture.dnd_last_event_time.is_some() {
+        let total_cross_span = if gesture.dnd_last_event_time.is_some() {
             WORKSPACE_DND_EDGE_SCROLL_MOVEMENT
         } else if gesture.is_touchpad {
             WORKSPACE_GESTURE_MOVEMENT
         } else {
-            self.workspace_size_with_gap(1.).h
+            self.workspace_switch_span_with_gap(1.)
         };
 
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
@@ -2057,9 +2043,9 @@ impl<W: LayoutElement> Monitor<W> {
         let mut rubber_band = WORKSPACE_GESTURE_RUBBER_BAND;
         rubber_band.limit /= zoom;
 
-        let mut velocity = gesture.tracker.velocity() / total_height;
-        let current_pos = gesture.tracker.pos() / total_height;
-        let pos = gesture.tracker.projected_end_pos() / total_height;
+        let mut velocity = gesture.tracker.velocity() / total_cross_span;
+        let current_pos = gesture.tracker.pos() / total_cross_span;
+        let pos = gesture.tracker.projected_end_pos() / total_cross_span;
 
         let (min, max) = gesture.min_max(self.workspaces.len());
         let new_idx = gesture.start_idx + pos;
