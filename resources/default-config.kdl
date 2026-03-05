@@ -124,6 +124,7 @@ layout {
     // Main axis of the scrolling layout:
     // - "horizontal", default behavior: columns are laid out left-to-right.
     // - "vertical", columns are laid out top-to-bottom.
+    // Column width actions work on the main axis; window height actions work on the cross axis.
     // main-axis "horizontal"
 
     // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.

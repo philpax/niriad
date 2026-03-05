@@ -243,7 +243,9 @@ layout {
 ```
 
 > [!NOTE]
-> `default-column-width {}` causes niri to send a (0, H) size in the initial configure request.
+> `default-column-width {}` causes niri to send an initial configure request with the main-axis span left at 0 and the cross-axis span set normally.
+>
+> In the default horizontal layout this is `(0, H)`. With `main-axis "vertical"`, this becomes `(W, 0)`.
 >
 > This is a bit [unclearly defined](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues/155) in the Wayland protocol, so some clients may misinterpret it.
 > Either way, `default-column-width {}` is most useful for specific windows, in form of a [window rule](./Configuration:-Window-Rules.md#default-column-width) with the same syntax.

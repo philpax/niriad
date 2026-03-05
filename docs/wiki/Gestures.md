@@ -83,7 +83,7 @@ Also works on a touchscreen.
 
 <sup>Since: 25.05</sup>
 
-Scroll the workspaces up/down when moving the mouse cursor against a monitor edge during drag-and-drop (DnD) while in the overview.
+Scroll the workspaces along the overview strip when moving the mouse cursor against the relevant monitor edge during drag-and-drop (DnD) while in the overview.
 Also works on a touchscreen.
 
 #### Drag-and-Drop Hold to Activate

@@ -95,6 +95,8 @@ binds {
 }
 ```
 
+These examples assume the default horizontal main axis. The action names stay the same with `layout.main-axis "vertical"`, but their physical direction follows the main/cross-axis interpretation of the layout.
+
 Similarly, you can bind touchpad scroll "ticks".
 Touchpad scrolling is continuous, so for these binds it is split into discrete intervals based on distance travelled.
 
