@@ -287,6 +287,12 @@ struct MoveAnimation {
     from: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ViewSnap {
+    view_main_pos: f64,
+    col_idx: usize,
+}
+
 impl<W: LayoutElement> ScrollingSpace<W> {
     pub fn new(
         view_size: Size<f64, Logical>,
@@ -746,6 +752,281 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 self.compute_new_view_offset_for_column_fit(target_view_main, idx)
             }
         }
+    }
+
+    fn push_snap_if_between_bounds(
+        snaps: &mut Vec<ViewSnap>,
+        view_main_pos: f64,
+        col_idx: usize,
+        startmost_snap: f64,
+        endmost_snap: f64,
+    ) {
+        if startmost_snap < view_main_pos && view_main_pos < endmost_snap {
+            snaps.push(ViewSnap {
+                view_main_pos,
+                col_idx,
+            });
+        }
+    }
+
+    fn aligned_column_snap_range(
+        &self,
+        column_main: f64,
+        col: &Column<W>,
+        prev_column_span: Option<f64>,
+        next_column_span: Option<f64>,
+    ) -> (f64, f64) {
+        let center_on_overflow = matches!(
+            self.options.layout.center_focused_column,
+            CenterFocusedColumn::OnOverflow
+        );
+
+        let view_main_span = self.view_size.w;
+        let gaps = self.options.layout.gaps;
+        let column_span = col.width();
+        let mode = col.sizing_mode();
+
+        let work_area = if mode.is_maximized() {
+            self.parent_area
+        } else {
+            self.working_area
+        };
+
+        let start_strut = work_area.loc.x;
+        let end_strut = self.view_size.w - work_area.size.w - work_area.loc.x;
+
+        // Normal columns align with the working area, but fullscreen columns align with the whole
+        // view.
+        if mode.is_fullscreen() {
+            let start = column_main;
+            let end = start + column_span;
+            return (start, end);
+        }
+
+        let padding = if mode.is_maximized() {
+            0.
+        } else {
+            ((work_area.size.w - column_span) / 2.).clamp(0., gaps)
+        };
+
+        let centered_view_main = if work_area.size.w <= column_span {
+            column_main - start_strut
+        } else {
+            column_main - (work_area.size.w - column_span) / 2. - start_strut
+        };
+        let is_overflowing = |adjacent_column_span: Option<f64>| {
+            center_on_overflow
+                && adjacent_column_span
+                    .filter(|adjacent_column_span| {
+                        // NOTE: This logic won't work entirely correctly with small fixed-size
+                        // maximized windows (they have a different area and padding).
+                        adjacent_column_span + 3.0 * gaps + column_span > work_area.size.w
+                    })
+                    .is_some()
+        };
+
+        let start = if is_overflowing(next_column_span) {
+            centered_view_main
+        } else {
+            column_main - padding - start_strut
+        };
+        let end = if is_overflowing(prev_column_span) {
+            centered_view_main + view_main_span
+        } else {
+            column_main + column_span + padding + end_strut
+        };
+        (start, end)
+    }
+
+    fn collect_centered_view_snaps(&self) -> Vec<ViewSnap> {
+        let mut snaps = Vec::with_capacity(self.columns.len());
+        let mut column_main = 0.;
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            let column_span = col.width();
+            let mode = col.sizing_mode();
+
+            let work_area = if mode.is_maximized() {
+                self.parent_area
+            } else {
+                self.working_area
+            };
+
+            let start_strut = work_area.loc.x;
+
+            let view_main_pos = if mode.is_fullscreen() {
+                column_main
+            } else if work_area.size.w <= column_span {
+                column_main - start_strut
+            } else {
+                column_main - (work_area.size.w - column_span) / 2. - start_strut
+            };
+            snaps.push(ViewSnap {
+                view_main_pos,
+                col_idx,
+            });
+
+            column_main += column_span + self.options.layout.gaps;
+        }
+        snaps
+    }
+
+    fn collect_aligned_view_snaps(&self) -> Vec<ViewSnap> {
+        let view_main_span = self.view_size.w;
+        let gaps = self.options.layout.gaps;
+        let last_col_idx = self.columns.len() - 1;
+
+        let startmost_snap = self
+            .aligned_column_snap_range(
+                0.,
+                &self.columns[0],
+                None,
+                self.columns.get(1).map(|c| c.width()),
+            )
+            .0;
+        let last_column_main = self
+            .columns
+            .iter()
+            .take(last_col_idx)
+            .fold(0., |column_main, col| column_main + col.width() + gaps);
+        let endmost_snap =
+            self.aligned_column_snap_range(
+                last_column_main,
+                &self.columns[last_col_idx],
+                last_col_idx
+                    .checked_sub(1)
+                    .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
+                None,
+            )
+            .1 - view_main_span;
+
+        let mut snaps = vec![
+            ViewSnap {
+                view_main_pos: startmost_snap,
+                col_idx: 0,
+            },
+            ViewSnap {
+                view_main_pos: endmost_snap,
+                col_idx: last_col_idx,
+            },
+        ];
+
+        let mut column_main = 0.;
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            let (start, end) = self.aligned_column_snap_range(
+                column_main,
+                col,
+                col_idx
+                    .checked_sub(1)
+                    .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
+                self.columns.get(col_idx + 1).map(|c| c.width()),
+            );
+            Self::push_snap_if_between_bounds(
+                &mut snaps,
+                start,
+                col_idx,
+                startmost_snap,
+                endmost_snap,
+            );
+            Self::push_snap_if_between_bounds(
+                &mut snaps,
+                end - view_main_span,
+                col_idx,
+                startmost_snap,
+                endmost_snap,
+            );
+
+            column_main += col.width() + gaps;
+        }
+
+        snaps
+    }
+
+    fn collect_view_snaps(&self) -> Vec<ViewSnap> {
+        let mut snaps = if self.is_centering_focused_column() {
+            self.collect_centered_view_snaps()
+        } else {
+            self.collect_aligned_view_snaps()
+        };
+        snaps.sort_by_key(|snap| NotNan::new(snap.view_main_pos).unwrap());
+        snaps
+    }
+
+    fn closest_view_snap<'a>(&self, snaps: &'a [ViewSnap], target_view_main: f64) -> &'a ViewSnap {
+        snaps
+            .iter()
+            .min_by_key(|snap| NotNan::new((snap.view_main_pos - target_view_main).abs()).unwrap())
+            .unwrap()
+    }
+
+    fn column_fully_visible_from_view_main(
+        &self,
+        view_main_pos: f64,
+        col_idx: usize,
+        towards_end: bool,
+    ) -> bool {
+        let col = &self.columns[col_idx];
+        let column_main = self.column_main_pos(col_idx);
+        let column_span = col.width();
+        let mode = col.sizing_mode();
+
+        let work_area = if mode.is_maximized() {
+            self.parent_area
+        } else {
+            self.working_area
+        };
+
+        let start_strut = work_area.loc.x;
+
+        if mode.is_fullscreen() {
+            if towards_end {
+                view_main_pos + self.view_size.w >= column_main + column_span
+            } else {
+                column_main >= view_main_pos
+            }
+        } else {
+            let padding = if mode.is_maximized() {
+                0.
+            } else {
+                ((work_area.size.w - column_span) / 2.).clamp(0., self.options.layout.gaps)
+            };
+
+            if towards_end {
+                view_main_pos + start_strut + work_area.size.w
+                    >= column_main + column_span + padding
+            } else {
+                column_main - padding >= view_main_pos + start_strut
+            }
+        }
+    }
+
+    fn furthest_visible_column_from_snap(
+        &self,
+        snap: &ViewSnap,
+        target_view_offset: f64,
+        current_view_offset: f64,
+    ) -> usize {
+        if self.is_centering_focused_column() {
+            return snap.col_idx;
+        }
+
+        let towards_end = target_view_offset >= current_view_offset;
+        let mut col_idx = snap.col_idx;
+        if towards_end {
+            for next_idx in (col_idx + 1)..self.columns.len() {
+                if !self.column_fully_visible_from_view_main(snap.view_main_pos, next_idx, true) {
+                    break;
+                }
+                col_idx = next_idx;
+            }
+        } else {
+            for prev_idx in (0..col_idx).rev() {
+                if !self.column_fully_visible_from_view_main(snap.view_main_pos, prev_idx, false) {
+                    break;
+                }
+                col_idx = prev_idx;
+            }
+        }
+        col_idx
     }
 
     fn animate_view_offset(&mut self, idx: usize, new_view_offset: f64) {
@@ -3335,282 +3616,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let end_pos = gesture.tracker.projected_end_pos() * norm_factor;
         let target_view_offset = end_pos + gesture.delta_from_tracker;
 
-        // Compute the snapping points. These are where the view aligns with column boundaries on
-        // either side.
-        struct Snap {
-            // View position relative to main = 0 (the first column).
-            view_main_pos: f64,
-            // Column to activate for this snapping point.
-            col_idx: usize,
-        }
-
-        let mut snapping_points = Vec::new();
-
-        if self.is_centering_focused_column() {
-            let mut column_main = 0.;
-            for (col_idx, col) in self.columns.iter().enumerate() {
-                let column_span = col.width();
-                let mode = col.sizing_mode();
-
-                let work_area = if mode.is_maximized() {
-                    self.parent_area
-                } else {
-                    self.working_area
-                };
-
-                let start_strut = work_area.loc.x;
-
-                let view_main_pos = if mode.is_fullscreen() {
-                    column_main
-                } else if work_area.size.w <= column_span {
-                    column_main - start_strut
-                } else {
-                    column_main - (work_area.size.w - column_span) / 2. - start_strut
-                };
-                snapping_points.push(Snap {
-                    view_main_pos,
-                    col_idx,
-                });
-
-                column_main += column_span + self.options.layout.gaps;
-            }
-        } else {
-            let center_on_overflow = matches!(
-                self.options.layout.center_focused_column,
-                CenterFocusedColumn::OnOverflow
-            );
-
-            let view_main_span = self.view_size.w;
-            let gaps = self.options.layout.gaps;
-
-            let snap_points = |column_main,
-                               col: &Column<W>,
-                               prev_column_span: Option<f64>,
-                               next_column_span: Option<f64>| {
-                let column_span = col.width();
-                let mode = col.sizing_mode();
-
-                let work_area = if mode.is_maximized() {
-                    self.parent_area
-                } else {
-                    self.working_area
-                };
-
-                let start_strut = work_area.loc.x;
-                let end_strut = self.view_size.w - work_area.size.w - work_area.loc.x;
-
-                // Normal columns align with the working area, but fullscreen columns align with
-                // the whole view.
-                if mode.is_fullscreen() {
-                    let start = column_main;
-                    let end = start + column_span;
-                    (start, end)
-                } else {
-                    // Logic from compute_new_view_offset.
-                    let padding = if mode.is_maximized() {
-                        0.
-                    } else {
-                        ((work_area.size.w - column_span) / 2.).clamp(0., gaps)
-                    };
-
-                    let centered_view_main = if work_area.size.w <= column_span {
-                        column_main - start_strut
-                    } else {
-                        column_main - (work_area.size.w - column_span) / 2. - start_strut
-                    };
-                    let is_overflowing = |adjacent_column_span: Option<f64>| {
-                        center_on_overflow
-                            && adjacent_column_span
-                                .filter(|adjacent_column_span| {
-                                    // NOTE: This logic won't work entirely correctly with small
-                                    // fixed-size maximized windows (they have a different area
-                                    // and padding).
-                                    center_on_overflow
-                                        && adjacent_column_span + 3.0 * gaps + column_span
-                                            > work_area.size.w
-                                })
-                                .is_some()
-                    };
-
-                    let start = if is_overflowing(next_column_span) {
-                        centered_view_main
-                    } else {
-                        column_main - padding - start_strut
-                    };
-                    let end = if is_overflowing(prev_column_span) {
-                        centered_view_main + view_main_span
-                    } else {
-                        column_main + column_span + padding + end_strut
-                    };
-                    (start, end)
-                }
-            };
-
-            // Prevent the gesture from snapping further than the first/last column, as this is
-            // generally undesired.
-            //
-            // It's ok if startmost_snap is > endmost_snap (this happens if the columns on a
-            // workspace total up to less than the workspace span).
-
-            // The first column's start snap isn't actually guaranteed to be the *startmost* snap.
-            // With weird enough start strut and perhaps a maximized small fixed-size window, you
-            // can make the second window's start snap be further to the start than the first
-            // window's. The same goes for the endmost snap.
-            //
-            // This isn't actually a big problem because it's very much an obscure edge case. Just
-            // need to make sure the code doesn't panic when that happens.
-            let startmost_snap = snap_points(
-                0.,
-                &self.columns[0],
-                None,
-                self.columns.get(1).map(|c| c.width()),
-            )
-            .0;
-            let last_col_idx = self.columns.len() - 1;
-            let last_column_main = self
-                .columns
-                .iter()
-                .take(last_col_idx)
-                .fold(0., |column_main, col| column_main + col.width() + gaps);
-            let endmost_snap = snap_points(
-                last_column_main,
-                &self.columns[last_col_idx],
-                last_col_idx
-                    .checked_sub(1)
-                    .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
-                None,
-            )
-            .1 - view_main_span;
-
-            snapping_points.push(Snap {
-                view_main_pos: startmost_snap,
-                col_idx: 0,
-            });
-            snapping_points.push(Snap {
-                view_main_pos: endmost_snap,
-                col_idx: last_col_idx,
-            });
-
-            let mut push = |col_idx, start, end| {
-                if startmost_snap < start && start < endmost_snap {
-                    snapping_points.push(Snap {
-                        view_main_pos: start,
-                        col_idx,
-                    });
-                }
-
-                let end = end - view_main_span;
-                if startmost_snap < end && end < endmost_snap {
-                    snapping_points.push(Snap {
-                        view_main_pos: end,
-                        col_idx,
-                    });
-                }
-            };
-
-            let mut column_main = 0.;
-            for (col_idx, col) in self.columns.iter().enumerate() {
-                let (start, end) = snap_points(
-                    column_main,
-                    col,
-                    col_idx
-                        .checked_sub(1)
-                        .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
-                    self.columns.get(col_idx + 1).map(|c| c.width()),
-                );
-                push(col_idx, start, end);
-
-                column_main += col.width() + gaps;
-            }
-        }
-
-        // Find the closest snapping point.
-        snapping_points.sort_by_key(|snap| NotNan::new(snap.view_main_pos).unwrap());
+        let snapping_points = self.collect_view_snaps();
 
         let active_column_main = self.column_main_pos(self.active_column_idx);
         let target_view_main = active_column_main + target_view_offset;
-        let target_snap = snapping_points
-            .iter()
-            .min_by_key(|snap| NotNan::new((snap.view_main_pos - target_view_main).abs()).unwrap())
-            .unwrap();
-
-        let mut new_col_idx = target_snap.col_idx;
-
-        if !self.is_centering_focused_column() {
-            // Focus the furthest window towards the direction of the gesture.
-            if target_view_offset >= current_view_offset {
-                for col_idx in (new_col_idx + 1)..self.columns.len() {
-                    let col = &self.columns[col_idx];
-                    let column_main = self.column_main_pos(col_idx);
-                    let column_span = col.width();
-                    let mode = col.sizing_mode();
-
-                    let work_area = if mode.is_maximized() {
-                        self.parent_area
-                    } else {
-                        self.working_area
-                    };
-
-                    let start_strut = work_area.loc.x;
-
-                    if mode.is_fullscreen() {
-                        if target_snap.view_main_pos + self.view_size.w < column_main + column_span
-                        {
-                            break;
-                        }
-                    } else {
-                        let padding = if mode.is_maximized() {
-                            0.
-                        } else {
-                            ((work_area.size.w - column_span) / 2.)
-                                .clamp(0., self.options.layout.gaps)
-                        };
-
-                        if target_snap.view_main_pos + start_strut + work_area.size.w
-                            < column_main + column_span + padding
-                        {
-                            break;
-                        }
-                    }
-
-                    new_col_idx = col_idx;
-                }
-            } else {
-                for col_idx in (0..new_col_idx).rev() {
-                    let col = &self.columns[col_idx];
-                    let column_main = self.column_main_pos(col_idx);
-                    let column_span = col.width();
-                    let mode = col.sizing_mode();
-
-                    let work_area = if mode.is_maximized() {
-                        self.parent_area
-                    } else {
-                        self.working_area
-                    };
-
-                    let start_strut = work_area.loc.x;
-
-                    if mode.is_fullscreen() {
-                        if column_main < target_snap.view_main_pos {
-                            break;
-                        }
-                    } else {
-                        let padding = if mode.is_maximized() {
-                            0.
-                        } else {
-                            ((work_area.size.w - column_span) / 2.)
-                                .clamp(0., self.options.layout.gaps)
-                        };
-
-                        if column_main - padding < target_snap.view_main_pos + start_strut {
-                            break;
-                        }
-                    }
-
-                    new_col_idx = col_idx;
-                }
-            }
-        }
+        let target_snap = self.closest_view_snap(&snapping_points, target_view_main);
+        let new_col_idx = self.furthest_visible_column_from_snap(
+            target_snap,
+            target_view_offset,
+            current_view_offset,
+        );
 
         let new_column_main = self.column_main_pos(new_col_idx);
         let main_delta = active_column_main - new_column_main;
