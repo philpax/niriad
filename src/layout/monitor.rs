@@ -1749,13 +1749,14 @@ impl<W: LayoutElement> Monitor<W> {
         let _span = tracy_client::span!("Monitor::render_workspaces");
 
         let scale = self.scale.fractional_scale();
-        // Ceil the height in physical pixels.
+        // Ceil the monitor size in physical pixels.
+        let width = (self.view_size.w * scale).ceil() as i32;
         let height = (self.view_size.h * scale).ceil() as i32;
 
         // Crop the elements to prevent them overflowing, currently visible during a workspace
         // switch.
         //
-        // HACK: crop to infinite bounds at least horizontally where we
+        // HACK: crop to infinite bounds along the workspace-main axis where we
         // know there's no workspace joining or monitor bounds, otherwise
         // it will cut pixel shaders and mess up the coordinate space.
         // There's also a damage tracking bug which causes glitched
@@ -1763,10 +1764,17 @@ impl<W: LayoutElement> Monitor<W> {
         //
         // FIXME: use proper bounds after fixing the Crop element.
         let crop_bounds = if self.workspace_switch.is_some() || self.overview_progress.is_some() {
-            Rectangle::new(
-                Point::from((-i32::MAX / 2, 0)),
-                Size::from((i32::MAX, height)),
-            )
+            if self.overview_axis() == MainAxis::Vertical {
+                Rectangle::new(
+                    Point::from((0, -i32::MAX / 2)),
+                    Size::from((width, i32::MAX)),
+                )
+            } else {
+                Rectangle::new(
+                    Point::from((-i32::MAX / 2, 0)),
+                    Size::from((i32::MAX, height)),
+                )
+            }
         } else {
             Rectangle::new(
                 Point::from((-i32::MAX / 2, -i32::MAX / 2)),
