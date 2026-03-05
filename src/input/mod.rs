@@ -95,6 +95,26 @@ pub(super) fn map_view_workspace_deltas(
     }
 }
 
+fn overview_wheel_scroll_uses_workspace(
+    horizontal: bool,
+    modifiers: Modifiers,
+    view_axis_vertical: bool,
+) -> Option<bool> {
+    if horizontal {
+        if modifiers.is_empty() {
+            Some(view_axis_vertical)
+        } else {
+            None
+        }
+    } else if modifiers.is_empty() {
+        Some(!view_axis_vertical)
+    } else if modifiers == Modifiers::SHIFT {
+        Some(view_axis_vertical)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
     pub aspect_ratio: f64,
@@ -3188,17 +3208,32 @@ impl State {
                 || is_mru_open
                 || self.niri.mods_with_wheel_binds.contains(&modifiers);
             if should_handle {
+                let overview_view_axis_vertical = if should_handle_in_overview {
+                    self.view_axis_vertical_under_cursor_or_active_workspace()
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
                 let horizontal = horizontal_amount_v120.unwrap_or(0.);
                 let ticks = self.niri.horizontal_wheel_tracker.accumulate(horizontal);
                 if ticks != 0 {
-                    let (bind_left, bind_right) =
-                        if should_handle_in_overview && modifiers.is_empty() {
+                    let (bind_left, bind_right) = if should_handle_in_overview {
+                        if let Some(uses_workspace) = overview_wheel_scroll_uses_workspace(
+                            true,
+                            modifiers,
+                            overview_view_axis_vertical,
+                        ) {
                             let bind_left = Some(Bind {
                                 key: Key {
                                     trigger: Trigger::WheelScrollLeft,
                                     modifiers: Modifiers::empty(),
                                 },
-                                action: Action::FocusColumnLeftUnderMouse,
+                                action: if uses_workspace {
+                                    Action::FocusWorkspaceUpUnderMouse
+                                } else {
+                                    Action::FocusColumnLeftUnderMouse
+                                },
                                 repeat: true,
                                 cooldown: None,
                                 allow_when_locked: false,
@@ -3210,7 +3245,11 @@ impl State {
                                     trigger: Trigger::WheelScrollRight,
                                     modifiers: Modifiers::empty(),
                                 },
-                                action: Action::FocusColumnRightUnderMouse,
+                                action: if uses_workspace {
+                                    Action::FocusWorkspaceDownUnderMouse
+                                } else {
+                                    Action::FocusColumnRightUnderMouse
+                                },
                                 repeat: true,
                                 cooldown: None,
                                 allow_when_locked: false,
@@ -3243,7 +3282,25 @@ impl State {
                                     || allowed_during_screenshot(&bind.action)
                             });
                             (bind_left, bind_right)
-                        };
+                        }
+                    } else {
+                        let config = self.niri.config.borrow();
+                        let bindings =
+                            make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                        let bind_left = find_configured_bind(
+                            bindings.clone(),
+                            mod_key,
+                            Trigger::WheelScrollLeft,
+                            mods,
+                        );
+                        let bind_right = find_configured_bind(
+                            bindings,
+                            mod_key,
+                            Trigger::WheelScrollRight,
+                            mods,
+                        );
+                        (bind_left, bind_right)
+                    };
 
                     if let Some(right) = bind_right {
                         for _ in 0..ticks {
@@ -3260,59 +3317,63 @@ impl State {
                 let vertical = vertical_amount_v120.unwrap_or(0.);
                 let ticks = self.niri.vertical_wheel_tracker.accumulate(vertical);
                 if ticks != 0 {
-                    let (bind_up, bind_down) = if should_handle_in_overview && modifiers.is_empty()
-                    {
-                        let bind_up = Some(Bind {
-                            key: Key {
-                                trigger: Trigger::WheelScrollUp,
-                                modifiers: Modifiers::empty(),
-                            },
-                            action: Action::FocusWorkspaceUpUnderMouse,
-                            repeat: true,
-                            cooldown: Some(Duration::from_millis(50)),
-                            allow_when_locked: false,
-                            allow_inhibiting: false,
-                            hotkey_overlay_title: None,
-                        });
-                        let bind_down = Some(Bind {
-                            key: Key {
-                                trigger: Trigger::WheelScrollDown,
-                                modifiers: Modifiers::empty(),
-                            },
-                            action: Action::FocusWorkspaceDownUnderMouse,
-                            repeat: true,
-                            cooldown: Some(Duration::from_millis(50)),
-                            allow_when_locked: false,
-                            allow_inhibiting: false,
-                            hotkey_overlay_title: None,
-                        });
-                        (bind_up, bind_down)
-                    } else if should_handle_in_overview && modifiers == Modifiers::SHIFT {
-                        let bind_up = Some(Bind {
-                            key: Key {
-                                trigger: Trigger::WheelScrollUp,
-                                modifiers: Modifiers::empty(),
-                            },
-                            action: Action::FocusColumnLeftUnderMouse,
-                            repeat: true,
-                            cooldown: Some(Duration::from_millis(50)),
-                            allow_when_locked: false,
-                            allow_inhibiting: false,
-                            hotkey_overlay_title: None,
-                        });
-                        let bind_down = Some(Bind {
-                            key: Key {
-                                trigger: Trigger::WheelScrollDown,
-                                modifiers: Modifiers::empty(),
-                            },
-                            action: Action::FocusColumnRightUnderMouse,
-                            repeat: true,
-                            cooldown: Some(Duration::from_millis(50)),
-                            allow_when_locked: false,
-                            allow_inhibiting: false,
-                            hotkey_overlay_title: None,
-                        });
-                        (bind_up, bind_down)
+                    let (bind_up, bind_down) = if should_handle_in_overview {
+                        if let Some(uses_workspace) = overview_wheel_scroll_uses_workspace(
+                            false,
+                            modifiers,
+                            overview_view_axis_vertical,
+                        ) {
+                            let bind_up = Some(Bind {
+                                key: Key {
+                                    trigger: Trigger::WheelScrollUp,
+                                    modifiers: Modifiers::empty(),
+                                },
+                                action: if uses_workspace {
+                                    Action::FocusWorkspaceUpUnderMouse
+                                } else {
+                                    Action::FocusColumnLeftUnderMouse
+                                },
+                                repeat: true,
+                                cooldown: Some(Duration::from_millis(50)),
+                                allow_when_locked: false,
+                                allow_inhibiting: false,
+                                hotkey_overlay_title: None,
+                            });
+                            let bind_down = Some(Bind {
+                                key: Key {
+                                    trigger: Trigger::WheelScrollDown,
+                                    modifiers: Modifiers::empty(),
+                                },
+                                action: if uses_workspace {
+                                    Action::FocusWorkspaceDownUnderMouse
+                                } else {
+                                    Action::FocusColumnRightUnderMouse
+                                },
+                                repeat: true,
+                                cooldown: Some(Duration::from_millis(50)),
+                                allow_when_locked: false,
+                                allow_inhibiting: false,
+                                hotkey_overlay_title: None,
+                            });
+                            (bind_up, bind_down)
+                        } else {
+                            let config = self.niri.config.borrow();
+                            let bindings =
+                                make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
+                            let bind_up = find_configured_bind(
+                                bindings.clone(),
+                                mod_key,
+                                Trigger::WheelScrollUp,
+                                mods,
+                            );
+                            let bind_down = find_configured_bind(
+                                bindings,
+                                mod_key,
+                                Trigger::WheelScrollDown,
+                                mods,
+                            );
+                            (bind_up, bind_down)
+                        }
                     } else {
                         let config = self.niri.config.borrow();
                         let bindings =
@@ -5271,6 +5332,41 @@ mod tests {
     fn map_view_workspace_deltas_respects_main_axis() {
         assert_eq!(map_view_workspace_deltas(3., -7., false), (3., -7.));
         assert_eq!(map_view_workspace_deltas(3., -7., true), (-7., 3.));
+    }
+
+    #[test]
+    fn overview_wheel_scroll_uses_workspace_respects_main_axis_and_shift() {
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(true, Modifiers::empty(), false),
+            Some(false)
+        );
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(true, Modifiers::empty(), true),
+            Some(true)
+        );
+
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(false, Modifiers::empty(), false),
+            Some(true)
+        );
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(false, Modifiers::SHIFT, false),
+            Some(false)
+        );
+
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(false, Modifiers::empty(), true),
+            Some(false)
+        );
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(false, Modifiers::SHIFT, true),
+            Some(true)
+        );
+
+        assert_eq!(
+            overview_wheel_scroll_uses_workspace(true, Modifiers::SHIFT, false),
+            None
+        );
     }
 
     #[test]
