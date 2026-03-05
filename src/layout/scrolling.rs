@@ -591,59 +591,79 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     fn compute_new_view_offset_fit(
         &self,
-        target_x: Option<f64>,
-        col_x: f64,
-        width: f64,
+        target_view_main: Option<f64>,
+        column_main: f64,
+        column_span: f64,
         mode: SizingMode,
     ) -> f64 {
         if mode.is_fullscreen() {
             return 0.;
         }
 
-        let (area, padding) = if mode.is_maximized() {
+        let (work_area, padding) = if mode.is_maximized() {
             (self.parent_area, 0.)
         } else {
             (self.working_area, self.options.layout.gaps)
         };
 
-        let target_x = target_x.unwrap_or_else(|| self.target_view_main_pos());
+        let target_view_main = target_view_main.unwrap_or_else(|| self.target_view_main_pos());
 
-        let new_offset =
-            compute_new_view_offset(target_x + area.loc.x, area.size.w, col_x, width, padding);
+        let new_offset = compute_new_view_offset(
+            target_view_main + work_area.loc.x,
+            work_area.size.w,
+            column_main,
+            column_span,
+            padding,
+        );
 
         // Non-fullscreen windows are always offset at least by the working area position.
-        new_offset - area.loc.x
+        new_offset - work_area.loc.x
     }
 
     fn compute_new_view_offset_centered(
         &self,
-        target_x: Option<f64>,
-        col_x: f64,
-        width: f64,
+        target_view_main: Option<f64>,
+        column_main: f64,
+        column_span: f64,
         mode: SizingMode,
     ) -> f64 {
         if mode.is_fullscreen() {
-            return self.compute_new_view_offset_fit(target_x, col_x, width, mode);
+            return self.compute_new_view_offset_fit(
+                target_view_main,
+                column_main,
+                column_span,
+                mode,
+            );
         }
 
-        let area = if mode.is_maximized() {
+        let work_area = if mode.is_maximized() {
             self.parent_area
         } else {
             self.working_area
         };
 
-        // Columns wider than the view are left-aligned (the fit code can deal with that).
-        if area.size.w <= width {
-            return self.compute_new_view_offset_fit(target_x, col_x, width, mode);
+        // Columns wider than the view are aligned to the start edge (the fit code can deal with
+        // that).
+        if work_area.size.w <= column_span {
+            return self.compute_new_view_offset_fit(
+                target_view_main,
+                column_main,
+                column_span,
+                mode,
+            );
         }
 
-        -(area.size.w - width) / 2. - area.loc.x
+        -(work_area.size.w - column_span) / 2. - work_area.loc.x
     }
 
-    fn compute_new_view_offset_for_column_fit(&self, target_x: Option<f64>, idx: usize) -> f64 {
+    fn compute_new_view_offset_for_column_fit(
+        &self,
+        target_view_main: Option<f64>,
+        idx: usize,
+    ) -> f64 {
         let col = &self.columns[idx];
         self.compute_new_view_offset_fit(
-            target_x,
+            target_view_main,
             self.column_main_pos(idx),
             col.width(),
             col.sizing_mode(),
@@ -652,12 +672,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     fn compute_new_view_offset_for_column_centered(
         &self,
-        target_x: Option<f64>,
+        target_view_main: Option<f64>,
         idx: usize,
     ) -> f64 {
         let col = &self.columns[idx];
         self.compute_new_view_offset_centered(
-            target_x,
+            target_view_main,
             self.column_main_pos(idx),
             col.width(),
             col.sizing_mode(),
@@ -666,26 +686,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     fn compute_new_view_offset_for_column(
         &self,
-        target_x: Option<f64>,
+        target_view_main: Option<f64>,
         idx: usize,
         prev_idx: Option<usize>,
     ) -> f64 {
         if self.is_centering_focused_column() {
-            return self.compute_new_view_offset_for_column_centered(target_x, idx);
+            return self.compute_new_view_offset_for_column_centered(target_view_main, idx);
         }
 
         match self.options.layout.center_focused_column {
             CenterFocusedColumn::Always => {
-                self.compute_new_view_offset_for_column_centered(target_x, idx)
+                self.compute_new_view_offset_for_column_centered(target_view_main, idx)
             }
             CenterFocusedColumn::OnOverflow => {
                 let Some(prev_idx) = prev_idx else {
-                    return self.compute_new_view_offset_for_column_fit(target_x, idx);
+                    return self.compute_new_view_offset_for_column_fit(target_view_main, idx);
                 };
 
                 // Activating the same column.
                 if prev_idx == idx {
-                    return self.compute_new_view_offset_for_column_fit(target_x, idx);
+                    return self.compute_new_view_offset_for_column_fit(target_view_main, idx);
                 }
 
                 // Always take the left or right neighbor of the target as the source.
@@ -695,31 +715,31 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     idx.saturating_sub(1)
                 };
 
-                let source_col_x = self.column_main_pos(source_idx);
-                let source_col_width = self.columns[source_idx].width();
+                let source_column_main = self.column_main_pos(source_idx);
+                let source_column_span = self.columns[source_idx].width();
 
-                let target_col_x = self.column_main_pos(idx);
-                let target_col_width = self.columns[idx].width();
+                let target_column_main = self.column_main_pos(idx);
+                let target_column_span = self.columns[idx].width();
 
                 // NOTE: This logic won't work entirely correctly with small fixed-size maximized
                 // windows (they have a different area and padding).
-                let total_width = if source_col_x < target_col_x {
-                    // Source is left from target.
-                    target_col_x - source_col_x + target_col_width
+                let combined_span = if source_column_main < target_column_main {
+                    // Source is before target along the main axis.
+                    target_column_main - source_column_main + target_column_span
                 } else {
-                    // Source is right from target.
-                    source_col_x - target_col_x + source_col_width
+                    // Source is after target along the main axis.
+                    source_column_main - target_column_main + source_column_span
                 } + self.options.layout.gaps * 2.;
 
                 // If it fits together, do a normal animation, otherwise center the new column.
-                if total_width <= self.working_area.size.w {
-                    self.compute_new_view_offset_for_column_fit(target_x, idx)
+                if combined_span <= self.working_area.size.w {
+                    self.compute_new_view_offset_for_column_fit(target_view_main, idx)
                 } else {
-                    self.compute_new_view_offset_for_column_centered(target_x, idx)
+                    self.compute_new_view_offset_for_column_centered(target_view_main, idx)
                 }
             }
             CenterFocusedColumn::Never => {
-                self.compute_new_view_offset_for_column_fit(target_x, idx)
+                self.compute_new_view_offset_for_column_fit(target_view_main, idx)
             }
         }
     }
@@ -738,9 +758,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         new_view_offset: f64,
         config: niri_config::Animation,
     ) {
-        let new_col_x = self.column_main_pos(idx);
-        let old_col_x = self.column_main_pos(self.active_column_idx);
-        let offset_delta = old_col_x - new_col_x;
+        let new_column_main = self.column_main_pos(idx);
+        let old_column_main = self.column_main_pos(self.active_column_idx);
+        let offset_delta = old_column_main - new_column_main;
         self.view_offset.offset(offset_delta);
 
         let pixel = 1. / self.scale;
@@ -780,33 +800,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     fn animate_view_offset_to_column_centered(
         &mut self,
-        target_x: Option<f64>,
+        target_view_main: Option<f64>,
         idx: usize,
         config: niri_config::Animation,
     ) {
-        let new_view_offset = self.compute_new_view_offset_for_column_centered(target_x, idx);
+        let new_view_offset =
+            self.compute_new_view_offset_for_column_centered(target_view_main, idx);
         self.animate_view_offset_with_config(idx, new_view_offset, config);
     }
 
     fn animate_view_offset_to_column_with_config(
         &mut self,
-        target_x: Option<f64>,
+        target_view_main: Option<f64>,
         idx: usize,
         prev_idx: Option<usize>,
         config: niri_config::Animation,
     ) {
-        let new_view_offset = self.compute_new_view_offset_for_column(target_x, idx, prev_idx);
+        let new_view_offset =
+            self.compute_new_view_offset_for_column(target_view_main, idx, prev_idx);
         self.animate_view_offset_with_config(idx, new_view_offset, config);
     }
 
     fn animate_view_offset_to_column(
         &mut self,
-        target_x: Option<f64>,
+        target_view_main: Option<f64>,
         idx: usize,
         prev_idx: Option<usize>,
     ) {
         self.animate_view_offset_to_column_with_config(
-            target_x,
+            target_view_main,
             idx,
             prev_idx,
             self.options.animations.horizontal_view_movement.0,
@@ -1731,8 +1753,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let current_col_x = self.column_main_pos(self.active_column_idx);
-        let next_col_x = self.column_main_pos(self.active_column_idx + 1);
+        let current_column_main = self.column_main_pos(self.active_column_idx);
+        let next_column_main = self.column_main_pos(self.active_column_idx + 1);
 
         let mut column = self.columns.remove(self.active_column_idx);
         let data = self.data.remove(self.active_column_idx);
@@ -1740,23 +1762,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.columns.insert(new_idx, column);
         self.data.insert(new_idx, data);
 
-        // Preserve the camera position when moving to the left.
-        let view_offset_delta = -self.column_main_pos(self.active_column_idx) + current_col_x;
+        // Preserve the camera position when moving toward the start of the main axis.
+        let view_offset_delta = -self.column_main_pos(self.active_column_idx) + current_column_main;
         self.view_offset.offset(view_offset_delta);
 
         // The column we just moved is offset by the difference between its new and old position.
-        let new_col_x = self.column_main_pos(new_idx);
-        self.columns[new_idx].animate_move_from(current_col_x - new_col_x);
+        let new_column_main = self.column_main_pos(new_idx);
+        self.columns[new_idx].animate_move_from(current_column_main - new_column_main);
 
-        // All columns in between moved by the width of the column that we just moved.
-        let others_x_offset = next_col_x - current_col_x;
+        // All columns in between move by the span of the column that we just moved.
+        let between_columns_main_delta = next_column_main - current_column_main;
         if self.active_column_idx < new_idx {
             for col in &mut self.columns[self.active_column_idx..new_idx] {
-                col.animate_move_from(others_x_offset);
+                col.animate_move_from(between_columns_main_delta);
             }
         } else {
             for col in &mut self.columns[new_idx + 1..=self.active_column_idx] {
-                col.animate_move_from(-others_x_offset);
+                col.animate_move_from(-between_columns_main_delta);
             }
         }
 
@@ -2292,40 +2314,41 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        // Consider the end of an ongoing animation because that's what compute to fit does too.
-        let view_x = self.target_view_main_pos();
-        let working_x = self.working_area.loc.x;
-        let working_w = self.working_area.size.w;
+        // Consider the end of an ongoing animation because that's what compute-to-fit does too.
+        let target_view_main = self.target_view_main_pos();
+        let work_area_main = self.working_area.loc.x;
+        let work_area_span = self.working_area.size.w;
 
         // Count all columns that are fully visible inside the working area.
-        let mut width_taken = 0.;
-        let mut leftmost_col_x = None;
-        let mut active_col_x = None;
+        let mut occupied_span = 0.;
+        let mut first_visible_column_main = None;
+        let mut active_column_main = None;
 
         let gap = self.options.layout.gaps;
-        let col_xs = self.column_main_positions(self.data.iter().copied());
-        for (idx, col_x) in col_xs.take(self.columns.len()).enumerate() {
-            if col_x < view_x + working_x + gap {
-                // Column goes off-screen to the left.
+        let column_mains = self.column_main_positions(self.data.iter().copied());
+        for (idx, column_main) in column_mains.take(self.columns.len()).enumerate() {
+            if column_main < target_view_main + work_area_main + gap {
+                // Column goes off-screen on the start side.
                 continue;
             }
 
-            leftmost_col_x.get_or_insert(col_x);
+            first_visible_column_main.get_or_insert(column_main);
 
-            let width = self.data[idx].width;
-            if view_x + working_x + working_w < col_x + width + gap {
-                // Column goes off-screen to the right. We can stop here.
+            let column_span = self.data[idx].width;
+            if target_view_main + work_area_main + work_area_span < column_main + column_span + gap
+            {
+                // Column goes off-screen on the end side. We can stop here.
                 break;
             }
 
             if idx == self.active_column_idx {
-                active_col_x = Some(col_x);
+                active_column_main = Some(column_main);
             }
 
-            width_taken += width + gap;
+            occupied_span += column_span + gap;
         }
 
-        if active_col_x.is_none() {
+        if active_column_main.is_none() {
             // The active column wasn't fully on screen, so we can't meaningfully do anything.
             return;
         }
@@ -2333,10 +2356,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &mut self.columns[self.active_column_idx];
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        let free_space = working_w - width_taken + gap;
-        let new_view_x = leftmost_col_x.unwrap() - free_space / 2. - working_x;
+        let free_span = work_area_span - occupied_span + gap;
+        let new_view_main = first_visible_column_main.unwrap() - free_span / 2. - work_area_main;
 
-        self.animate_view_offset(self.active_column_idx, new_view_x - active_col_x.unwrap());
+        self.animate_view_offset(
+            self.active_column_idx,
+            new_view_main - active_column_main.unwrap(),
+        );
         // Just in case.
         self.animate_view_offset_to_column(None, self.active_column_idx, None);
     }
@@ -2833,51 +2859,52 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // NOTE: This logic won't work entirely correctly with small fixed-size maximized windows
         // (they have a different area and padding).
 
-        // Consider the end of an ongoing animation because that's what compute to fit does too.
-        let view_x = self.target_view_main_pos();
-        let working_x = self.working_area.loc.x;
-        let working_w = self.working_area.size.w;
+        // Consider the end of an ongoing animation because that's what compute-to-fit does too.
+        let target_view_main = self.target_view_main_pos();
+        let work_area_main = self.working_area.loc.x;
+        let work_area_span = self.working_area.size.w;
 
         // Count all columns that are fully visible inside the working area.
-        let mut width_taken = 0.;
-        let mut leftmost_col_x = None;
-        let mut active_col_x = None;
+        let mut occupied_span = 0.;
+        let mut first_visible_column_main = None;
+        let mut active_column_main = None;
         let mut counted_non_active_column = false;
 
         let gap = self.options.layout.gaps;
-        let col_xs = self.column_main_positions(self.data.iter().copied());
-        for (idx, col_x) in col_xs.take(self.columns.len()).enumerate() {
-            if col_x < view_x + working_x + gap {
-                // Column goes off-screen to the left.
+        let column_mains = self.column_main_positions(self.data.iter().copied());
+        for (idx, column_main) in column_mains.take(self.columns.len()).enumerate() {
+            if column_main < target_view_main + work_area_main + gap {
+                // Column goes off-screen on the start side.
                 continue;
             }
 
-            leftmost_col_x.get_or_insert(col_x);
+            first_visible_column_main.get_or_insert(column_main);
 
-            let width = self.data[idx].width;
-            if view_x + working_x + working_w < col_x + width + gap {
-                // Column goes off-screen to the right. We can stop here.
+            let column_span = self.data[idx].width;
+            if target_view_main + work_area_main + work_area_span < column_main + column_span + gap
+            {
+                // Column goes off-screen on the end side. We can stop here.
                 break;
             }
 
             if idx == self.active_column_idx {
-                active_col_x = Some(col_x);
+                active_column_main = Some(column_main);
             } else {
                 counted_non_active_column = true;
             }
 
-            width_taken += width + gap;
+            occupied_span += column_span + gap;
         }
 
-        if active_col_x.is_none() {
+        if active_column_main.is_none() {
             // The active column wasn't fully on screen, so we can't meaningfully do anything.
             return;
         }
 
         let col = &mut self.columns[self.active_column_idx];
 
-        let available_width = working_w - gap - width_taken - col.extra_size().w;
-        if available_width <= 0. {
+        let available_span = work_area_span - gap - occupied_span - col.extra_size().w;
+        if available_span <= 0. {
             // Nowhere to expand.
             return;
         }
@@ -2892,15 +2919,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let active_width = self.data[self.active_column_idx].width;
-        col.width = ColumnWidth::Fixed(active_width + available_width);
+        let active_span = self.data[self.active_column_idx].width;
+        col.width = ColumnWidth::Fixed(active_span + available_span);
         col.preset_width_idx = None;
         col.is_full_width = false;
         col.update_tile_sizes(true);
 
-        // Put the leftmost window into the view.
-        let new_view_x = leftmost_col_x.unwrap() - gap - working_x;
-        self.animate_view_offset(self.active_column_idx, new_view_x - active_col_x.unwrap());
+        // Put the first visible window into the view.
+        let new_view_main = first_visible_column_main.unwrap() - gap - work_area_main;
+        self.animate_view_offset(
+            self.active_column_idx,
+            new_view_main - active_column_main.unwrap(),
+        );
         // Just in case.
         self.animate_view_offset_to_column(None, self.active_column_idx, None);
     }
