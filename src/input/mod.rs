@@ -6,8 +6,7 @@ use std::time::Duration;
 use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
-    Action, Bind, Binds, Config, Key, MainAxis, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger,
+    Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
 use niri_ipc::LayoutSwitchTarget;
 use smithay::backend::input::{
@@ -40,6 +39,7 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 use touch_overview_grab::TouchOverviewGrab;
 
+use self::axis_policy::{InputAxisPolicy, OverviewWheelTarget};
 use self::move_grab::MoveGrab;
 use self::pick_color_grab::PickColorGrab;
 use self::pick_window_grab::PickWindowGrab;
@@ -55,6 +55,7 @@ use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
 use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
 
+mod axis_policy;
 pub mod backend_ext;
 pub mod move_grab;
 pub mod pick_color_grab;
@@ -70,50 +71,6 @@ pub mod touch_resize_grab;
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
 pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
-
-pub(super) fn gesture_prefers_view_offset(
-    cumulative_x: f64,
-    cumulative_y: f64,
-    view_axis_vertical: bool,
-) -> bool {
-    if view_axis_vertical {
-        cumulative_y.abs() > cumulative_x.abs()
-    } else {
-        cumulative_x.abs() > cumulative_y.abs()
-    }
-}
-
-pub(super) fn map_view_workspace_deltas(
-    delta_x: f64,
-    delta_y: f64,
-    view_axis_vertical: bool,
-) -> (f64, f64) {
-    if view_axis_vertical {
-        (delta_y, delta_x)
-    } else {
-        (delta_x, delta_y)
-    }
-}
-
-fn overview_wheel_scroll_uses_workspace(
-    horizontal: bool,
-    modifiers: Modifiers,
-    view_axis_vertical: bool,
-) -> Option<bool> {
-    if horizontal {
-        if modifiers.is_empty() {
-            Some(view_axis_vertical)
-        } else {
-            None
-        }
-    } else if modifiers.is_empty() {
-        Some(!view_axis_vertical)
-    } else if modifiers == Modifiers::SHIFT {
-        Some(view_axis_vertical)
-    } else {
-        None
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
@@ -285,30 +242,32 @@ impl State {
         }
     }
 
-    fn view_axis_vertical_on_output(&self, output: &Output) -> Option<bool> {
+    fn view_axis_policy_on_output(&self, output: &Output) -> Option<InputAxisPolicy> {
         let mon = self.niri.layout.monitor_for_output(output)?;
-        Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
+        Some(InputAxisPolicy::from_main_axis(
+            mon.active_workspace_ref().main_axis(),
+        ))
     }
 
-    fn view_axis_vertical_under_cursor_or_active_workspace(&self) -> Option<bool> {
+    fn view_axis_policy_under_cursor_or_active_workspace(&self) -> Option<InputAxisPolicy> {
         self.niri
             .workspace_under_cursor(true)
-            .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+            .map(|(_, ws)| InputAxisPolicy::from_main_axis(ws.main_axis()))
             .or_else(|| {
                 let output = self.niri.output_under_cursor()?;
-                self.view_axis_vertical_on_output(&output)
+                self.view_axis_policy_on_output(&output)
             })
     }
 
-    fn view_axis_vertical_for_swipe(&self, is_overview_open: bool) -> bool {
+    fn view_axis_policy_for_swipe(&self, is_overview_open: bool) -> InputAxisPolicy {
         if is_overview_open {
-            self.view_axis_vertical_under_cursor_or_active_workspace()
+            self.view_axis_policy_under_cursor_or_active_workspace()
         } else {
             self.niri
                 .output_under_cursor()
-                .and_then(|output| self.view_axis_vertical_on_output(&output))
+                .and_then(|output| self.view_axis_policy_on_output(&output))
         }
-        .unwrap_or(false)
+        .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false))
     }
 
     fn on_device_added(&mut self, device: impl Device) {
@@ -2897,7 +2856,7 @@ impl State {
                 if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
                     let ws_id = ws.id();
                     let ws_idx = self.niri.layout.find_workspace_by_id(ws_id).unwrap().0;
-                    let view_axis_vertical = ws.main_axis() == MainAxis::Vertical;
+                    let axis_policy = InputAxisPolicy::from_main_axis(ws.main_axis());
 
                     self.niri.layout.focus_output(&output);
 
@@ -2910,13 +2869,8 @@ impl State {
                     self.niri
                         .layout
                         .view_offset_gesture_begin(&output, Some(ws_idx), false);
-                    let grab = SpatialMovementGrab::new(
-                        start_data,
-                        output,
-                        ws_id,
-                        view_axis_vertical,
-                        true,
-                    );
+                    let grab =
+                        SpatialMovementGrab::new(start_data, output, ws_id, axis_policy, true);
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -2942,7 +2896,7 @@ impl State {
 
                 if let Some((output, ws)) = output_ws {
                     let ws_id = ws.id();
-                    let view_axis_vertical = ws.main_axis() == MainAxis::Vertical;
+                    let axis_policy = InputAxisPolicy::from_main_axis(ws.main_axis());
 
                     self.niri.layout.focus_output(&output);
 
@@ -2952,13 +2906,8 @@ impl State {
                         button: button_code,
                         location,
                     };
-                    let grab = SpatialMovementGrab::new(
-                        start_data,
-                        output,
-                        ws_id,
-                        view_axis_vertical,
-                        false,
-                    );
+                    let grab =
+                        SpatialMovementGrab::new(start_data, output, ws_id, axis_policy, false);
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -3208,81 +3157,52 @@ impl State {
                 || is_mru_open
                 || self.niri.mods_with_wheel_binds.contains(&modifiers);
             if should_handle {
-                let overview_view_axis_vertical = if should_handle_in_overview {
-                    self.view_axis_vertical_under_cursor_or_active_workspace()
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
+                let overview_axis_policy = should_handle_in_overview.then(|| {
+                    self.view_axis_policy_under_cursor_or_active_workspace()
+                        .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false))
+                });
 
                 let horizontal = horizontal_amount_v120.unwrap_or(0.);
                 let ticks = self.niri.horizontal_wheel_tracker.accumulate(horizontal);
                 if ticks != 0 {
-                    let (bind_left, bind_right) = if should_handle_in_overview {
-                        if let Some(uses_workspace) = overview_wheel_scroll_uses_workspace(
-                            true,
-                            modifiers,
-                            overview_view_axis_vertical,
-                        ) {
-                            let bind_left = Some(Bind {
-                                key: Key {
-                                    trigger: Trigger::WheelScrollLeft,
-                                    modifiers: Modifiers::empty(),
-                                },
-                                action: if uses_workspace {
+                    let (bind_left, bind_right) = if let Some(target) = overview_axis_policy
+                        .and_then(|policy| policy.overview_wheel_target(true, modifiers))
+                    {
+                        let bind_left = Some(Bind {
+                            key: Key {
+                                trigger: Trigger::WheelScrollLeft,
+                                modifiers: Modifiers::empty(),
+                            },
+                            action: match target {
+                                OverviewWheelTarget::Column => Action::FocusColumnLeftUnderMouse,
+                                OverviewWheelTarget::Workspace => {
                                     Action::FocusWorkspaceUpUnderMouse
-                                } else {
-                                    Action::FocusColumnLeftUnderMouse
-                                },
-                                repeat: true,
-                                cooldown: None,
-                                allow_when_locked: false,
-                                allow_inhibiting: false,
-                                hotkey_overlay_title: None,
-                            });
-                            let bind_right = Some(Bind {
-                                key: Key {
-                                    trigger: Trigger::WheelScrollRight,
-                                    modifiers: Modifiers::empty(),
-                                },
-                                action: if uses_workspace {
+                                }
+                            },
+                            repeat: true,
+                            cooldown: None,
+                            allow_when_locked: false,
+                            allow_inhibiting: false,
+                            hotkey_overlay_title: None,
+                        });
+                        let bind_right = Some(Bind {
+                            key: Key {
+                                trigger: Trigger::WheelScrollRight,
+                                modifiers: Modifiers::empty(),
+                            },
+                            action: match target {
+                                OverviewWheelTarget::Column => Action::FocusColumnRightUnderMouse,
+                                OverviewWheelTarget::Workspace => {
                                     Action::FocusWorkspaceDownUnderMouse
-                                } else {
-                                    Action::FocusColumnRightUnderMouse
-                                },
-                                repeat: true,
-                                cooldown: None,
-                                allow_when_locked: false,
-                                allow_inhibiting: false,
-                                hotkey_overlay_title: None,
-                            });
-                            (bind_left, bind_right)
-                        } else {
-                            let config = self.niri.config.borrow();
-                            let bindings =
-                                make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
-                            let bind_left = find_configured_bind(
-                                bindings.clone(),
-                                mod_key,
-                                Trigger::WheelScrollLeft,
-                                mods,
-                            )
-                            .filter(|bind| {
-                                !self.niri.screenshot_ui.is_open()
-                                    || allowed_during_screenshot(&bind.action)
-                            });
-                            let bind_right = find_configured_bind(
-                                bindings,
-                                mod_key,
-                                Trigger::WheelScrollRight,
-                                mods,
-                            )
-                            .filter(|bind| {
-                                !self.niri.screenshot_ui.is_open()
-                                    || allowed_during_screenshot(&bind.action)
-                            });
-                            (bind_left, bind_right)
-                        }
+                                }
+                            },
+                            repeat: true,
+                            cooldown: None,
+                            allow_when_locked: false,
+                            allow_inhibiting: false,
+                            hotkey_overlay_title: None,
+                        });
+                        (bind_left, bind_right)
                     } else {
                         let config = self.niri.config.borrow();
                         let bindings =
@@ -3292,13 +3212,21 @@ impl State {
                             mod_key,
                             Trigger::WheelScrollLeft,
                             mods,
-                        );
+                        )
+                        .filter(|bind| {
+                            !self.niri.screenshot_ui.is_open()
+                                || allowed_during_screenshot(&bind.action)
+                        });
                         let bind_right = find_configured_bind(
                             bindings,
                             mod_key,
                             Trigger::WheelScrollRight,
                             mods,
-                        );
+                        )
+                        .filter(|bind| {
+                            !self.niri.screenshot_ui.is_open()
+                                || allowed_during_screenshot(&bind.action)
+                        });
                         (bind_left, bind_right)
                     };
 
@@ -3317,63 +3245,44 @@ impl State {
                 let vertical = vertical_amount_v120.unwrap_or(0.);
                 let ticks = self.niri.vertical_wheel_tracker.accumulate(vertical);
                 if ticks != 0 {
-                    let (bind_up, bind_down) = if should_handle_in_overview {
-                        if let Some(uses_workspace) = overview_wheel_scroll_uses_workspace(
-                            false,
-                            modifiers,
-                            overview_view_axis_vertical,
-                        ) {
-                            let bind_up = Some(Bind {
-                                key: Key {
-                                    trigger: Trigger::WheelScrollUp,
-                                    modifiers: Modifiers::empty(),
-                                },
-                                action: if uses_workspace {
+                    let (bind_up, bind_down) = if let Some(target) = overview_axis_policy
+                        .and_then(|policy| policy.overview_wheel_target(false, modifiers))
+                    {
+                        let bind_up = Some(Bind {
+                            key: Key {
+                                trigger: Trigger::WheelScrollUp,
+                                modifiers: Modifiers::empty(),
+                            },
+                            action: match target {
+                                OverviewWheelTarget::Column => Action::FocusColumnLeftUnderMouse,
+                                OverviewWheelTarget::Workspace => {
                                     Action::FocusWorkspaceUpUnderMouse
-                                } else {
-                                    Action::FocusColumnLeftUnderMouse
-                                },
-                                repeat: true,
-                                cooldown: Some(Duration::from_millis(50)),
-                                allow_when_locked: false,
-                                allow_inhibiting: false,
-                                hotkey_overlay_title: None,
-                            });
-                            let bind_down = Some(Bind {
-                                key: Key {
-                                    trigger: Trigger::WheelScrollDown,
-                                    modifiers: Modifiers::empty(),
-                                },
-                                action: if uses_workspace {
+                                }
+                            },
+                            repeat: true,
+                            cooldown: Some(Duration::from_millis(50)),
+                            allow_when_locked: false,
+                            allow_inhibiting: false,
+                            hotkey_overlay_title: None,
+                        });
+                        let bind_down = Some(Bind {
+                            key: Key {
+                                trigger: Trigger::WheelScrollDown,
+                                modifiers: Modifiers::empty(),
+                            },
+                            action: match target {
+                                OverviewWheelTarget::Column => Action::FocusColumnRightUnderMouse,
+                                OverviewWheelTarget::Workspace => {
                                     Action::FocusWorkspaceDownUnderMouse
-                                } else {
-                                    Action::FocusColumnRightUnderMouse
-                                },
-                                repeat: true,
-                                cooldown: Some(Duration::from_millis(50)),
-                                allow_when_locked: false,
-                                allow_inhibiting: false,
-                                hotkey_overlay_title: None,
-                            });
-                            (bind_up, bind_down)
-                        } else {
-                            let config = self.niri.config.borrow();
-                            let bindings =
-                                make_binds_iter(&config, &mut self.niri.window_mru_ui, modifiers);
-                            let bind_up = find_configured_bind(
-                                bindings.clone(),
-                                mod_key,
-                                Trigger::WheelScrollUp,
-                                mods,
-                            );
-                            let bind_down = find_configured_bind(
-                                bindings,
-                                mod_key,
-                                Trigger::WheelScrollDown,
-                                mods,
-                            );
-                            (bind_up, bind_down)
-                        }
+                                }
+                            },
+                            repeat: true,
+                            cooldown: Some(Duration::from_millis(50)),
+                            allow_when_locked: false,
+                            allow_inhibiting: false,
+                            hotkey_overlay_title: None,
+                        });
+                        (bind_up, bind_down)
                     } else {
                         let config = self.niri.config.borrow();
                         let bindings =
@@ -3430,11 +3339,11 @@ impl State {
             if should_handle_in_overview && modifiers.is_empty() {
                 let mut redraw = false;
 
-                let view_axis_vertical = self
-                    .view_axis_vertical_under_cursor_or_active_workspace()
-                    .unwrap_or(false);
+                let axis_policy = self
+                    .view_axis_policy_under_cursor_or_active_workspace()
+                    .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
                 let (gesture_dx, gesture_dy) =
-                    map_view_workspace_deltas(horizontal, vertical, view_axis_vertical);
+                    axis_policy.split_view_workspace_deltas(horizontal, vertical);
                 let view_delta = gesture_dx;
                 let workspace_delta = gesture_dy;
 
@@ -4030,7 +3939,7 @@ impl State {
         }
 
         let is_overview_open = self.niri.layout.is_overview_open();
-        let view_axis_vertical = self.view_axis_vertical_for_swipe(is_overview_open);
+        let axis_policy = self.view_axis_policy_for_swipe(is_overview_open);
 
         if let Some((cx, cy)) = &mut self.niri.gesture_swipe_3f_cumulative {
             *cx += delta_x;
@@ -4042,7 +3951,7 @@ impl State {
                 self.niri.gesture_swipe_3f_cumulative = None;
 
                 if let Some(output) = self.niri.output_under_cursor() {
-                    let start_view_offset = gesture_prefers_view_offset(cx, cy, view_axis_vertical);
+                    let start_view_offset = axis_policy.gesture_prefers_view_offset(cx, cy);
 
                     if start_view_offset {
                         let output_ws = if is_overview_open {
@@ -4073,7 +3982,7 @@ impl State {
 
         let timestamp = Duration::from_micros(event.time());
         let (view_delta, workspace_delta) =
-            map_view_workspace_deltas(delta_x, delta_y, view_axis_vertical);
+            axis_policy.split_view_workspace_deltas(delta_x, delta_y);
 
         let mut handled = false;
         let res =
@@ -5317,57 +5226,6 @@ mod tests {
 
     use super::*;
     use crate::animation::Clock;
-
-    #[test]
-    fn gesture_prefers_view_offset_respects_main_axis() {
-        assert!(gesture_prefers_view_offset(20., 1., false));
-        assert!(!gesture_prefers_view_offset(1., 20., false));
-        assert!(gesture_prefers_view_offset(1., 20., true));
-        assert!(!gesture_prefers_view_offset(20., 1., true));
-        assert!(!gesture_prefers_view_offset(10., 10., false));
-        assert!(!gesture_prefers_view_offset(10., 10., true));
-    }
-
-    #[test]
-    fn map_view_workspace_deltas_respects_main_axis() {
-        assert_eq!(map_view_workspace_deltas(3., -7., false), (3., -7.));
-        assert_eq!(map_view_workspace_deltas(3., -7., true), (-7., 3.));
-    }
-
-    #[test]
-    fn overview_wheel_scroll_uses_workspace_respects_main_axis_and_shift() {
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(true, Modifiers::empty(), false),
-            Some(false)
-        );
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(true, Modifiers::empty(), true),
-            Some(true)
-        );
-
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(false, Modifiers::empty(), false),
-            Some(true)
-        );
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(false, Modifiers::SHIFT, false),
-            Some(false)
-        );
-
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(false, Modifiers::empty(), true),
-            Some(false)
-        );
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(false, Modifiers::SHIFT, true),
-            Some(true)
-        );
-
-        assert_eq!(
-            overview_wheel_scroll_uses_workspace(true, Modifiers::SHIFT, false),
-            None
-        );
-    }
 
     #[test]
     fn bindings_suppress_keys() {

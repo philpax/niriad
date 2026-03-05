@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use niri_config::MainAxis;
 use smithay::backend::input::ButtonState;
 use smithay::desktop::Window;
 use smithay::input::pointer::{
@@ -17,9 +16,8 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
 
-use crate::input::{
-    gesture_prefers_view_offset, map_view_workspace_deltas, PointerOrTouchStartData,
-};
+use crate::input::axis_policy::InputAxisPolicy;
+use crate::input::PointerOrTouchStartData;
 use crate::niri::State;
 use crate::utils::get_monotonic_time;
 
@@ -191,7 +189,7 @@ impl MoveGrab {
             // Check if the gesture moved far enough to decide.
             let c = self.new_location - self.start_data.location();
             if c.x * c.x + c.y * c.y >= 8. * 8. {
-                let (is_floating, view_axis_vertical) = data
+                let (is_floating, axis_policy) = data
                     .niri
                     .layout
                     .workspaces()
@@ -199,15 +197,15 @@ impl MoveGrab {
                         ws.windows().any(|w| w.window == self.window).then(|| {
                             (
                                 ws.is_floating(&self.window),
-                                ws.main_axis() == MainAxis::Vertical,
+                                InputAxisPolicy::from_main_axis(ws.main_axis()),
                             )
                         })
                     })
-                    .unwrap_or((false, false));
+                    .unwrap_or((false, InputAxisPolicy::from_view_axis_vertical(false)));
 
                 let is_view_offset = self.enable_view_offset
                     && !is_floating
-                    && gesture_prefers_view_offset(c.x, c.y, view_axis_vertical);
+                    && axis_policy.gesture_prefers_view_offset(c.x, c.y);
 
                 let started = if is_view_offset {
                     self.begin_view_offset(data)
@@ -248,21 +246,18 @@ impl MoveGrab {
                 }
             }
             GestureState::ViewOffset => {
-                let view_axis_vertical = data
+                let axis_policy = data
                     .niri
                     .layout
                     .workspaces()
                     .find_map(|(_, _, ws)| {
                         ws.windows()
                             .any(|w| w.window == self.window)
-                            .then(|| ws.main_axis() == MainAxis::Vertical)
+                            .then(|| InputAxisPolicy::from_main_axis(ws.main_axis()))
                     })
-                    .unwrap_or(false);
-                let (view_delta, _) = map_view_workspace_deltas(
-                    -relative_delta.x,
-                    -relative_delta.y,
-                    view_axis_vertical,
-                );
+                    .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
+                let (view_delta, _) =
+                    axis_policy.split_view_workspace_deltas(-relative_delta.x, -relative_delta.y);
 
                 let res = data
                     .niri

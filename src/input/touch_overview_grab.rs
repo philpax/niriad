@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use niri_config::MainAxis;
 use smithay::desktop::Window;
 use smithay::input::touch::{
     DownEvent, GrabStartData as TouchGrabStartData, MotionEvent, OrientationEvent, ShapeEvent,
@@ -10,7 +9,7 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial};
 
-use crate::input::{gesture_prefers_view_offset, map_view_workspace_deltas};
+use crate::input::axis_policy::InputAxisPolicy;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::niri::State;
 use crate::window::Mapped;
@@ -197,11 +196,8 @@ impl TouchGrab<State> for TouchOverviewGrab {
                     .workspace_id
                     .and_then(|ws_id| {
                         layout.find_workspace_by_id(ws_id).map(|(_, ws)| {
-                            gesture_prefers_view_offset(
-                                c.x,
-                                c.y,
-                                ws.main_axis() == MainAxis::Vertical,
-                            )
+                            InputAxisPolicy::from_main_axis(ws.main_axis())
+                                .gesture_prefers_view_offset(c.x, c.y)
                         })
                     })
                     .unwrap_or(false);
@@ -230,16 +226,16 @@ impl TouchGrab<State> for TouchOverviewGrab {
         let delta = event.location - self.last_location;
         self.last_location = event.location;
 
-        let view_axis_vertical = self
+        let axis_policy = self
             .workspace_id
             .and_then(|ws_id| {
                 layout
                     .find_workspace_by_id(ws_id)
-                    .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+                    .map(|(_, ws)| InputAxisPolicy::from_main_axis(ws.main_axis()))
             })
-            .unwrap_or(false);
+            .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
         let (view_delta, workspace_delta) =
-            map_view_workspace_deltas(-delta.x, -delta.y, view_axis_vertical);
+            axis_policy.split_view_workspace_deltas(-delta.x, -delta.y);
 
         let ongoing = match self.gesture {
             GestureState::Recognizing => unreachable!(),
