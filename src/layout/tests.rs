@@ -1766,6 +1766,102 @@ fn vertical_main_axis_dnd_edge_scroll_uses_vertical_edges() {
 }
 
 #[test]
+fn vertical_main_axis_set_column_width_changes_tile_height() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+        ],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let before = win.requested_size().unwrap();
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::SetColumnWidth(SizeChange::AdjustProportion(5.))],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let after = win.requested_size().unwrap();
+
+    assert_eq!(before.w, after.w);
+    assert!(
+        after.h > before.h,
+        "expected height to grow: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn vertical_main_axis_interactive_resize_bottom_changes_tile_height() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+        ],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let before = win.requested_size().unwrap();
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveResizeBegin {
+                window: 1,
+                edges: ResizeEdge::BOTTOM,
+            },
+            Op::InteractiveResizeUpdate {
+                window: 1,
+                dx: 0.,
+                dy: 120.,
+            },
+            Op::InteractiveResizeEnd { window: 1 },
+        ],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let after = win.requested_size().unwrap();
+
+    assert_eq!(before.w, after.w);
+    assert!(
+        after.h > before.h,
+        "expected interactive resize to grow height: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn scrolling_windows_have_ipc_tile_positions() {
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+    ]);
+
+    let mut tile_pos = None;
+    layout.with_windows(|win, _, _, layout| {
+        if *win.id() == 1 {
+            tile_pos = layout.tile_pos_in_workspace_view;
+        }
+    });
+
+    assert!(tile_pos.is_some());
+}
+
+#[test]
 fn operations_dont_panic() {
     if std::env::var_os("RUN_SLOW_TESTS").is_none() {
         eprintln!("ignoring slow test");
