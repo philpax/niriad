@@ -4585,17 +4585,17 @@ impl<W: LayoutElement> Column<W> {
         }
     }
 
-    fn resolve_preset_width(&self, preset: PresetSize) -> ResolvedSize {
+    fn resolve_preset_main_span(&self, preset: PresetSize) -> ResolvedSize {
         let extra = self.extra_size();
         resolve_preset_size(preset, &self.options, self.working_area.size.w, extra.w)
     }
 
-    fn resolve_preset_height(&self, preset: PresetSize) -> ResolvedSize {
+    fn resolve_preset_cross_span(&self, preset: PresetSize) -> ResolvedSize {
         let extra = self.extra_size();
         resolve_preset_size(preset, &self.options, self.working_area.size.h, extra.h)
     }
 
-    fn resolve_column_width(&self, width: ColumnWidth) -> f64 {
+    fn resolve_column_main_span(&self, width: ColumnWidth) -> f64 {
         let working_size = self.working_area.size;
         let gaps = self.options.layout.gaps;
         let extra = self.extra_size();
@@ -4606,6 +4606,18 @@ impl<W: LayoutElement> Column<W> {
             }
             ColumnWidth::Fixed(width) => width,
         }
+    }
+
+    fn tile_main_span_for_window_main_span(&self, tile: &Tile<W>, window_main_span: f64) -> f64 {
+        tile.tile_width_for_window_width(window_main_span)
+    }
+
+    fn tile_cross_span_for_window_cross_span(&self, tile: &Tile<W>, window_cross_span: f64) -> f64 {
+        tile.tile_height_for_window_height(window_cross_span)
+    }
+
+    fn window_cross_span_for_tile_cross_span(&self, tile: &Tile<W>, tile_cross_span: f64) -> f64 {
+        tile.window_height_for_tile_height(tile_cross_span)
     }
 
     fn update_tile_sizes(&mut self, animate: bool) {
@@ -4689,7 +4701,7 @@ impl<W: LayoutElement> Column<W> {
         let working_size = self.working_area.size;
         let extra_size = self.extra_size();
 
-        let width = self.resolve_column_width(width);
+        let width = self.resolve_column_main_span(width);
         let width = f64::max(f64::min(width, max_width), min_width);
         let max_tile_height = working_size.h - self.options.layout.gaps * 2. - extra_size.h;
 
@@ -4713,7 +4725,8 @@ impl<W: LayoutElement> Column<W> {
                 let height_left = max_tile_height - min_height_taken;
                 max_non_auto_window_height = Some(f64::max(
                     1.,
-                    tile.window_height_for_tile_height(height_left).round(),
+                    self.window_cross_span_for_tile_cross_span(tile, height_left)
+                        .round(),
                 ));
             }
         }
@@ -4728,16 +4741,22 @@ impl<W: LayoutElement> Column<W> {
                         window_height = f64::min(window_height, max);
                     } else {
                         // In any case, clamp to the working area height.
-                        let max = tile.window_height_for_tile_height(max_tile_height).round();
+                        let max = self
+                            .window_cross_span_for_tile_cross_span(tile, max_tile_height)
+                            .round();
                         window_height = f64::min(window_height, max);
                     }
 
-                    WindowHeight::Fixed(tile.tile_height_for_window_height(window_height))
+                    WindowHeight::Fixed(
+                        self.tile_cross_span_for_window_cross_span(tile, window_height),
+                    )
                 }
                 WindowHeight::Preset(idx) => {
                     let preset = self.options.layout.preset_window_heights[idx];
-                    let window_height = match self.resolve_preset_height(preset) {
-                        ResolvedSize::Tile(h) => tile.window_height_for_tile_height(h),
+                    let window_height = match self.resolve_preset_cross_span(preset) {
+                        ResolvedSize::Tile(h) => {
+                            self.window_cross_span_for_tile_cross_span(tile, h)
+                        }
                         ResolvedSize::Window(h) => h,
                     };
 
@@ -4746,7 +4765,8 @@ impl<W: LayoutElement> Column<W> {
                         window_height = f64::min(window_height, max);
                     }
 
-                    let tile_height = tile.tile_height_for_window_height(window_height);
+                    let tile_height =
+                        self.tile_cross_span_for_window_cross_span(tile, window_height);
                     WindowHeight::Fixed(tile_height)
                 }
             })
@@ -4862,8 +4882,11 @@ impl<W: LayoutElement> Column<W> {
                     continue 'outer;
                 }
 
-                auto = tile.tile_height_for_window_height(
-                    tile.window_height_for_tile_height(auto).round().max(1.),
+                auto = self.tile_cross_span_for_window_cross_span(
+                    tile,
+                    self.window_cross_span_for_tile_cross_span(tile, auto)
+                        .round()
+                        .max(1.),
                 );
 
                 height_left_2 -= auto;
@@ -4881,8 +4904,11 @@ impl<W: LayoutElement> Column<W> {
 
                 // Compute the current auto height.
                 let auto = height_left * factor;
-                let auto = tile.tile_height_for_window_height(
-                    tile.window_height_for_tile_height(auto).round().max(1.),
+                let auto = self.tile_cross_span_for_window_cross_span(
+                    tile,
+                    self.window_cross_span_for_tile_cross_span(tile, auto)
+                        .round()
+                        .max(1.),
                 );
 
                 *h = WindowHeight::Fixed(auto);
@@ -5019,7 +5045,7 @@ impl<W: LayoutElement> Column<W> {
                 .layout
                 .preset_column_widths
                 .iter()
-                .map(|preset| self.resolve_preset_width(*preset));
+                .map(|preset| self.resolve_preset_main_span(*preset));
 
             if forwards {
                 it.position(|resolved| {
@@ -5061,19 +5087,19 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn set_column_width(&mut self, change: SizeChange, tile_idx: Option<usize>, animate: bool) {
-        let current = if self.is_full_width || self.is_pending_maximized {
+        let current_width = if self.is_full_width || self.is_pending_maximized {
             ColumnWidth::Proportion(1.)
         } else {
             self.width
         };
 
-        let current_px = self.resolve_column_width(current);
+        let current_main_span = self.resolve_column_main_span(current_width);
 
         // FIXME: fix overflows then remove limits.
-        const MAX_PX: f64 = 100000.;
-        const MAX_F: f64 = 10000.;
+        const MAX_MAIN_SPAN: f64 = 100000.;
+        const MAX_PROPORTION: f64 = 10000.;
 
-        let width = match (current, change) {
+        let new_width = match (current_width, change) {
             (_, SizeChange::SetFixed(fixed)) => {
                 // As a special case, setting a fixed column width will compute it in such a way
                 // that the specified (usually active) window gets that width. This is the
@@ -5081,34 +5107,35 @@ impl<W: LayoutElement> Column<W> {
                 let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
                 let tile = &self.tiles[tile_idx];
                 ColumnWidth::Fixed(
-                    tile.tile_width_for_window_width(f64::from(fixed))
-                        .clamp(1., MAX_PX),
+                    self.tile_main_span_for_window_main_span(tile, f64::from(fixed))
+                        .clamp(1., MAX_MAIN_SPAN),
                 )
             }
             (_, SizeChange::SetProportion(proportion)) => {
-                ColumnWidth::Proportion((proportion / 100.).clamp(0., MAX_F))
+                ColumnWidth::Proportion((proportion / 100.).clamp(0., MAX_PROPORTION))
             }
             (_, SizeChange::AdjustFixed(delta)) => {
-                let width = (current_px + f64::from(delta)).clamp(1., MAX_PX);
-                ColumnWidth::Fixed(width)
+                let new_main_span = (current_main_span + f64::from(delta)).clamp(1., MAX_MAIN_SPAN);
+                ColumnWidth::Fixed(new_main_span)
             }
-            (ColumnWidth::Proportion(current), SizeChange::AdjustProportion(delta)) => {
-                let proportion = (current + delta / 100.).clamp(0., MAX_F);
-                ColumnWidth::Proportion(proportion)
+            (ColumnWidth::Proportion(current_proportion), SizeChange::AdjustProportion(delta)) => {
+                let new_proportion = (current_proportion + delta / 100.).clamp(0., MAX_PROPORTION);
+                ColumnWidth::Proportion(new_proportion)
             }
             (ColumnWidth::Fixed(_), SizeChange::AdjustProportion(delta)) => {
-                let full = self.working_area.size.w - self.options.layout.gaps;
-                let current = if full == 0. {
+                let available_main_span = self.working_area.size.w - self.options.layout.gaps;
+                let current_proportion = if available_main_span == 0. {
                     1.
                 } else {
-                    (current_px + self.options.layout.gaps + self.extra_size().w) / full
+                    (current_main_span + self.options.layout.gaps + self.extra_size().w)
+                        / available_main_span
                 };
-                let proportion = (current + delta / 100.).clamp(0., MAX_F);
-                ColumnWidth::Proportion(proportion)
+                let new_proportion = (current_proportion + delta / 100.).clamp(0., MAX_PROPORTION);
+                ColumnWidth::Proportion(new_proportion)
             }
         };
 
-        self.width = width;
+        self.width = new_width;
         self.preset_width_idx = None;
         self.is_full_width = false;
         self.is_pending_maximized = false;
@@ -5127,45 +5154,48 @@ impl<W: LayoutElement> Column<W> {
             self.convert_heights_to_auto();
         }
 
-        let current = self.data[tile_idx].height;
+        let current_height = self.data[tile_idx].height;
         let tile = &self.tiles[tile_idx];
-        let current_window_px = match current {
+        let current_window_cross_span = match current_height {
             WindowHeight::Auto { .. } | WindowHeight::Preset(_) => {
                 self.map_size_in(tile.window_size()).h
             }
-            WindowHeight::Fixed(height) => height,
+            WindowHeight::Fixed(window_cross_span) => window_cross_span,
         };
-        let current_tile_px = tile.tile_height_for_window_height(current_window_px);
+        let current_tile_cross_span =
+            self.tile_cross_span_for_window_cross_span(tile, current_window_cross_span);
 
-        let working_size = self.working_area.size.h;
+        let work_area_cross_span = self.working_area.size.h;
         let gaps = self.options.layout.gaps;
-        let extra_size = self.extra_size().h;
-        let full = working_size - gaps;
-        let current_prop = if full == 0. {
+        let extra_cross_span = self.extra_size().h;
+        let available_cross_span = work_area_cross_span - gaps;
+        let current_proportion = if available_cross_span == 0. {
             1.
         } else {
-            (current_tile_px + gaps) / full
+            (current_tile_cross_span + gaps) / available_cross_span
         };
 
         // FIXME: fix overflows then remove limits.
-        const MAX_PX: f64 = 100000.;
+        const MAX_CROSS_SPAN: f64 = 100000.;
 
-        let mut window_height = match change {
+        let mut new_window_cross_span = match change {
             SizeChange::SetFixed(fixed) => f64::from(fixed),
             SizeChange::SetProportion(proportion) => {
-                let tile_height = (working_size - gaps) * (proportion / 100.) - gaps - extra_size;
-                tile.window_height_for_tile_height(tile_height)
+                let tile_cross_span =
+                    (work_area_cross_span - gaps) * (proportion / 100.) - gaps - extra_cross_span;
+                self.window_cross_span_for_tile_cross_span(tile, tile_cross_span)
             }
-            SizeChange::AdjustFixed(delta) => current_window_px + f64::from(delta),
+            SizeChange::AdjustFixed(delta) => current_window_cross_span + f64::from(delta),
             SizeChange::AdjustProportion(delta) => {
-                let proportion = current_prop + delta / 100.;
-                let tile_height = (working_size - gaps) * proportion - gaps - extra_size;
-                tile.window_height_for_tile_height(tile_height)
+                let new_proportion = current_proportion + delta / 100.;
+                let tile_cross_span =
+                    (work_area_cross_span - gaps) * new_proportion - gaps - extra_cross_span;
+                self.window_cross_span_for_tile_cross_span(tile, tile_cross_span)
             }
         };
 
         // Clamp the height according to other windows' min sizes, or simply to working area height.
-        let min_height_taken = if self.display_mode == ColumnDisplay::Tabbed {
+        let min_cross_span_taken = if self.display_mode == ColumnDisplay::Tabbed {
             0.
         } else {
             self.tiles
@@ -5177,9 +5207,13 @@ impl<W: LayoutElement> Column<W> {
                 })
                 .sum::<f64>()
         };
-        let height_left = working_size - extra_size - gaps - min_height_taken - gaps;
-        let height_left = f64::max(1., tile.window_height_for_tile_height(height_left));
-        window_height = f64::min(height_left, window_height);
+        let cross_span_left =
+            work_area_cross_span - extra_cross_span - gaps - min_cross_span_taken - gaps;
+        let cross_span_left = f64::max(
+            1.,
+            self.window_cross_span_for_tile_cross_span(tile, cross_span_left),
+        );
+        new_window_cross_span = f64::min(cross_span_left, new_window_cross_span);
 
         // Clamp it against the window height constraints.
         let win = &self.tiles[tile_idx].window();
@@ -5187,13 +5221,14 @@ impl<W: LayoutElement> Column<W> {
         let max_h = win.max_size().h;
 
         if max_h > 0 {
-            window_height = f64::min(window_height, f64::from(max_h));
+            new_window_cross_span = f64::min(new_window_cross_span, f64::from(max_h));
         }
         if min_h > 0 {
-            window_height = f64::max(window_height, f64::from(min_h));
+            new_window_cross_span = f64::max(new_window_cross_span, f64::from(min_h));
         }
 
-        self.data[tile_idx].height = WindowHeight::Fixed(window_height.clamp(1., MAX_PX));
+        self.data[tile_idx].height =
+            WindowHeight::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN));
         self.is_pending_maximized = false;
         self.update_tile_sizes(animate);
     }
@@ -5231,7 +5266,7 @@ impl<W: LayoutElement> Column<W> {
                 (idx + if forwards { 1 } else { len - 1 }) % len
             }
             _ => {
-                let current = self.data[tile_idx].size.h;
+                let current_tile_cross_span = self.data[tile_idx].size.h;
                 let tile = &self.tiles[tile_idx];
 
                 let mut it = self
@@ -5241,23 +5276,28 @@ impl<W: LayoutElement> Column<W> {
                     .iter()
                     .copied()
                     .map(|preset| {
-                        let window_height = match self.resolve_preset_height(preset) {
-                            ResolvedSize::Tile(h) => tile.window_height_for_tile_height(h),
+                        let window_cross_span = match self.resolve_preset_cross_span(preset) {
+                            ResolvedSize::Tile(h) => {
+                                self.window_cross_span_for_tile_cross_span(tile, h)
+                            }
                             ResolvedSize::Window(h) => h,
                         };
-                        tile.tile_height_for_window_height(window_height.round().clamp(1., 100000.))
+                        self.tile_cross_span_for_window_cross_span(
+                            tile,
+                            window_cross_span.round().clamp(1., 100000.),
+                        )
                     });
 
                 if forwards {
                     it.position(|resolved| {
                         // Some allowance for fractional scaling purposes.
-                        current + 1. < resolved
+                        current_tile_cross_span + 1. < resolved
                     })
                     .unwrap_or(0)
                 } else {
                     it.rposition(|resolved| {
                         // Some allowance for fractional scaling purposes.
-                        resolved + 1. < current
+                        resolved + 1. < current_tile_cross_span
                     })
                     .unwrap_or(len - 1)
                 }
@@ -5623,7 +5663,7 @@ impl<W: LayoutElement> Column<W> {
             let requested_size = tile.window().requested_size().unwrap();
             let requested_size = self.axis().size_in(requested_size);
             let requested_tile_height =
-                tile.tile_height_for_window_height(f64::from(requested_size.h));
+                self.tile_cross_span_for_window_cross_span(tile, f64::from(requested_size.h));
             let min_tile_height = f64::max(1., self.map_size_in(tile.min_size_nonfullscreen()).h);
 
             if !is_tabbed
