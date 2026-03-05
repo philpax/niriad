@@ -17,7 +17,9 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
 
-use crate::input::PointerOrTouchStartData;
+use crate::input::{
+    gesture_prefers_view_offset, map_view_workspace_deltas, PointerOrTouchStartData,
+};
 use crate::niri::State;
 use crate::utils::get_monotonic_time;
 
@@ -205,11 +207,7 @@ impl MoveGrab {
 
                 let is_view_offset = self.enable_view_offset
                     && !is_floating
-                    && if view_axis_vertical {
-                        c.y.abs() > c.x.abs()
-                    } else {
-                        c.x.abs() > c.y.abs()
-                    };
+                    && gesture_prefers_view_offset(c.x, c.y, view_axis_vertical);
 
                 let started = if is_view_offset {
                     self.begin_view_offset(data)
@@ -260,11 +258,11 @@ impl MoveGrab {
                             .then(|| ws.main_axis() == MainAxis::Vertical)
                     })
                     .unwrap_or(false);
-                let view_delta = if view_axis_vertical {
-                    -relative_delta.y
-                } else {
-                    -relative_delta.x
-                };
+                let (view_delta, _) = map_view_workspace_deltas(
+                    -relative_delta.x,
+                    -relative_delta.y,
+                    view_axis_vertical,
+                );
 
                 let res = data
                     .niri

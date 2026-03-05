@@ -10,6 +10,7 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial};
 
+use crate::input::{gesture_prefers_view_offset, map_view_workspace_deltas};
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::niri::State;
 use crate::window::Mapped;
@@ -196,11 +197,11 @@ impl TouchGrab<State> for TouchOverviewGrab {
                     .workspace_id
                     .and_then(|ws_id| {
                         layout.find_workspace_by_id(ws_id).map(|(_, ws)| {
-                            if ws.main_axis() == MainAxis::Vertical {
-                                c.y.abs() > c.x.abs()
-                            } else {
-                                c.x.abs() > c.y.abs()
-                            }
+                            gesture_prefers_view_offset(
+                                c.x,
+                                c.y,
+                                ws.main_axis() == MainAxis::Vertical,
+                            )
                         })
                     })
                     .unwrap_or(false);
@@ -237,16 +238,8 @@ impl TouchGrab<State> for TouchOverviewGrab {
                     .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
             })
             .unwrap_or(false);
-        let view_delta = if view_axis_vertical {
-            -delta.y
-        } else {
-            -delta.x
-        };
-        let workspace_delta = if view_axis_vertical {
-            -delta.x
-        } else {
-            -delta.y
-        };
+        let (view_delta, workspace_delta) =
+            map_view_workspace_deltas(-delta.x, -delta.y, view_axis_vertical);
 
         let ongoing = match self.gesture {
             GestureState::Recognizing => unreachable!(),

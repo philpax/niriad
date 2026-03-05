@@ -71,6 +71,40 @@ use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
 pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 
+pub(super) fn gesture_prefers_view_offset(
+    cumulative_x: f64,
+    cumulative_y: f64,
+    view_axis_vertical: bool,
+) -> bool {
+    if view_axis_vertical {
+        cumulative_y.abs() > cumulative_x.abs()
+    } else {
+        cumulative_x.abs() > cumulative_y.abs()
+    }
+}
+
+pub(super) fn map_view_workspace_deltas(
+    delta_x: f64,
+    delta_y: f64,
+    view_axis_vertical: bool,
+) -> (f64, f64) {
+    if view_axis_vertical {
+        (delta_y, delta_x)
+    } else {
+        (delta_x, delta_y)
+    }
+}
+
+pub(super) fn map_overview_scroll_swipe_deltas(
+    horizontal: f64,
+    vertical: f64,
+    view_axis_vertical: bool,
+) -> (f64, f64, f64, f64) {
+    let (view_delta, workspace_delta) =
+        map_view_workspace_deltas(horizontal, vertical, view_axis_vertical);
+    (view_delta, workspace_delta, view_delta, workspace_delta)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
     pub aspect_ratio: f64,
@@ -3322,12 +3356,15 @@ impl State {
                 let view_axis_vertical = self
                     .niri
                     .workspace_under_cursor(true)
-                    .is_some_and(|(_, ws)| ws.main_axis() == MainAxis::Vertical);
-                let (gesture_dx, gesture_dy, view_delta, workspace_delta) = if view_axis_vertical {
-                    (vertical, horizontal, vertical, horizontal)
-                } else {
-                    (horizontal, vertical, horizontal, vertical)
-                };
+                    .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+                    .or_else(|| {
+                        let output = self.niri.output_under_cursor()?;
+                        let mon = self.niri.layout.monitor_for_output(&output)?;
+                        Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
+                    })
+                    .unwrap_or(false);
+                let (gesture_dx, gesture_dy, view_delta, workspace_delta) =
+                    map_overview_scroll_swipe_deltas(horizontal, vertical, view_axis_vertical);
 
                 let action = self
                     .niri
@@ -3924,7 +3961,13 @@ impl State {
         let view_axis_vertical = if is_overview_open {
             self.niri
                 .workspace_under_cursor(true)
-                .is_some_and(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+                .map(|(_, ws)| ws.main_axis() == MainAxis::Vertical)
+                .or_else(|| {
+                    let output = self.niri.output_under_cursor()?;
+                    let mon = self.niri.layout.monitor_for_output(&output)?;
+                    Some(mon.active_workspace_ref().main_axis() == MainAxis::Vertical)
+                })
+                .unwrap_or(false)
         } else {
             self.niri
                 .output_under_cursor()
@@ -3945,11 +3988,7 @@ impl State {
                 self.niri.gesture_swipe_3f_cumulative = None;
 
                 if let Some(output) = self.niri.output_under_cursor() {
-                    let start_view_offset = if view_axis_vertical {
-                        cy.abs() > cx.abs()
-                    } else {
-                        cx.abs() > cy.abs()
-                    };
+                    let start_view_offset = gesture_prefers_view_offset(cx, cy, view_axis_vertical);
 
                     if start_view_offset {
                         let output_ws = if is_overview_open {
@@ -3979,11 +4018,8 @@ impl State {
         }
 
         let timestamp = Duration::from_micros(event.time());
-        let (view_delta, workspace_delta) = if view_axis_vertical {
-            (delta_y, delta_x)
-        } else {
-            (delta_x, delta_y)
-        };
+        let (view_delta, workspace_delta) =
+            map_view_workspace_deltas(delta_x, delta_y, view_axis_vertical);
 
         let mut handled = false;
         let res =
@@ -5227,6 +5263,34 @@ mod tests {
 
     use super::*;
     use crate::animation::Clock;
+
+    #[test]
+    fn gesture_prefers_view_offset_respects_main_axis() {
+        assert!(gesture_prefers_view_offset(20., 1., false));
+        assert!(!gesture_prefers_view_offset(1., 20., false));
+        assert!(gesture_prefers_view_offset(1., 20., true));
+        assert!(!gesture_prefers_view_offset(20., 1., true));
+        assert!(!gesture_prefers_view_offset(10., 10., false));
+        assert!(!gesture_prefers_view_offset(10., 10., true));
+    }
+
+    #[test]
+    fn map_view_workspace_deltas_respects_main_axis() {
+        assert_eq!(map_view_workspace_deltas(3., -7., false), (3., -7.));
+        assert_eq!(map_view_workspace_deltas(3., -7., true), (-7., 3.));
+    }
+
+    #[test]
+    fn map_overview_scroll_swipe_deltas_respects_main_axis() {
+        assert_eq!(
+            map_overview_scroll_swipe_deltas(4., -9., false),
+            (4., -9., 4., -9.)
+        );
+        assert_eq!(
+            map_overview_scroll_swipe_deltas(4., -9., true),
+            (-9., 4., -9., 4.)
+        );
+    }
 
     #[test]
     fn bindings_suppress_keys() {
