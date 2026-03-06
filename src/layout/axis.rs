@@ -4,6 +4,18 @@ use smithay::utils::{Coordinate, Logical, Point, Rectangle, Size};
 use crate::utils::ResizeEdge;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisDirection {
+    Backward,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisEdge {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AxisMap {
     main_axis: MainAxis,
 }
@@ -58,6 +70,32 @@ impl AxisMap {
             point.x
         } else {
             point.y
+        }
+    }
+
+    pub fn map_main<T, U>(
+        self,
+        target: &mut T,
+        physical_horizontal: impl FnOnce(&mut T) -> U,
+        physical_vertical: impl FnOnce(&mut T) -> U,
+    ) -> U {
+        if self.is_vertical() {
+            physical_vertical(target)
+        } else {
+            physical_horizontal(target)
+        }
+    }
+
+    pub fn map_cross<T, U>(
+        self,
+        target: &mut T,
+        physical_horizontal: impl FnOnce(&mut T) -> U,
+        physical_vertical: impl FnOnce(&mut T) -> U,
+    ) -> U {
+        if self.is_vertical() {
+            physical_horizontal(target)
+        } else {
+            physical_vertical(target)
         }
     }
 
@@ -164,5 +202,24 @@ mod tests {
             vertical.size_from_main_cross(11., 13.),
             Size::<f64, Logical>::from((13., 11.))
         );
+    }
+
+    #[test]
+    fn map_main_and_cross_select_expected_branch() {
+        let horizontal = AxisMap::new(MainAxis::Horizontal);
+        let vertical = AxisMap::new(MainAxis::Vertical);
+
+        let mut value = 0;
+        horizontal.map_main(&mut value, |v| *v = 1, |v| *v = 2);
+        assert_eq!(value, 1);
+
+        horizontal.map_cross(&mut value, |v| *v = 3, |v| *v = 4);
+        assert_eq!(value, 4);
+
+        vertical.map_main(&mut value, |v| *v = 5, |v| *v = 6);
+        assert_eq!(value, 6);
+
+        vertical.map_cross(&mut value, |v| *v = 7, |v| *v = 8);
+        assert_eq!(value, 7);
     }
 }

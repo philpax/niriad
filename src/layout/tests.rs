@@ -1935,6 +1935,161 @@ fn vertical_main_axis_interactive_move_tracks_pointer_along_y() {
 }
 
 #[test]
+fn vertical_main_axis_floating_move_column_right_moves_window_down() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::ToggleWindowFloating { id: None },
+        ],
+    );
+
+    let mut before = None;
+    layout.with_windows(|win, _, _, layout| {
+        if *win.id() == 1 {
+            before = layout.tile_pos_in_workspace_view;
+        }
+    });
+    let before = before.unwrap();
+
+    check_ops_on_layout(&mut layout, [Op::MoveColumnRight]);
+
+    let mut after = None;
+    layout.with_windows(|win, _, _, layout| {
+        if *win.id() == 1 {
+            after = layout.tile_pos_in_workspace_view;
+        }
+    });
+    let after = after.unwrap();
+
+    let moved_x = after.0 - before.0;
+    let moved_y = after.1 - before.1;
+    assert!(
+        moved_y > moved_x.abs(),
+        "expected move-column-right to move floating window down in vertical mode, got dx={moved_x}, dy={moved_y}"
+    );
+}
+
+#[test]
+fn vertical_main_axis_floating_move_window_down_moves_window_right() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::ToggleWindowFloating { id: None },
+        ],
+    );
+
+    let mut before = None;
+    layout.with_windows(|win, _, _, layout| {
+        if *win.id() == 1 {
+            before = layout.tile_pos_in_workspace_view;
+        }
+    });
+    let before = before.unwrap();
+
+    check_ops_on_layout(&mut layout, [Op::MoveWindowDown]);
+
+    let mut after = None;
+    layout.with_windows(|win, _, _, layout| {
+        if *win.id() == 1 {
+            after = layout.tile_pos_in_workspace_view;
+        }
+    });
+    let after = after.unwrap();
+
+    let moved_x = after.0 - before.0;
+    let moved_y = after.1 - before.1;
+    assert!(
+        moved_x > moved_y.abs(),
+        "expected move-window-down to move floating window right in vertical mode, got dx={moved_x}, dy={moved_y}"
+    );
+}
+
+#[test]
+fn vertical_main_axis_floating_set_column_width_changes_window_height() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::ToggleWindowFloating { id: None },
+        ],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let before = win.expected_size().unwrap();
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::SetColumnWidth(SizeChange::AdjustProportion(5.))],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let after = win.expected_size().unwrap();
+
+    assert_eq!(before.w, after.w);
+    assert!(
+        after.h > before.h,
+        "expected floating column width to grow height in vertical mode: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn vertical_main_axis_floating_set_window_height_changes_window_width() {
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::ToggleWindowFloating { id: None },
+        ],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let before = win.expected_size().unwrap();
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::SetWindowHeight {
+            id: None,
+            change: SizeChange::AdjustProportion(5.),
+        }],
+    );
+
+    let (_, win) = layout.windows().next().unwrap();
+    let after = win.expected_size().unwrap();
+
+    assert_eq!(before.h, after.h);
+    assert!(
+        after.w > before.w,
+        "expected floating window height to grow width in vertical mode: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
 fn scrolling_windows_have_ipc_tile_positions() {
     let layout = check_ops([
         Op::AddOutput(1),

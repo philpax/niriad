@@ -18,7 +18,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
-use super::axis::AxisMap;
+use super::axis::{AxisDirection, AxisEdge, AxisMap};
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
@@ -920,7 +920,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_left(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_left()
+            self.floating
+                .focus_main(self.axis(), AxisDirection::Backward)
         } else {
             self.scrolling.focus_left()
         }
@@ -928,7 +929,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_right(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_right()
+            self.floating
+                .focus_main(self.axis(), AxisDirection::Forward)
         } else {
             self.scrolling.focus_right()
         }
@@ -936,7 +938,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_column_first(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_leftmost();
+            self.floating.focus_main_edge(self.axis(), AxisEdge::Start);
         } else {
             self.scrolling.focus_column_first();
         }
@@ -944,7 +946,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_column_last(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_rightmost();
+            self.floating.focus_main_edge(self.axis(), AxisEdge::End);
         } else {
             self.scrolling.focus_column_last();
         }
@@ -978,7 +980,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_down(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_down()
+            self.floating
+                .focus_cross(self.axis(), AxisDirection::Forward)
         } else {
             self.scrolling.focus_down()
         }
@@ -986,7 +989,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_up(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_up()
+            self.floating
+                .focus_cross(self.axis(), AxisDirection::Backward)
         } else {
             self.scrolling.focus_up()
         }
@@ -994,7 +998,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_down_or_left(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_down();
+            self.focus_down();
         } else {
             self.scrolling.focus_down_or_left();
         }
@@ -1002,7 +1006,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_down_or_right(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_down();
+            self.focus_down();
         } else {
             self.scrolling.focus_down_or_right();
         }
@@ -1010,7 +1014,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_up_or_left(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_up();
+            self.focus_up();
         } else {
             self.scrolling.focus_up_or_left();
         }
@@ -1018,7 +1022,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_up_or_right(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_up();
+            self.focus_up();
         } else {
             self.scrolling.focus_up_or_right();
         }
@@ -1026,7 +1030,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_window_top(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_topmost();
+            self.floating.focus_cross_edge(self.axis(), AxisEdge::Start);
         } else {
             self.scrolling.focus_top();
         }
@@ -1034,7 +1038,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_window_bottom(&mut self) {
         if self.floating_is_active.get() {
-            self.floating.focus_bottommost();
+            self.floating.focus_cross_edge(self.axis(), AxisEdge::End);
         } else {
             self.scrolling.focus_bottom();
         }
@@ -1054,7 +1058,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn move_left(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.move_left();
+            self.floating
+                .move_main(self.axis(), AxisDirection::Backward);
             true
         } else {
             self.scrolling.move_left()
@@ -1063,7 +1068,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn move_right(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.move_right();
+            self.floating.move_main(self.axis(), AxisDirection::Forward);
             true
         } else {
             self.scrolling.move_right()
@@ -1093,7 +1098,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn move_down(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.move_down();
+            self.floating
+                .move_cross(self.axis(), AxisDirection::Forward);
             true
         } else {
             self.scrolling.move_down()
@@ -1102,7 +1108,8 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn move_up(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.move_up();
+            self.floating
+                .move_cross(self.axis(), AxisDirection::Backward);
             true
         } else {
             self.scrolling.move_up()
@@ -1189,7 +1196,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn toggle_width(&mut self, forwards: bool) {
         if self.floating_is_active.get() {
-            self.floating.toggle_window_width(None, forwards);
+            self.floating.toggle_main_size(self.axis(), None, forwards);
         } else {
             self.scrolling.toggle_width(forwards);
         }
@@ -1206,7 +1213,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn set_column_width(&mut self, change: SizeChange) {
         if self.floating_is_active.get() {
-            self.floating.set_window_width(None, change, true);
+            self.floating.set_main_size(self.axis(), None, change, true);
         } else {
             self.scrolling.set_window_width(None, change);
         }
@@ -1216,7 +1223,8 @@ impl<W: LayoutElement> Workspace<W> {
         if window.map_or(self.floating_is_active.get(), |id| {
             self.floating.has_window(id)
         }) {
-            self.floating.set_window_width(window, change, true);
+            self.floating
+                .set_main_size(self.axis(), window, change, true);
         } else {
             self.scrolling.set_window_width(window, change);
         }
@@ -1226,7 +1234,8 @@ impl<W: LayoutElement> Workspace<W> {
         if window.map_or(self.floating_is_active.get(), |id| {
             self.floating.has_window(id)
         }) {
-            self.floating.set_window_height(window, change, true);
+            self.floating
+                .set_cross_size(self.axis(), window, change, true);
         } else {
             self.scrolling.set_window_height(window, change);
         }
@@ -1245,7 +1254,8 @@ impl<W: LayoutElement> Workspace<W> {
         if window.map_or(self.floating_is_active.get(), |id| {
             self.floating.has_window(id)
         }) {
-            self.floating.toggle_window_width(window, forwards);
+            self.floating
+                .toggle_main_size(self.axis(), window, forwards);
         } else {
             self.scrolling.toggle_window_width(window, forwards);
         }
@@ -1255,7 +1265,8 @@ impl<W: LayoutElement> Workspace<W> {
         if window.map_or(self.floating_is_active.get(), |id| {
             self.floating.has_window(id)
         }) {
-            self.floating.toggle_window_height(window, forwards);
+            self.floating
+                .toggle_cross_size(self.axis(), window, forwards);
         } else {
             self.scrolling.toggle_window_height(window, forwards);
         }
