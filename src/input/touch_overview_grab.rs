@@ -168,6 +168,9 @@ impl TouchGrab<State> for TouchOverviewGrab {
         }
 
         let timestamp = Duration::from_millis(u64::from(event.time));
+        let workspace_axis_policy = self
+            .workspace_id
+            .and_then(|ws_id| data.axis_policy_for_workspace_id(ws_id));
         let layout = &mut data.niri.layout;
 
         // Check if we should become interactive move.
@@ -192,14 +195,8 @@ impl TouchGrab<State> for TouchOverviewGrab {
 
             // Check if the gesture moved far enough to decide. Threshold copied from libadwaita.
             if c.x * c.x + c.y * c.y >= 16. * 16. {
-                let start_view_offset = self
-                    .workspace_id
-                    .and_then(|ws_id| {
-                        layout.find_workspace_by_id(ws_id).map(|(_, ws)| {
-                            InputAxisPolicy::from_main_axis(ws.main_axis())
-                                .gesture_prefers_view_offset(c.x, c.y)
-                        })
-                    })
+                let start_view_offset = workspace_axis_policy
+                    .map(|policy| policy.gesture_prefers_view_offset(c.x, c.y))
                     .unwrap_or(false);
 
                 if let Some(ws_id) = self.workspace_id.filter(|_| start_view_offset) {
@@ -226,13 +223,7 @@ impl TouchGrab<State> for TouchOverviewGrab {
         let delta = event.location - self.last_location;
         self.last_location = event.location;
 
-        let axis_policy = self
-            .workspace_id
-            .and_then(|ws_id| {
-                layout
-                    .find_workspace_by_id(ws_id)
-                    .map(|(_, ws)| InputAxisPolicy::from_main_axis(ws.main_axis()))
-            })
+        let axis_policy = workspace_axis_policy
             .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
         let (view_delta, workspace_delta) =
             axis_policy.split_view_workspace_deltas(-delta.x, -delta.y);

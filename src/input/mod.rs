@@ -18,6 +18,7 @@ use smithay::backend::input::{
     TabletToolTipState, TouchEvent,
 };
 use smithay::backend::libinput::LibinputInputBackend;
+use smithay::desktop::Window;
 use smithay::input::dnd::DnDGrab;
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, Layout, ModifiersState};
 use smithay::input::pointer::{
@@ -242,11 +243,32 @@ impl State {
         }
     }
 
-    fn view_axis_policy_on_output(&self, output: &Output) -> Option<InputAxisPolicy> {
+    pub fn axis_policy_on_output(&self, output: &Output) -> Option<InputAxisPolicy> {
         let mon = self.niri.layout.monitor_for_output(output)?;
         Some(InputAxisPolicy::from_main_axis(
             mon.active_workspace_ref().main_axis(),
         ))
+    }
+
+    pub fn axis_policy_for_workspace_id(
+        &self,
+        workspace_id: crate::layout::workspace::WorkspaceId,
+    ) -> Option<InputAxisPolicy> {
+        self.niri
+            .layout
+            .find_workspace_by_id(workspace_id)
+            .map(|(_, ws)| InputAxisPolicy::from_main_axis(ws.main_axis()))
+    }
+
+    pub fn window_axis_policy(&self, window: &Window) -> Option<(bool, InputAxisPolicy)> {
+        self.niri.layout.workspaces().find_map(|(_, _, ws)| {
+            ws.windows().any(|w| w.window == *window).then(|| {
+                (
+                    ws.is_floating(window),
+                    InputAxisPolicy::from_main_axis(ws.main_axis()),
+                )
+            })
+        })
     }
 
     fn view_axis_policy_under_cursor_or_active_workspace(&self) -> Option<InputAxisPolicy> {
@@ -255,7 +277,7 @@ impl State {
             .map(|(_, ws)| InputAxisPolicy::from_main_axis(ws.main_axis()))
             .or_else(|| {
                 let output = self.niri.output_under_cursor()?;
-                self.view_axis_policy_on_output(&output)
+                self.axis_policy_on_output(&output)
             })
     }
 
@@ -265,7 +287,7 @@ impl State {
         } else {
             self.niri
                 .output_under_cursor()
-                .and_then(|output| self.view_axis_policy_on_output(&output))
+                .and_then(|output| self.axis_policy_on_output(&output))
         }
         .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false))
     }

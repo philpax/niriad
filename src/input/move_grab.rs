@@ -190,17 +190,7 @@ impl MoveGrab {
             let c = self.new_location - self.start_data.location();
             if c.x * c.x + c.y * c.y >= 8. * 8. {
                 let (is_floating, axis_policy) = data
-                    .niri
-                    .layout
-                    .workspaces()
-                    .find_map(|(_, _, ws)| {
-                        ws.windows().any(|w| w.window == self.window).then(|| {
-                            (
-                                ws.is_floating(&self.window),
-                                InputAxisPolicy::from_main_axis(ws.main_axis()),
-                            )
-                        })
-                    })
+                    .window_axis_policy(&self.window)
                     .unwrap_or((false, InputAxisPolicy::from_view_axis_vertical(false)));
 
                 let is_view_offset = self.enable_view_offset
@@ -247,14 +237,8 @@ impl MoveGrab {
             }
             GestureState::ViewOffset => {
                 let axis_policy = data
-                    .niri
-                    .layout
-                    .workspaces()
-                    .find_map(|(_, _, ws)| {
-                        ws.windows()
-                            .any(|w| w.window == self.window)
-                            .then(|| InputAxisPolicy::from_main_axis(ws.main_axis()))
-                    })
+                    .window_axis_policy(&self.window)
+                    .map(|(_, policy)| policy)
                     .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
                 let (view_delta, _) =
                     axis_policy.split_view_workspace_deltas(-relative_delta.x, -relative_delta.y);
