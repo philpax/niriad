@@ -377,7 +377,7 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     fn overview_axis(&self) -> AxisMap {
-        AxisMap::new(self.active_workspace_ref().main_axis())
+        self.active_workspace_ref().axis()
     }
 
     fn map_point_out(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {

@@ -352,7 +352,7 @@ impl<W: LayoutElement> Workspace<W> {
         self.options.layout.main_axis
     }
 
-    fn axis(&self) -> AxisMap {
+    pub(in crate::layout) fn axis(&self) -> AxisMap {
         AxisMap::new(self.main_axis())
     }
 

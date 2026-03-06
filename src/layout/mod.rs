@@ -3824,7 +3824,7 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = mon.overview_zoom();
 
         let is_floating = ws.is_floating(&window_id);
-        let axis = AxisMap::new(ws.main_axis());
+        let axis = ws.axis();
 
         let (tile, tile_offset, _visible) = ws
             .tiles_with_render_positions()
@@ -3915,7 +3915,7 @@ impl<W: LayoutElement> Layout<W> {
                         let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
                         (
                             ws.is_floating(&window_id),
-                            AxisMap::new(ws.main_axis()),
+                            ws.axis(),
                             ws.tiles_mut()
                                 .find(|tile| *tile.window().id() == window_id)
                                 .unwrap(),
