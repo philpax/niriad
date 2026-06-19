@@ -31,11 +31,13 @@ use crate::window::ResolvedWindowRules;
 /// Amount of touchpad movement to scroll the view for the main-axis span of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
 
-fn main_axis_point(main: f64) -> Point<f64, Logical> {
+/// A vector in scrolling-space coordinates, where X is main axis and Y is cross axis.
+fn main_space_vec(main: f64) -> Point<f64, Logical> {
     Point::from((main, 0.))
 }
 
-fn cross_axis_point(cross: f64) -> Point<f64, Logical> {
+/// A vector in scrolling-space coordinates, where X is main axis and Y is cross axis.
+fn cross_space_vec(cross: f64) -> Point<f64, Logical> {
     Point::from((0., cross))
 }
 
@@ -382,20 +384,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.axis().rect_out(rect)
     }
 
-    fn main_axis_point_out(&self, main: f64) -> Point<f64, Logical> {
-        self.map_point_out(Point::from((main, 0.)))
-    }
-
-    fn offset_point_main_axis_out(
-        &self,
-        point: Point<f64, Logical>,
-        delta: f64,
-    ) -> Point<f64, Logical> {
-        let mut mapped = self.map_point_in(point);
-        mapped.x += delta;
-        self.map_point_out(mapped)
-    }
-
     pub fn update_shaders(&mut self) {
         for col in &mut self.columns {
             col.update_shaders();
@@ -457,12 +445,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
-        let view_main_offset = main_axis_point(self.view_main_pos());
+        let view_main_offset = main_space_vec(self.view_main_pos());
         let view_size = self.view_size;
         let active_idx = self.active_column_idx;
         for (col_idx, (col, column_main)) in self.columns_mut().enumerate() {
             let is_active = is_active && col_idx == active_idx;
-            let column_offset = main_axis_point(column_main);
+            let column_offset = main_space_vec(column_main);
             let column_pos = view_main_offset - column_offset - col.render_offset();
             let view_rect = Rectangle::new(column_pos, view_size);
             col.update_render_elements(is_active, view_rect);
@@ -1844,7 +1832,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        tile_pos = self.offset_point_main_axis_out(tile_pos, self.view_main_pos());
+        tile_pos += axis.main_vec(self.view_main_pos());
 
         if col_idx < self.active_column_idx {
             let offset = if removing_last {
@@ -1862,7 +1850,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         .map(NotNan::into_inner)
                         .unwrap()
             };
-            tile_pos = self.offset_point_main_axis_out(tile_pos, -offset);
+            tile_pos += axis.main_vec(-offset);
         }
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
@@ -2170,7 +2158,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     self.data[target_column_idx].width - self.data[source_col_idx].width,
                 )
             };
-            let mut move_offset = main_axis_point(main_delta);
+            let mut move_offset = main_space_vec(main_delta);
 
             if source_tile_was_active {
                 // Make sure the previous (target) column is activated so the animation looks right.
@@ -2182,7 +2170,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .get_or_insert(self.view_offset.stationary() + main_delta);
             }
 
-            move_offset += main_axis_point(self.columns[source_col_idx].render_offset().x);
+            move_offset += main_space_vec(self.columns[source_col_idx].render_offset().x);
             let RemovedTile { tile, .. } = self.remove_tile_by_idx(
                 source_col_idx,
                 0,
@@ -2192,14 +2180,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.add_tile_to_column(target_column_idx, None, tile, source_tile_was_active);
 
             let target_column = &mut self.columns[target_column_idx];
-            move_offset -= main_axis_point(target_column.render_offset().x);
+            move_offset -= main_space_vec(target_column.render_offset().x);
             move_offset += prev_off - target_column.tile_offset(target_column.tiles.len() - 1);
 
             let new_tile = target_column.tiles.last_mut().unwrap();
             new_tile.animate_move_from(move_offset);
         } else {
             // Move out of column.
-            let mut move_offset = main_axis_point(source_column.render_offset().x);
+            let mut move_offset = main_space_vec(source_column.render_offset().x);
 
             let removed =
                 self.remove_tile_by_idx(source_col_idx, source_tile_idx, Transaction::new(), None);
@@ -2223,7 +2211,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             if target_column_idx <= self.active_column_idx {
                 // Tiles on the start side animate from the following column.
-                move_offset += main_axis_point(
+                move_offset += main_space_vec(
                     self.column_main_pos(target_column_idx + 1)
                         - self.column_main_pos(target_column_idx),
                 );
@@ -2260,7 +2248,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let source_column_main = self.column_main_pos(source_col_idx);
 
         let source_column = &self.columns[source_col_idx];
-        let mut move_offset = main_axis_point(source_column.render_offset().x);
+        let mut move_offset = main_space_vec(source_column.render_offset().x);
         let prev_off = source_column.tile_offset(source_tile_idx);
 
         let source_tile_was_active = self.active_column_idx == source_col_idx
@@ -2275,8 +2263,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let target_column_idx = source_col_idx;
 
             move_offset +=
-                main_axis_point(source_column_main - self.column_main_pos(source_col_idx + 1));
-            move_offset -= main_axis_point(self.columns[source_col_idx + 1].render_offset().x);
+                main_space_vec(source_column_main - self.column_main_pos(source_col_idx + 1));
+            move_offset -= main_space_vec(self.columns[source_col_idx + 1].render_offset().x);
 
             if source_tile_was_active {
                 // Make sure the target column gets activated.
@@ -2314,7 +2302,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 Some(self.options.animations.window_movement.0),
             );
 
-            move_offset += main_axis_point(if self.active_column_idx <= target_column_idx {
+            move_offset += main_space_vec(if self.active_column_idx <= target_column_idx {
                 // Tiles on the end side animate to the following column.
                 source_column_main - self.column_main_pos(target_column_idx)
             } else {
@@ -2343,7 +2331,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let main_delta = self.column_main_pos(source_column_idx)
             + self.columns[source_column_idx].render_offset().x
             - self.column_main_pos(target_column_idx);
-        let mut move_offset = main_axis_point(main_delta);
+        let mut move_offset = main_space_vec(main_delta);
         let prev_off = self.columns[source_column_idx].tile_offset(0);
 
         let removed = self.remove_tile_by_idx(source_column_idx, 0, Transaction::new(), None);
@@ -2351,7 +2339,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let target_column = &mut self.columns[target_column_idx];
         move_offset += prev_off - target_column.tile_offset(target_column.tiles.len() - 1);
-        move_offset -= main_axis_point(target_column.render_offset().x);
+        move_offset -= main_space_vec(target_column.render_offset().x);
 
         let new_tile = target_column.tiles.last_mut().unwrap();
         new_tile.animate_move_from(move_offset);
@@ -2373,7 +2361,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let source_tile_idx = source_column.tiles.len() - 1;
 
-        let mut move_offset = main_axis_point(source_column.render_offset().x);
+        let mut move_offset = main_space_vec(source_column.render_offset().x);
         let prev_off = source_column.tile_offset(source_tile_idx);
 
         let removed =
@@ -2388,7 +2376,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             Some(self.options.animations.window_movement.0),
         );
 
-        move_offset += main_axis_point(source_column_main - self.column_main_pos(target_col_idx));
+        move_offset += main_space_vec(source_column_main - self.column_main_pos(target_col_idx));
 
         let new_col = &mut self.columns[target_col_idx];
         move_offset += prev_off - new_col.tile_offset(0);
@@ -2763,7 +2751,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let view_off = Point::from((-self.view_main_pos(), 0.));
         self.columns_in_render_order()
             .flat_map(move |(col, column_main)| {
-                let column_offset = main_axis_point(column_main);
+                let column_offset = main_space_vec(column_main);
                 let column_render_offset = col.render_offset();
                 col.tiles_in_render_order()
                     .map(move |(tile, tile_off, visible)| {
@@ -2789,7 +2777,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let view_off = Point::from((-self.view_main_pos(), 0.));
         self.columns_in_render_order_mut()
             .flat_map(move |(col, column_main)| {
-                let column_offset = main_axis_point(column_main);
+                let column_offset = main_space_vec(column_main);
                 let column_render_offset = col.render_offset();
                 col.tiles_in_render_order_mut()
                     .map(move |(tile, tile_off)| {
@@ -2816,7 +2804,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let column_mains = self.column_main_positions(self.data.iter().copied());
         zip(self.columns.iter(), column_mains).enumerate().flat_map(
             move |(col_idx, (col, column_main))| {
-                let column_offset = main_axis_point(column_main);
+                let column_offset = main_space_vec(column_main);
                 col.tiles()
                     .enumerate()
                     .map(move |(tile_idx, (tile, tile_off))| {
@@ -3323,7 +3311,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Draw the closing windows on top of the other windows.
         let view_size = self.map_size_out(self.view_size);
-        let view_loc = self.main_axis_point_out(self.view_main_pos());
+        let view_loc = self.map_point_out(main_space_vec(self.view_main_pos()));
         let view_rect = Rectangle::new(view_loc, view_size);
         for closing in self.closing_windows.iter().rev() {
             let elem = closing.render(ctx.as_gles(), view_rect, scale);
@@ -3337,9 +3325,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let mut first = true;
 
         // This matches self.tiles_in_render_order().
-        let view_off = main_axis_point(-self.view_main_pos());
+        let view_off = main_space_vec(-self.view_main_pos());
         for (col, column_main) in self.columns_in_render_order() {
-            let column_offset = main_axis_point(column_main);
+            let column_offset = main_space_vec(column_main);
             let column_render_offset = col.render_offset();
 
             // Draw the tab indicator on top.
@@ -3389,9 +3377,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // This matches self.tiles_with_render_positions().
         let pos_in = self.map_point_in(pos);
         let scale = self.scale;
-        let view_off = main_axis_point(-self.view_main_pos());
+        let view_off = main_space_vec(-self.view_main_pos());
         for (col, column_main) in self.columns_in_render_order() {
-            let column_offset = main_axis_point(column_main);
+            let column_offset = main_space_vec(column_main);
             let column_render_offset = col.render_offset();
 
             // Hit the tab indicator.
@@ -5375,7 +5363,7 @@ impl<W: LayoutElement> Column<W> {
                 cross_delta *= -1.;
             }
 
-            let delta = origin_delta + cross_axis_point(cross_delta);
+            let delta = origin_delta + cross_space_vec(cross_delta);
             tile.animate_move_from(delta);
         }
 
@@ -5411,13 +5399,13 @@ impl<W: LayoutElement> Column<W> {
         match self.sizing_mode() {
             SizingMode::Normal => (),
             SizingMode::Maximized => {
-                origin += cross_axis_point(self.parent_area.loc.y);
+                origin += cross_space_vec(self.parent_area.loc.y);
                 return origin;
             }
             SizingMode::Fullscreen => return origin,
         }
 
-        origin += cross_axis_point(self.working_area.loc.y + self.options.layout.gaps);
+        origin += cross_space_vec(self.working_area.loc.y + self.options.layout.gaps);
 
         if self.display_mode == ColumnDisplay::Tabbed {
             origin += self

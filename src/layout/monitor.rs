@@ -3,7 +3,7 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart};
+use niri_config::{CornerRadius, LayoutPart, MainAxis};
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
@@ -1731,16 +1731,21 @@ impl<W: LayoutElement> Monitor<W> {
         //
         // FIXME: use proper bounds after fixing the Crop element.
         let crop_bounds = if self.workspace_switch.is_some() || self.overview_progress.is_some() {
-            if self.overview_axis().is_vertical() {
-                Rectangle::new(
-                    Point::from((0, -i32::MAX / 2)),
-                    Size::from((width, i32::MAX)),
-                )
-            } else {
-                Rectangle::new(
+            // Pin the cross axis (the workspace-switch direction) to the visible monitor span,
+            // and let the main axis stretch to infinity so that pixel shaders and damage tracking
+            // don't get confused at the edges. See the HACK above.
+            //
+            // AxisMap operates in Logical space, but crop_bounds is Physical, so the layout below
+            // is open-coded along main_axis().
+            match self.overview_axis().main_axis() {
+                MainAxis::Horizontal => Rectangle::new(
                     Point::from((-i32::MAX / 2, 0)),
                     Size::from((i32::MAX, height)),
-                )
+                ),
+                MainAxis::Vertical => Rectangle::new(
+                    Point::from((0, -i32::MAX / 2)),
+                    Size::from((width, i32::MAX)),
+                ),
             }
         } else {
             Rectangle::new(
