@@ -9,7 +9,6 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial};
 
-use crate::input::axis_policy::InputAxisPolicy;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::niri::State;
 use crate::window::Mapped;
@@ -223,8 +222,7 @@ impl TouchGrab<State> for TouchOverviewGrab {
         let delta = event.location - self.last_location;
         self.last_location = event.location;
 
-        let axis_policy = workspace_axis_policy
-            .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
+        let axis_policy = workspace_axis_policy.unwrap_or_default();
         let (view_delta, workspace_delta) =
             axis_policy.split_view_workspace_deltas(-delta.x, -delta.y);
 

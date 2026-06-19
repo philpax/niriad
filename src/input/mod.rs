@@ -8,7 +8,7 @@ use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
     Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
-use niri_ipc::LayoutSwitchTarget;
+use niri_ipc::{LayoutSwitchTarget, SizeChange};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
     GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
@@ -48,6 +48,7 @@ use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
+use crate::layout::axis::PhysicalAxis;
 use crate::layout::scrolling::ScrollDirection;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
@@ -289,7 +290,37 @@ impl State {
                 .output_under_cursor()
                 .and_then(|output| self.axis_policy_on_output(&output))
         }
-        .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false))
+        .unwrap_or_default()
+    }
+
+    /// Axis policy for the screenshot UI, derived from the layout main axis of the
+    /// workspace currently active on the selection's output. Falls back to a horizontal
+    /// (default) policy if the screenshot UI is closed or the output has no monitor.
+    fn screenshot_ui_axis_policy(&self) -> InputAxisPolicy {
+        self.niri
+            .screenshot_ui
+            .selection_output()
+            .and_then(|output| self.axis_policy_on_output(output))
+            .unwrap_or_default()
+    }
+
+    /// Apply a directional move to the screenshot selection along the given physical axis.
+    fn apply_screenshot_move(&mut self, axis: PhysicalAxis, forward: bool) {
+        self.niri.screenshot_ui.move_along(axis, forward);
+        // FIXME: granular
+        self.niri.queue_redraw_all();
+    }
+
+    /// Apply a `SizeChange` to the screenshot selection along the given physical axis,
+    /// queueing a redraw afterwards.
+    fn apply_screenshot_size_change(&mut self, axis: PhysicalAxis, change: SizeChange) {
+        match axis {
+            PhysicalAxis::Width => self.niri.screenshot_ui.set_width(change),
+            PhysicalAxis::Height => self.niri.screenshot_ui.set_height(change),
+        }
+
+        // FIXME: granular
+        self.niri.queue_redraw_all();
     }
 
     fn on_device_added(&mut self, device: impl Device) {
@@ -969,25 +1000,29 @@ impl State {
             }
             Action::MoveColumnLeft => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_left();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        false,
+                    );
                 } else {
                     self.niri.layout.move_left();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveColumnRight => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_right();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        true,
+                    );
                 } else {
                     self.niri.layout.move_right();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveColumnToFirst => {
                 self.niri.layout.move_column_to_first();
@@ -1003,7 +1038,10 @@ impl State {
             }
             Action::MoveColumnLeftOrToMonitorLeft => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_left();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        false,
+                    );
                 } else if let Some(output) = self.niri.output_left() {
                     if self.niri.layout.move_column_left_or_to_output(&output)
                         && !self.maybe_warp_cursor_to_focus_centered()
@@ -1012,17 +1050,21 @@ impl State {
                     } else {
                         self.maybe_warp_cursor_to_focus();
                     }
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 } else {
                     self.niri.layout.move_left();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveColumnRightOrToMonitorRight => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_right();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        true,
+                    );
                 } else if let Some(output) = self.niri.output_right() {
                     if self.niri.layout.move_column_right_or_to_output(&output)
                         && !self.maybe_warp_cursor_to_focus_centered()
@@ -1031,55 +1073,66 @@ impl State {
                     } else {
                         self.maybe_warp_cursor_to_focus();
                     }
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 } else {
                     self.niri.layout.move_right();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveWindowDown => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_down();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_cross_axis(),
+                        true,
+                    );
                 } else {
                     self.niri.layout.move_down();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveWindowUp => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_up();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_cross_axis(),
+                        false,
+                    );
                 } else {
                     self.niri.layout.move_up();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveWindowDownOrToWorkspaceDown => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_down();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_cross_axis(),
+                        true,
+                    );
                 } else {
                     self.niri.layout.move_down_or_to_workspace_down();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::MoveWindowUpOrToWorkspaceUp => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.move_up();
+                    self.apply_screenshot_move(
+                        self.screenshot_ui_axis_policy().screenshot_cross_axis(),
+                        false,
+                    );
                 } else {
                     self.niri.layout.move_up_or_to_workspace_up();
                     self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
                 }
-                // FIXME: granular
-                self.niri.queue_redraw_all();
             }
             Action::ConsumeOrExpelWindowLeft => {
                 self.niri.layout.consume_or_expel_window_left(None);
@@ -2043,20 +2096,22 @@ impl State {
             }
             Action::SetColumnWidth(change) => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.set_width(change);
-
-                    // FIXME: granular
-                    self.niri.queue_redraw_all();
+                    // SetColumnWidth follows the layout's main axis: in vertical layout this
+                    // is the Y axis, so we map it to the selection's height.
+                    self.apply_screenshot_size_change(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        change,
+                    );
                 } else {
                     self.niri.layout.set_column_width(change);
                 }
             }
             Action::SetWindowWidth(change) => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.set_width(change);
-
-                    // FIXME: granular
-                    self.niri.queue_redraw_all();
+                    self.apply_screenshot_size_change(
+                        self.screenshot_ui_axis_policy().screenshot_main_axis(),
+                        change,
+                    );
                 } else {
                     self.niri.layout.set_window_width(None, change);
                 }
@@ -2070,10 +2125,12 @@ impl State {
             }
             Action::SetWindowHeight(change) => {
                 if self.niri.screenshot_ui.is_open() {
-                    self.niri.screenshot_ui.set_height(change);
-
-                    // FIXME: granular
-                    self.niri.queue_redraw_all();
+                    // SetWindowHeight follows the layout's cross axis: in vertical layout
+                    // this is the X axis, so we map it to the selection's width.
+                    self.apply_screenshot_size_change(
+                        self.screenshot_ui_axis_policy().screenshot_cross_axis(),
+                        change,
+                    );
                 } else {
                     self.niri.layout.set_window_height(None, change);
                 }
@@ -3181,7 +3238,7 @@ impl State {
             if should_handle {
                 let overview_axis_policy = should_handle_in_overview.then(|| {
                     self.view_axis_policy_under_cursor_or_active_workspace()
-                        .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false))
+                        .unwrap_or_default()
                 });
 
                 let horizontal = horizontal_amount_v120.unwrap_or(0.);
@@ -3363,7 +3420,7 @@ impl State {
 
                 let axis_policy = self
                     .view_axis_policy_under_cursor_or_active_workspace()
-                    .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
+                    .unwrap_or_default();
                 let (gesture_dx, gesture_dy) =
                     axis_policy.split_view_workspace_deltas(horizontal, vertical);
                 let view_delta = gesture_dx;

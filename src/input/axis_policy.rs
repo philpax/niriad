@@ -1,8 +1,10 @@
 use niri_config::{MainAxis, Modifiers};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use crate::layout::axis::PhysicalAxis;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputAxisPolicy {
-    view_axis_vertical: bool,
+    main_axis: MainAxis,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,21 +15,19 @@ pub enum OverviewWheelTarget {
 
 impl InputAxisPolicy {
     pub const fn from_main_axis(main_axis: MainAxis) -> Self {
-        Self {
-            view_axis_vertical: matches!(main_axis, MainAxis::Vertical),
-        }
+        Self { main_axis }
     }
 
-    pub const fn from_view_axis_vertical(view_axis_vertical: bool) -> Self {
-        Self { view_axis_vertical }
+    pub const fn main_axis(self) -> MainAxis {
+        self.main_axis
     }
 
-    pub const fn view_axis_vertical(self) -> bool {
-        self.view_axis_vertical
+    pub const fn is_vertical(self) -> bool {
+        matches!(self.main_axis, MainAxis::Vertical)
     }
 
     pub fn gesture_prefers_view_offset(self, cumulative_x: f64, cumulative_y: f64) -> bool {
-        if self.view_axis_vertical {
+        if self.is_vertical() {
             cumulative_y.abs() > cumulative_x.abs()
         } else {
             cumulative_x.abs() > cumulative_y.abs()
@@ -35,10 +35,33 @@ impl InputAxisPolicy {
     }
 
     pub fn split_view_workspace_deltas(self, delta_x: f64, delta_y: f64) -> (f64, f64) {
-        if self.view_axis_vertical {
+        if self.is_vertical() {
             (delta_y, delta_x)
         } else {
             (delta_x, delta_y)
+        }
+    }
+
+    /// Maps a layout-oriented action to the physical axis it should act on for the screenshot UI.
+    ///
+    /// In layout terms, column/window width actions and column moves act along the layout's main
+    /// axis, and window-height actions and window moves act along the cross axis. The screenshot
+    /// UI works in physical (X/Y) coordinates regardless of layout, so when the layout is vertical
+    /// we need to swap the two: actions the user thinks of as "column/main-axis" should affect the
+    /// selection vertically, and "window/cross-axis" actions should affect it horizontally.
+    pub fn screenshot_main_axis(self) -> PhysicalAxis {
+        if self.is_vertical() {
+            PhysicalAxis::Height
+        } else {
+            PhysicalAxis::Width
+        }
+    }
+
+    pub fn screenshot_cross_axis(self) -> PhysicalAxis {
+        if self.is_vertical() {
+            PhysicalAxis::Width
+        } else {
+            PhysicalAxis::Height
         }
     }
 
@@ -49,7 +72,7 @@ impl InputAxisPolicy {
     ) -> Option<OverviewWheelTarget> {
         if horizontal {
             if modifiers.is_empty() {
-                Some(if self.view_axis_vertical {
+                Some(if self.is_vertical() {
                     OverviewWheelTarget::Workspace
                 } else {
                     OverviewWheelTarget::Column
@@ -58,13 +81,13 @@ impl InputAxisPolicy {
                 None
             }
         } else if modifiers.is_empty() {
-            Some(if self.view_axis_vertical {
+            Some(if self.is_vertical() {
                 OverviewWheelTarget::Column
             } else {
                 OverviewWheelTarget::Workspace
             })
         } else if modifiers == Modifiers::SHIFT {
-            Some(if self.view_axis_vertical {
+            Some(if self.is_vertical() {
                 OverviewWheelTarget::Workspace
             } else {
                 OverviewWheelTarget::Column
@@ -99,6 +122,17 @@ mod tests {
 
         assert_eq!(horizontal.split_view_workspace_deltas(3., -7.), (3., -7.));
         assert_eq!(vertical.split_view_workspace_deltas(3., -7.), (-7., 3.));
+    }
+
+    #[test]
+    fn screenshot_axes_respect_main_axis() {
+        let horizontal = InputAxisPolicy::from_main_axis(MainAxis::Horizontal);
+        let vertical = InputAxisPolicy::from_main_axis(MainAxis::Vertical);
+
+        assert_eq!(horizontal.screenshot_main_axis(), PhysicalAxis::Width);
+        assert_eq!(horizontal.screenshot_cross_axis(), PhysicalAxis::Height);
+        assert_eq!(vertical.screenshot_main_axis(), PhysicalAxis::Height);
+        assert_eq!(vertical.screenshot_cross_axis(), PhysicalAxis::Width);
     }
 
     #[test]

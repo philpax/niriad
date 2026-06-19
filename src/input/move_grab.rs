@@ -16,7 +16,6 @@ use smithay::input::SeatHandler;
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
 
-use crate::input::axis_policy::InputAxisPolicy;
 use crate::input::PointerOrTouchStartData;
 use crate::niri::State;
 use crate::utils::get_monotonic_time;
@@ -189,9 +188,8 @@ impl MoveGrab {
             // Check if the gesture moved far enough to decide.
             let c = self.new_location - self.start_data.location();
             if c.x * c.x + c.y * c.y >= 8. * 8. {
-                let (is_floating, axis_policy) = data
-                    .window_axis_policy(&self.window)
-                    .unwrap_or((false, InputAxisPolicy::from_view_axis_vertical(false)));
+                let (is_floating, axis_policy) =
+                    data.window_axis_policy(&self.window).unwrap_or_default();
 
                 let is_view_offset = self.enable_view_offset
                     && !is_floating
@@ -239,7 +237,7 @@ impl MoveGrab {
                 let axis_policy = data
                     .window_axis_policy(&self.window)
                     .map(|(_, policy)| policy)
-                    .unwrap_or_else(|| InputAxisPolicy::from_view_axis_vertical(false));
+                    .unwrap_or_default();
                 let (view_delta, _) =
                     axis_policy.split_view_workspace_deltas(-relative_delta.x, -relative_delta.y);
 

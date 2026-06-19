@@ -22,6 +22,7 @@ use smithay::output::{Output, WeakOutput};
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use crate::animation::{Animation, Clock};
+use crate::layout::axis::PhysicalAxis;
 use crate::layout::floating::DIRECTIONAL_MOVE_PX;
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -312,66 +313,26 @@ impl ScreenshotUi {
     }
 
     pub fn move_left(&mut self) {
-        let Self::Open {
-            selection: (output, a, b),
-            output_data,
-            ..
-        } = self
-        else {
-            return;
-        };
-
-        let data = &output_data[output];
-
-        let delta: i32 = to_physical_precise_round(data.scale, DIRECTIONAL_MOVE_PX);
-        let delta = min(delta, min(a.x, b.x));
-        a.x -= delta;
-        b.x -= delta;
-
-        self.update_buffers();
+        self.move_along(PhysicalAxis::Width, false);
     }
 
     pub fn move_right(&mut self) {
-        let Self::Open {
-            selection: (output, a, b),
-            output_data,
-            ..
-        } = self
-        else {
-            return;
-        };
-
-        let data = &output_data[output];
-
-        let delta: i32 = to_physical_precise_round(data.scale, DIRECTIONAL_MOVE_PX);
-        let delta = min(delta, data.size.w - max(a.x, b.x) - 1);
-        a.x += delta;
-        b.x += delta;
-
-        self.update_buffers();
+        self.move_along(PhysicalAxis::Width, true);
     }
 
     pub fn move_up(&mut self) {
-        let Self::Open {
-            selection: (output, a, b),
-            output_data,
-            ..
-        } = self
-        else {
-            return;
-        };
-
-        let data = &output_data[output];
-
-        let delta: i32 = to_physical_precise_round(data.scale, DIRECTIONAL_MOVE_PX);
-        let delta = min(delta, min(a.y, b.y));
-        a.y -= delta;
-        b.y -= delta;
-
-        self.update_buffers();
+        self.move_along(PhysicalAxis::Height, false);
     }
 
     pub fn move_down(&mut self) {
+        self.move_along(PhysicalAxis::Height, true);
+    }
+
+    /// Move the selection by `DIRECTIONAL_MOVE_PX` along the given physical axis.
+    ///
+    /// `forward` is +X for `Width` and +Y for `Height`. The motion is clamped to keep the
+    /// selection inside the output.
+    pub fn move_along(&mut self, axis: PhysicalAxis, forward: bool) {
         let Self::Open {
             selection: (output, a, b),
             output_data,
@@ -382,11 +343,21 @@ impl ScreenshotUi {
         };
 
         let data = &output_data[output];
-
         let delta: i32 = to_physical_precise_round(data.scale, DIRECTIONAL_MOVE_PX);
-        let delta = min(delta, data.size.h - max(a.y, b.y) - 1);
-        a.y += delta;
-        b.y += delta;
+
+        // Project the corner points onto the chosen axis so the same logic handles X/Y.
+        let (a_axis, b_axis, bound) = match axis {
+            PhysicalAxis::Width => (&mut a.x, &mut b.x, data.size.w),
+            PhysicalAxis::Height => (&mut a.y, &mut b.y, data.size.h),
+        };
+
+        let delta = if forward {
+            min(delta, bound - max(*a_axis, *b_axis) - 1)
+        } else {
+            -min(delta, min(*a_axis, *b_axis))
+        };
+        *a_axis += delta;
+        *b_axis += delta;
 
         self.update_buffers();
     }
