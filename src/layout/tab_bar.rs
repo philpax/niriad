@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use pango::FontDescription;
 use pangocairo::cairo::{self, ImageSurface};
 use smithay::backend::allocator::Fourcc;
@@ -24,30 +26,30 @@ niri_render_elements! {
 /// Cached title texture for a single tab.
 #[derive(Debug, Default)]
 struct CachedTitle {
-    title: String,
-    scale: f64,
-    texture: Option<Option<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>>,
+    title: RefCell<String>,
+    scale: RefCell<f64>,
+    texture: RefCell<Option<Option<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>>>,
 }
 
 impl CachedTitle {
     fn get(
-        &mut self,
+        &self,
         renderer: &mut GlesRenderer,
         title: &str,
         scale: f64,
         font: &str,
     ) -> Option<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>> {
-        if self.title != title || self.scale != scale {
-            self.texture = None;
-            self.title = title.to_owned();
-            self.scale = scale;
+        if *self.title.borrow() != title || *self.scale.borrow() != scale {
+            *self.texture.borrow_mut() = None;
+            *self.title.borrow_mut() = title.to_owned();
+            *self.scale.borrow_mut() = scale;
         }
 
-        self.texture
-            .get_or_insert_with(|| {
-                generate_title_texture(renderer, title, scale, font).ok()
-            })
-            .clone()
+        let mut tex = self.texture.borrow_mut();
+        tex.get_or_insert_with(|| {
+            generate_title_texture(renderer, title, scale, font).ok()
+        })
+        .clone()
     }
 }
 
@@ -108,7 +110,7 @@ fn generate_title_texture(
 #[derive(Debug)]
 pub struct TabBar {
     /// Cached title textures for each tab.
-    cached_titles: Vec<CachedTitle>,
+    cached_titles: RefCell<Vec<CachedTitle>>,
     /// Cached geometry for each tab (computed during update_render_elements).
     tab_rects: Vec<Rectangle<f64, Logical>>,
     /// Whether textures need regeneration (scale changed).
@@ -122,7 +124,7 @@ pub struct TabBar {
 impl TabBar {
     pub fn new(config: niri_config::TabBarConfig) -> Self {
         Self {
-            cached_titles: Vec::new(),
+            cached_titles: RefCell::new(Vec::new()),
             tab_rects: Vec::new(),
             cached_scale: 0.,
             open_anim: None,
@@ -132,11 +134,11 @@ impl TabBar {
 
     pub fn update_config(&mut self, config: niri_config::TabBarConfig) {
         self.config = config;
-        self.cached_titles.clear();
+        self.cached_titles.borrow_mut().clear();
     }
 
     pub fn update_shaders(&mut self) {
-        self.cached_titles.clear();
+        self.cached_titles.borrow_mut().clear();
     }
 
     pub fn advance_animations(&mut self) {
@@ -194,12 +196,12 @@ impl TabBar {
 
         // Invalidate textures if scale changed.
         if self.cached_scale != scale {
-            self.cached_titles.clear();
+            self.cached_titles.borrow_mut().clear();
             self.cached_scale = scale;
         }
 
         // Ensure cached_titles has the right number of entries.
-        self.cached_titles.resize_with(tab_count, Default::default);
+        self.cached_titles.borrow_mut().resize_with(tab_count, Default::default);
 
         let count = tab_count;
         self.tab_rects.resize_with(count, Default::default);
@@ -268,19 +270,26 @@ impl TabBar {
 
     /// Renders cached title textures for each tab.
     /// Call after render_backgrounds.
-    pub fn render_titles<R: NiriRenderer>(
-        &mut self,
-        renderer: &mut R,
+    pub fn render_titles(
+        &self,
+        renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
         titles: &[&str],
+        push: &mut dyn FnMut(TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>),
     ) {
         if self.config.off || self.tab_rects.is_empty() {
             return;
         }
 
-        let gles = renderer.as_gles_renderer();
+        let cached_titles = self.cached_titles.borrow();
+        // Ensure we have enough cached entries.
+        if cached_titles.len() < titles.len() {
+            drop(cached_titles);
+            self.cached_titles.borrow_mut().resize_with(titles.len(), Default::default);
+        }
 
+        let cached_titles = self.cached_titles.borrow();
         for (i, rect) in self.tab_rects.iter().enumerate() {
             if i >= titles.len() {
                 break;
@@ -290,21 +299,25 @@ impl TabBar {
                 continue;
             }
 
-            if i >= self.cached_titles.len() {
-                self.cached_titles.resize_with(i + 1, Default::default);
+            if i >= cached_titles.len() {
+                break;
             }
 
-            if let Some(texture) = self.cached_titles[i].get(gles, title, scale, &self.config.font) {
+            if let Some(texture) = cached_titles[i].get(renderer, title, scale, &self.config.font) {
                 let text_size = texture.logical_size();
                 let text_pos: Point<f64, Logical> = Point::from((
                     pos.x + rect.loc.x + 4.,
                     pos.y + rect.loc.y + (rect.size.h - text_size.h) / 2.,
                 ));
-                // TextureRenderElement would go here, but it needs to be part of
-                // the render element enum. For now, textures are generated and cached
-                // but not pushed to the render output due to type system constraints.
-                // The backgrounds (SolidColorRenderElement) are rendered.
-                let _ = text_pos;
+                let text_elem = TextureRenderElement::from_texture_buffer(
+                    texture,
+                    text_pos,
+                    1.0,
+                    None,
+                    None,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                );
+                push(text_elem);
             }
         }
     }

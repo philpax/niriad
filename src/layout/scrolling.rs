@@ -3675,6 +3675,42 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 });
             }
         }
+
+        // Second pass: generate and cache tab bar text textures for Bar-style tab headers.
+        let view_off = main_space_vec(-self.view_main_pos());
+        let column_mains: Vec<f64> = self.column_main_positions(self.data.iter().copied()).collect();
+        for col_idx in 0..self.columns.len() {
+            let col = &self.columns[col_idx];
+            if !col.is_tabbed() {
+                continue;
+            }
+
+            let column_main = column_mains[col_idx];
+            let column_offset = main_space_vec(column_main);
+            let column_render_offset = col.render_offset();
+            let pos = view_off + column_offset + column_render_offset;
+            let pos = self.map_point_out(pos);
+            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+
+            let titles: Vec<String> = col
+                .tiles_enumerated()
+                .map(|(_, tile)| {
+                    tile.window().title().unwrap_or_default()
+                })
+                .collect();
+            let title_refs: Vec<&str> = titles.iter().map(|s| s.as_str()).collect();
+
+            let tab_header = match col.tab_header() {
+                Some(th) => th,
+                None => continue,
+            };
+            let TabHeader::Bar(bar) = tab_header else {
+                continue;
+            };
+
+            let mut gles_ctx = ctx.as_gles();
+            bar.render_titles(gles_ctx.renderer, pos, self.scale, &title_refs, &mut |_| {});
+        }
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
