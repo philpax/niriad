@@ -1198,13 +1198,76 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .unwrap()
         };
 
-        // Return whichever gap is closer in main/cross space.
+        // Return whichever gap is closer in main/cross space, or detect a tile interior for splits.
         let main_dist = (closest_col_main - main).abs();
         let cross_dist = (closest_tile_cross - cross).abs();
-        if main_dist <= cross_dist {
+
+        // If the pointer is far from both gaps, it's in a tile interior — check for split.
+        let gap_threshold = self.options.layout.gaps * 2.;
+        if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
+            // The pointer is in a tile interior. Find the tile containing the pointer vertically.
+            let offsets: Vec<_> = col.tile_offsets().collect();
+            let tile_idx = offsets
+                .iter()
+                .enumerate()
+                .find(|(idx, off)| {
+                    let tile_top = off.y;
+                    let tile_h = col.data().get(*idx).map(|d| d.size.h).unwrap_or(0.);
+                    cross >= tile_top && cross <= tile_top + tile_h
+                })
+                .map(|(idx, _)| idx)
+                .unwrap_or(closest_tile_idx);
+
+            // Determine which half of the column width the pointer is in.
+            let col_main_start = self.column_main_pos(col_idx);
+            let col_w = self.data[col_idx].width;
+            let col_main_center = col_main_start + col_w / 2.;
+
+            if main < col_main_center {
+                InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main)
+            } else {
+                InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main)
+            }
+        } else if main_dist <= cross_dist {
             InsertPosition::NewColumn(closest_col_idx)
         } else {
             InsertPosition::InColumn(col_idx, closest_tile_idx)
+        }
+    }
+
+    /// Adds a tile as a split child of the tile at (col_idx, tile_idx) along the given axis.
+    pub fn add_tile_to_split(
+        &mut self,
+        col_idx: usize,
+        tile_idx: usize,
+        axis: SplitAxis,
+        tile: Tile<W>,
+        activate: bool,
+    ) {
+        let prev_next_x = self.column_main_pos(col_idx + 1);
+
+        let target_column = &mut self.columns[col_idx];
+        target_column.add_tile_to_split(tile_idx, tile, axis, activate);
+        self.data[col_idx].update(target_column);
+
+        if activate {
+            if self.active_column_idx != col_idx {
+                self.activate_column(col_idx);
+            }
+        }
+
+        // Move columns to account for width changes.
+        let offset = self.column_main_pos(col_idx + 1) - prev_next_x;
+        if offset != 0. {
+            if self.active_column_idx <= col_idx {
+                for col in &mut self.columns[col_idx + 1..] {
+                    col.animate_move_from(-offset);
+                }
+            } else {
+                for col in &mut self.columns[..=col_idx] {
+                    col.animate_move_from(offset);
+                }
+            }
         }
     }
 
@@ -3068,6 +3131,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
                 let size = Size::from((self.data[column_index].width - extra_w, height));
                 let loc = Point::from((self.column_main_pos(column_index) + origin_x, y));
+                Rectangle::new(loc, size)
+            }
+            InsertPosition::InSplit(column_index, tile_index, axis) => {
+                if column_index >= self.columns.len() {
+                    return None;
+                }
+                let col = &self.columns[column_index];
+                if tile_index >= col.tiles_len() {
+                    return None;
+                }
+
+                let tile_off = col.tile_offset(tile_index);
+                let tile_w = col.data()[tile_index].size.w;
+                let tile_h = col.data()[tile_index].size.h;
+                let col_main = self.column_main_pos(column_index);
+
+                // For a Main-axis split, show a half-width rectangle covering the target half.
+                let half_w = tile_w / 2.;
+                let loc = Point::from((col_main + tile_off.x, tile_off.y));
+                let size = Size::from((half_w, tile_h));
                 Rectangle::new(loc, size)
             }
             InsertPosition::Floating => return None,

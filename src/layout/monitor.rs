@@ -14,6 +14,7 @@ use super::axis::AxisMap;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::scrolling::{Column, ColumnWidth};
 use super::tile::Tile;
+use super::tile_node::SplitAxis;
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceRenderElement,
@@ -127,10 +128,12 @@ pub struct WorkspaceSwitchGesture {
     dnd_nonzero_start_time: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
+    /// Drop into a split with the tile at (column_idx, tile_idx) along the given axis.
+    InSplit(usize, usize, SplitAxis),
     Floating,
 }
 
@@ -643,6 +646,31 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    pub fn add_tile_to_split(
+        &mut self,
+        workspace_idx: usize,
+        column_idx: usize,
+        tile_idx: usize,
+        axis: SplitAxis,
+        tile: Tile<W>,
+        activate: bool,
+        // FIXME: Refactor ActivateWindow enum to make this better.
+        allow_to_activate_workspace: bool,
+    ) {
+        let workspace = &mut self.workspaces[workspace_idx];
+
+        workspace.add_tile_to_split(column_idx, tile_idx, axis, tile, activate);
+
+        // After adding a new window, workspace becomes this output's own.
+        if workspace.name().is_none() {
+            workspace.original_output = OutputId::new(&self.output);
+        }
+
+        if allow_to_activate_workspace && activate {
+            self.activate_workspace(workspace_idx);
+        }
+    }
+
     pub fn clean_up_workspaces(&mut self) {
         assert!(self.workspace_switch.is_none());
 
@@ -1130,7 +1158,7 @@ impl<W: LayoutElement> Monitor<W> {
             match hint.workspace {
                 InsertWorkspace::Existing(ws_id) => {
                     if let Some(ws) = self.workspaces.iter().find(|ws| ws.id() == ws_id) {
-                        if let Some(mut area) = ws.insert_hint_area(hint.position) {
+                        if let Some(mut area) = ws.insert_hint_area(hint.position.clone()) {
                             let scale = ws.scale().fractional_scale();
                             let view_size = ws.view_size();
 
