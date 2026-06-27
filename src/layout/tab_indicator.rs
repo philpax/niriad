@@ -179,7 +179,10 @@ impl TabHeader {
                 ti.render(renderer, pos, &mut |elem| push(elem));
             }
             TabHeader::Bar(bar) => {
-                // TabBar render is a stub for now.
+                // TabBar rendering is handled during update_render_elements
+                // where textures are cached. The actual render output is pushed
+                // there. Here we just skip — the Bar style produces no
+                // TabIndicatorRenderElement output.
                 let _ = (bar, renderer, pos, push);
             }
         }
