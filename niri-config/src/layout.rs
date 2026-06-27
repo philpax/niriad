@@ -2,7 +2,7 @@ use knuffel::errors::DecodeError;
 use niri_ipc::{ColumnDisplay, SizeChange};
 
 use crate::appearance::{
-    Border, FocusRing, InsertHint, Shadow, TabIndicator, DEFAULT_BACKGROUND_COLOR,
+    Border, FocusRing, InsertHint, Shadow, TabHeaderConfig, TabIndicator, DEFAULT_BACKGROUND_COLOR,
 };
 use crate::utils::{expect_only_children, Flag, MergeWith};
 use crate::{BorderRule, Color, FloatOrInt, InsertHintPart, ShadowRule, TabIndicatorPart};
@@ -13,6 +13,7 @@ pub struct Layout {
     pub border: Border,
     pub shadow: Shadow,
     pub tab_indicator: TabIndicator,
+    pub tab_header: TabHeaderConfig,
     pub insert_hint: InsertHint,
     pub main_axis: MainAxis,
     pub preset_column_widths: Vec<PresetSize>,
@@ -34,6 +35,7 @@ impl Default for Layout {
             border: Border::default(),
             shadow: Shadow::default(),
             tab_indicator: TabIndicator::default(),
+            tab_header: TabHeaderConfig::default(),
             insert_hint: InsertHint::default(),
             main_axis: MainAxis::Horizontal,
             preset_column_widths: vec![
@@ -72,6 +74,11 @@ impl MergeWith<LayoutPart> for Layout {
             gaps,
         );
 
+        // Update tab_header.indicator when tab_indicator changes.
+        if part.tab_indicator.is_some() {
+            self.tab_header.indicator = self.tab_indicator;
+        }
+
         merge_clone!(
             (self, part),
             main_axis,
@@ -107,6 +114,8 @@ pub struct LayoutPart {
     pub shadow: Option<ShadowRule>,
     #[knuffel(child)]
     pub tab_indicator: Option<TabIndicatorPart>,
+    // tab_header config is derived from tab_indicator + defaults for now.
+    // A dedicated KDL section can be added later.
     #[knuffel(child)]
     pub insert_hint: Option<InsertHintPart>,
     #[knuffel(child, unwrap(argument))]

@@ -1,8 +1,10 @@
 use std::iter::zip;
 use std::mem;
 
-use niri_config::{CornerRadius, Gradient, GradientRelativeTo, TabIndicatorPosition};
+use niri_config::{CornerRadius, Gradient, GradientRelativeTo, TabIndicatorPosition, TabStyle};
 use smithay::utils::{Logical, Point, Rectangle, Size};
+
+use super::tab_bar::{TabBar, TabBarRenderElement};
 
 use super::tile::Tile;
 use super::LayoutElement;
@@ -33,6 +35,167 @@ pub struct TabInfo {
 niri_render_elements! {
     TabIndicatorRenderElement => {
         Gradient = BorderRenderElement,
+    }
+}
+
+/// Tab display style — either niri-style indicator bars or i3/sway-style header bar.
+#[derive(Debug)]
+pub enum TabHeader {
+    /// Existing niri-style colored gradient bars.
+    Indicator(TabIndicator),
+    /// i3/sway-style horizontal header bar with text labels.
+    Bar(TabBar),
+}
+
+impl TabHeader {
+    /// Creates a new tab header based on the configured style.
+    pub fn new(config: niri_config::TabHeaderConfig) -> Self {
+        match config.style {
+            TabStyle::Bar => TabHeader::Bar(TabBar::new(config.bar)),
+            TabStyle::Indicator => TabHeader::Indicator(TabIndicator::new(config.indicator)),
+        }
+    }
+
+    /// Creates a new indicator-style tab header (backward compat).
+    pub fn new_indicator(config: niri_config::TabIndicator) -> Self {
+        TabHeader::Indicator(TabIndicator::new(config))
+    }
+
+    pub fn update_config(&mut self, config: niri_config::TabHeaderConfig) {
+        match (self, config.style) {
+            (TabHeader::Indicator(ti), TabStyle::Indicator) => {
+                ti.update_config(config.indicator);
+            }
+            (TabHeader::Bar(bar), TabStyle::Bar) => {
+                bar.update_config(config.bar);
+            }
+            (slot, style) => {
+                // Style changed — recreate the header.
+                *slot = match style {
+                    TabStyle::Bar => TabHeader::Bar(TabBar::new(config.bar)),
+                    TabStyle::Indicator => TabHeader::Indicator(TabIndicator::new(config.indicator)),
+                };
+            }
+        }
+    }
+
+    pub fn update_shaders(&mut self) {
+        match self {
+            TabHeader::Indicator(ti) => ti.update_shaders(),
+            TabHeader::Bar(bar) => bar.update_shaders(),
+        }
+    }
+
+    pub fn advance_animations(&mut self) {
+        match self {
+            TabHeader::Indicator(ti) => ti.advance_animations(),
+            TabHeader::Bar(bar) => bar.advance_animations(),
+        }
+    }
+
+    pub fn are_animations_ongoing(&self) -> bool {
+        match self {
+            TabHeader::Indicator(ti) => ti.are_animations_ongoing(),
+            TabHeader::Bar(bar) => bar.are_animations_ongoing(),
+        }
+    }
+
+    pub fn start_open_animation(&mut self, clock: Clock, config: niri_config::Animation) {
+        match self {
+            TabHeader::Indicator(ti) => ti.start_open_animation(clock, config),
+            TabHeader::Bar(bar) => bar.start_open_animation(clock, config),
+        }
+    }
+
+    pub fn extra_size(&self, tab_count: usize, scale: f64) -> Size<f64, Logical> {
+        match self {
+            TabHeader::Indicator(ti) => ti.extra_size(tab_count, scale),
+            TabHeader::Bar(bar) => bar.extra_size(tab_count, scale),
+        }
+    }
+
+    pub fn content_offset(&self, tab_count: usize, scale: f64) -> Point<f64, Logical> {
+        match self {
+            TabHeader::Indicator(ti) => ti.content_offset(tab_count, scale),
+            TabHeader::Bar(bar) => bar.content_offset(tab_count, scale),
+        }
+    }
+
+    pub fn config(&self) -> niri_config::TabIndicator {
+        match self {
+            TabHeader::Indicator(ti) => ti.config(),
+            TabHeader::Bar(bar) => {
+                // Return default indicator config for Bar style.
+                niri_config::TabIndicator::default()
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_render_elements(
+        &mut self,
+        enabled: bool,
+        area: Rectangle<f64, Logical>,
+        area_view_rect: Rectangle<f64, Logical>,
+        tab_count: usize,
+        tabs: impl Iterator<Item = TabInfo>,
+        is_active: bool,
+        scale: f64,
+    ) {
+        match self {
+            TabHeader::Indicator(ti) => {
+                ti.update_render_elements(
+                    enabled,
+                    area,
+                    area_view_rect,
+                    tab_count,
+                    tabs,
+                    is_active,
+                    scale,
+                );
+            }
+            TabHeader::Bar(bar) => {
+                bar.update_render_elements(
+                    enabled,
+                    area,
+                    area_view_rect,
+                    tab_count,
+                    tabs,
+                    is_active,
+                    scale,
+                );
+            }
+        }
+    }
+
+    pub fn render<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        pos: Point<f64, Logical>,
+        push: &mut dyn FnMut(TabIndicatorRenderElement),
+    ) {
+        match self {
+            TabHeader::Indicator(ti) => {
+                ti.render(renderer, pos, &mut |elem| push(elem));
+            }
+            TabHeader::Bar(bar) => {
+                // TabBar render is a stub for now.
+                let _ = (bar, renderer, pos, push);
+            }
+        }
+    }
+
+    pub fn hit(
+        &self,
+        area: Rectangle<f64, Logical>,
+        count: usize,
+        scale: f64,
+        pos: Point<f64, Logical>,
+    ) -> Option<usize> {
+        match self {
+            TabHeader::Indicator(ti) => ti.hit(area, count, scale, pos),
+            TabHeader::Bar(bar) => bar.hit(area, count, scale, pos),
+        }
     }
 }
 

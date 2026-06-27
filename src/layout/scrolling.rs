@@ -13,7 +13,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 use super::axis::AxisMap;
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::InsertPosition;
-use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
+use super::tab_indicator::{TabHeader, TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::tile_node::{ChildSpan, SplitAxis, SplitChildData, TileNode, TilePath};
 use super::workspace::{InteractiveResize, ResolvedSize};
@@ -2778,7 +2778,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &mut self.columns[self.active_column_idx];
-        let tab_indicator_config = col.options.layout.tab_indicator;
         col.set_column_display(
             if col.is_tabbed() { ColumnDisplay::Normal } else { ColumnDisplay::Tabbed },
         );
@@ -3190,7 +3189,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // Adjust for place-within-column tab indicator.
                 let origin_x = col.tiles_origin().x;
                 let extra_w = if is_tabbed && col.sizing_mode().is_normal() {
-                    col.tab_indicator().unwrap().extra_size(col.tiles_len(), col.scale).w
+                    col.tab_header().unwrap().extra_size(col.tiles_len(), col.scale).w
                 } else {
                     0.
                 };
@@ -3636,7 +3635,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let column_render_offset = col.render_offset();
 
             // Draw the tab indicator on top.
-            if let Some(tab_indicator) = col.tab_indicator() {
+            if let Some(tab_indicator) = col.tab_header() {
                 let pos = view_off + column_offset + column_render_offset;
                 let pos = self.map_point_out(pos);
                 let pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -3694,7 +3693,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .to_physical_precise_round(scale)
                     .to_logical(scale);
 
-                if let Some(idx) = col.tab_indicator().unwrap().hit(
+                if let Some(idx) = col.tab_header().unwrap().hit(
                     col.tab_indicator_area(),
                     col.tiles_len(),
                     scale,
@@ -4496,14 +4495,14 @@ impl<W: LayoutElement> Column<W> {
         }
     }
 
-    /// Returns the tab indicator (if tabbed).
-    fn tab_indicator(&self) -> Option<&TabIndicator> {
-        self.root.tab_indicator()
+    /// Returns the tab header (if tabbed).
+    fn tab_header(&self) -> Option<&TabHeader> {
+        self.root.tab_header()
     }
 
-    /// Returns the tab indicator (mutable, if tabbed).
-    fn tab_indicator_mut(&mut self) -> Option<&mut TabIndicator> {
-        self.root.tab_indicator_mut()
+    /// Returns the tab header (mutable, if tabbed).
+    fn tab_header_mut(&mut self) -> Option<&mut TabHeader> {
+        self.root.tab_header_mut()
     }
 
     /// Returns an iterator over all tiles (leaves) with their indices.
@@ -4538,7 +4537,7 @@ impl<W: LayoutElement> Column<W> {
     /// Sets the display mode (Normal/Tabbed), toggling the root node type.
     fn set_display_mode(&mut self, display: ColumnDisplay) {
         self.root
-            .set_display(display, self.options.layout.tab_indicator);
+            .set_display(display, self.options.layout.tab_header.clone());
     }
 
     /// Inserts a tile at the given index, creating a new leaf child with auto span.
@@ -4796,9 +4795,9 @@ impl<W: LayoutElement> Column<W> {
         // Create the root as a cross-axis split with one child (the initial tile).
         // This matches the existing column behavior where tiles stack along the cross axis.
         // For tabbed display, we use a Tabbed node instead.
-        let tab_indicator = TabIndicator::new(tab_indicator_config);
+        let tab_header = TabHeader::new_indicator(tab_indicator_config);
         let root = if display_mode == ColumnDisplay::Tabbed {
-            TileNode::tabbed(vec![tile], 0, tab_indicator)
+            TileNode::tabbed(vec![tile], 0, tab_header)
         } else {
             TileNode::cross_split(vec![tile], 0)
         };
@@ -4850,7 +4849,7 @@ impl<W: LayoutElement> Column<W> {
             // Usually new columns are created together with window movement actions. For new
             // windows, we handle that in start_open_animation().
             let clock_clone = rv.clock.clone();
-            if let Some(tab_indicator) = rv.tab_indicator_mut() {
+            if let Some(tab_indicator) = rv.tab_header_mut() {
                 tab_indicator.start_open_animation(clock_clone, anim_config);
             }
         }
@@ -4912,8 +4911,8 @@ impl<W: LayoutElement> Column<W> {
             data.update(tile, axis);
         }
 
-        if let Some(tab_indicator) = self.tab_indicator_mut() {
-            tab_indicator.update_config(options.layout.tab_indicator);
+        if let Some(tab_header) = self.tab_header_mut() {
+            tab_header.update_config(options.layout.tab_header.clone());
         }
         self.view_size = view_size;
         self.working_area = working_area;
@@ -4931,7 +4930,7 @@ impl<W: LayoutElement> Column<W> {
             tile.update_shaders();
         }
 
-        if let Some(tab_indicator) = self.tab_indicator_mut() {
+        if let Some(tab_indicator) = self.tab_header_mut() {
             tab_indicator.update_shaders();
         }
     }
@@ -4947,20 +4946,20 @@ impl<W: LayoutElement> Column<W> {
             tile.advance_animations();
         }
 
-        if let Some(tab_indicator) = self.tab_indicator_mut() {
+        if let Some(tab_indicator) = self.tab_header_mut() {
             tab_indicator.advance_animations();
         }
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.move_animation.is_some()
-            || self.tab_indicator().map_or(false, |ti| ti.are_animations_ongoing())
+            || self.tab_header().map_or(false, |ti| ti.are_animations_ongoing())
             || self.tiles_enumerated().any(|(_, tile)| tile.are_animations_ongoing())
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         self.move_animation.is_some()
-            || self.tab_indicator().map_or(false, |ti| ti.are_animations_ongoing())
+            || self.tab_header().map_or(false, |ti| ti.are_animations_ongoing())
             || self
                 .tiles_enumerated()
                 .any(|(_, tile)| tile.are_transitions_ongoing())
@@ -4977,8 +4976,8 @@ impl<W: LayoutElement> Column<W> {
         }
 
         // Only update tab indicator render elements when in tabbed mode.
-        // Extract all needed data before the mutable borrow of tab_indicator_mut().
-        let config = self.tab_indicator().map(|ti| ti.config());
+        // Extract all needed data before the mutable borrow of tab_header_mut().
+        let config = self.tab_header().map(|ti| ti.config());
         if let Some(config) = config {
             let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
             let tabs: Vec<_> = self
@@ -5001,7 +5000,7 @@ impl<W: LayoutElement> Column<W> {
             let tiles_len = self.tiles_len();
             let scale = self.scale;
 
-            if let Some(tab_indicator) = self.tab_indicator_mut() {
+            if let Some(tab_indicator) = self.tab_header_mut() {
                 tab_indicator.update_render_elements(
                     enabled,
                     tab_indicator_area,
@@ -5285,7 +5284,7 @@ impl<W: LayoutElement> Column<W> {
     /// Extra size taken up by elements in the column such as the tab indicator.
     fn extra_size(&self) -> Size<f64, Logical> {
         if self.is_tabbed() {
-            self.tab_indicator().unwrap().extra_size(self.tiles_len(), self.scale)
+            self.tab_header().unwrap().extra_size(self.tiles_len(), self.scale)
         } else {
             Size::from((0., 0.))
         }
@@ -5805,7 +5804,7 @@ impl<W: LayoutElement> Column<W> {
             .unwrap();
 
         if self.is_tabbed() && self.sizing_mode().is_normal() {
-            let extra_size = self.tab_indicator().unwrap().extra_size(self.tiles_len(), self.scale);
+            let extra_size = self.tab_header().unwrap().extra_size(self.tiles_len(), self.scale);
             max_tile_main_span += extra_size.w;
         }
 
@@ -6250,7 +6249,7 @@ impl<W: LayoutElement> Column<W> {
         // Animate the appearance of the tab indicator.
         if display == ColumnDisplay::Tabbed {
             let clock = self.clock.clone();
-            if let Some(tab_indicator) = self.tab_indicator_mut() {
+            if let Some(tab_indicator) = self.tab_header_mut() {
                 tab_indicator.start_open_animation(clock, anim_config);
             }
         }
@@ -6274,7 +6273,7 @@ impl<W: LayoutElement> Column<W> {
 
         if self.is_tabbed() {
             origin += self
-                .tab_indicator()
+                .tab_header()
                 .unwrap()
                 .content_offset(self.tiles_len(), self.scale);
         }
@@ -6490,7 +6489,7 @@ impl<W: LayoutElement> Column<W> {
         let is_tabbed = self.is_tabbed();
         let sizing_normal = self.sizing_mode().is_normal();
         let tiles_len = self.tiles_len();
-        let hide_when_single_tab = self.tab_indicator().map_or(true, |ti| ti.config().hide_when_single_tab);
+        let hide_when_single_tab = self.tab_header().map_or(true, |ti| ti.config().hide_when_single_tab);
         let clock = self.clock.clone();
         let open_anim = self.options.animations.window_open.anim;
 
@@ -6507,7 +6506,7 @@ impl<W: LayoutElement> Column<W> {
                 && tiles_len == 1
                 && !hide_when_single_tab
             {
-                self.tab_indicator_mut().unwrap().start_open_animation(
+                self.tab_header_mut().unwrap().start_open_animation(
                     clock,
                     open_anim,
                 );

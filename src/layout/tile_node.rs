@@ -6,7 +6,7 @@ use ordered_float::NotNan;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::axis::AxisMap;
-use super::tab_indicator::TabIndicator;
+use super::tab_indicator::{TabHeader, TabIndicator};
 use super::tile::Tile;
 use super::workspace::ResolvedSize;
 use super::{LayoutElement, Options};
@@ -107,7 +107,7 @@ pub enum TileNode<W: LayoutElement> {
         children: Vec<TileNode<W>>,
         active_idx: usize,
         data: Vec<SplitChildData>,
-        tab_indicator: TabIndicator,
+        tab_header: TabHeader,
     },
 }
 
@@ -133,7 +133,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn tabbed(
         tiles: Vec<Tile<W>>,
         active_idx: usize,
-        tab_indicator: TabIndicator,
+        tab_header: TabHeader,
     ) -> Self {
         let data = tiles.iter().map(|_| SplitChildData::new_auto()).collect();
         let children = tiles.into_iter().map(TileNode::Leaf).collect();
@@ -141,7 +141,7 @@ impl<W: LayoutElement> TileNode<W> {
             children,
             active_idx,
             data,
-            tab_indicator,
+            tab_header,
         }
     }
 
@@ -427,18 +427,18 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// Returns the tab indicator if this is a tabbed node.
-    pub fn tab_indicator(&self) -> Option<&TabIndicator> {
+    /// Returns the tab header if this is a tabbed node.
+    pub fn tab_header(&self) -> Option<&TabHeader> {
         match self {
-            TileNode::Tabbed { tab_indicator, .. } => Some(tab_indicator),
+            TileNode::Tabbed { tab_header, .. } => Some(tab_header),
             _ => None,
         }
     }
 
-    /// Returns the tab indicator (mutable) if this is a tabbed node.
-    pub fn tab_indicator_mut(&mut self) -> Option<&mut TabIndicator> {
+    /// Returns the tab header (mutable) if this is a tabbed node.
+    pub fn tab_header_mut(&mut self) -> Option<&mut TabHeader> {
         match self {
-            TileNode::Tabbed { tab_indicator, .. } => Some(tab_indicator),
+            TileNode::Tabbed { tab_header, .. } => Some(tab_header),
             _ => None,
         }
     }
@@ -454,13 +454,13 @@ impl<W: LayoutElement> TileNode<W> {
             }
             TileNode::Tabbed {
                 children,
-                tab_indicator,
+                tab_header,
                 ..
             } => {
                 for child in children {
                     child.advance_animations();
                 }
-                tab_indicator.advance_animations();
+                tab_header.advance_animations();
             }
         }
     }
@@ -474,10 +474,10 @@ impl<W: LayoutElement> TileNode<W> {
             }
             TileNode::Tabbed {
                 children,
-                tab_indicator,
+                tab_header,
                 ..
             } => {
-                tab_indicator.are_animations_ongoing()
+                tab_header.are_animations_ongoing()
                     || children.iter().any(TileNode::are_animations_ongoing)
             }
         }
@@ -492,10 +492,10 @@ impl<W: LayoutElement> TileNode<W> {
             }
             TileNode::Tabbed {
                 children,
-                tab_indicator,
+                tab_header,
                 ..
             } => {
-                tab_indicator.are_animations_ongoing()
+                tab_header.are_animations_ongoing()
                     || children.iter().any(TileNode::are_transitions_ongoing)
             }
         }
@@ -512,13 +512,13 @@ impl<W: LayoutElement> TileNode<W> {
             }
             TileNode::Tabbed {
                 children,
-                tab_indicator,
+                tab_header,
                 ..
             } => {
                 for child in children {
                     child.update_shaders();
                 }
-                tab_indicator.update_shaders();
+                tab_header.update_shaders();
             }
         }
     }
@@ -625,7 +625,7 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Toggles between tabbed and normal display.
-    pub fn toggle_tabbed(&mut self, tab_indicator_config: niri_config::TabIndicator) {
+    pub fn toggle_tabbed(&mut self, tab_header_config: niri_config::TabHeaderConfig) {
         match self {
             TileNode::Tabbed {
                 children,
@@ -650,7 +650,7 @@ impl<W: LayoutElement> TileNode<W> {
                 data,
                 ..
             } => {
-                let tab_indicator = TabIndicator::new(tab_indicator_config);
+                let tab_header = TabHeader::new(tab_header_config);
                 let children = std::mem::take(children);
                 let data = std::mem::take(data);
                 let active_idx = *active_idx;
@@ -658,7 +658,7 @@ impl<W: LayoutElement> TileNode<W> {
                     children,
                     active_idx,
                     data,
-                    tab_indicator,
+                    tab_header,
                 };
             }
             TileNode::Leaf(_) => {
@@ -668,11 +668,11 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Sets the display mode to tabbed or normal.
-    pub fn set_display(&mut self, display: ColumnDisplay, tab_indicator_config: niri_config::TabIndicator) {
+    pub fn set_display(&mut self, display: ColumnDisplay, tab_header_config: niri_config::TabHeaderConfig) {
         if self.display_mode() == display {
             return;
         }
-        self.toggle_tabbed(tab_indicator_config);
+        self.toggle_tabbed(tab_header_config);
     }
 
     /// Sets the active child index (for Split/Tabbed roots). No-op for Leaf.
