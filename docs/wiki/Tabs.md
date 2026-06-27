@@ -33,3 +33,26 @@ This is especially useful for thicker tab indicators, or when you have very smal
 | Default | `place-within-column` |
 | --- | --- |
 | ![A screenshot showing 4 windows, with the middle column being focused. The tab indicator overflows onto the left column](https://github.com/user-attachments/assets/c2f51f50-3d87-403a-8beb-cbbe5ec5c880) | ![A screenshot showing 4 windows, with the middle column being focused. The tab indicator is contained within its respective column](https://github.com/user-attachments/assets/f1797cd0-d518-4be6-95b4-3540523c4370) |
+
+### Generalized Tabbed Containers
+
+In addition to `toggle-column-tabbed-display`, which toggles the entire column, the `toggle-tabbed` action provides a generalized version that works at any tree level:
+
+```kdl
+binds {
+    Mod+Shift+W { toggle-tabbed; }
+}
+```
+
+### Tab Reordering
+
+Tabs can be reordered within a tabbed container using the `move-tab` action:
+
+```kdl
+binds {
+    Mod+Shift+BracketLeft  { move-tab left; }
+    Mod+Shift+BracketRight { move-tab right; }
+}
+```
+
+This moves the focused tab left or right within its tabbed container.
