@@ -519,6 +519,7 @@ enum Op {
     ConsumeWindowIntoSplit,
     SwapWindowInDirection(#[proptest(strategy = "arbitrary_scroll_direction()")] ScrollDirection),
     ToggleColumnTabbedDisplay,
+    ToggleTabbed,
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
     CenterColumn,
     CenterWindow {
@@ -1191,6 +1192,7 @@ impl Op {
             }
             Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
+            Op::ToggleTabbed => layout.toggle_tabbed(),
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
             Op::CenterColumn => layout.center_column(),
             Op::CenterWindow { id } => {
@@ -2223,6 +2225,7 @@ fn operations_dont_panic() {
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::MoveWorkspaceToOutput(1),
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleTabbed,
     ];
 
     for third in &every_op {
@@ -2402,6 +2405,7 @@ fn operations_from_starting_state_dont_panic() {
         Op::ConsumeOrExpelWindowLeft { id: None },
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleTabbed,
     ];
 
     for third in &every_op {
@@ -4122,6 +4126,7 @@ fn tabs_with_different_border() {
         },
         Op::SwitchPresetWindowHeight { id: None },
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleTabbed,
         Op::AddWindow {
             params: TestWindowParams::new(3),
         },
@@ -4154,6 +4159,7 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
         Op::Communicate(1),
         // 1 is now fullscreen, view_offset_to_restore is set.
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleTabbed,
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },

@@ -2748,6 +2748,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.set_column_display(display);
     }
 
+    /// Toggles the active column's root between split and tabbed.
+    /// This is the generalized version that works at any tree level.
+    pub fn toggle_tabbed(&mut self) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let col = &mut self.columns[self.active_column_idx];
+        let tab_indicator_config = col.options.layout.tab_indicator;
+        col.set_column_display(
+            if col.is_tabbed() { ColumnDisplay::Normal } else { ColumnDisplay::Tabbed },
+        );
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         if self.columns.is_empty() {
             return;

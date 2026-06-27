@@ -2257,6 +2257,13 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_column_tabbed_display();
     }
 
+    pub fn toggle_tabbed(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.toggle_tabbed();
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

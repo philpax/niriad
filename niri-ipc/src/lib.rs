@@ -470,6 +470,10 @@ pub enum Action {
     SwapWindowLeft {},
     /// Toggle the focused column between normal and tabbed display.
     ToggleColumnTabbedDisplay {},
+    /// Toggle the active leaf's parent between split and tabbed container.
+    ///
+    /// This generalizes tabbed mode to work at any tree level, not just the column root.
+    ToggleTabbed {},
     /// Set the display mode of the focused column.
     SetColumnDisplay {
         /// Display mode to set.

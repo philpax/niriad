@@ -1194,6 +1194,13 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_column_tabbed_display();
     }
 
+    pub fn toggle_tabbed(&mut self) {
+        if self.floating_is_active.get() {
+            return;
+        }
+        self.scrolling.toggle_tabbed();
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         if self.floating_is_active.get() {
             return;
