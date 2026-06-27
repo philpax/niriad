@@ -1918,6 +1918,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_left(&mut self) -> bool {
+        // Check if the active column has a Main-axis split root — navigate within it first.
+        let col = &mut self.columns[self.active_column_idx];
+        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            let active_idx = col.active_tile_idx();
+            if active_idx > 0 {
+                col.activate_idx(active_idx - 1);
+                return true;
+            }
+        }
+
         if self.active_column_idx == 0 {
             return false;
         }
@@ -1926,6 +1936,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_right(&mut self) -> bool {
+        // Check if the active column has a Main-axis split root — navigate within it first.
+        let col = &mut self.columns[self.active_column_idx];
+        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            let active_idx = col.active_tile_idx();
+            if active_idx + 1 < col.tiles_len() {
+                col.activate_idx(active_idx + 1);
+                return true;
+            }
+        }
+
         if self.active_column_idx + 1 >= self.columns.len() {
             return false;
         }
