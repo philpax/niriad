@@ -404,6 +404,13 @@ fn arbitrary_column_display() -> impl Strategy<Value = ColumnDisplay> {
     prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)]
 }
 
+fn arbitrary_split_direction() -> impl Strategy<Value = niri_ipc::SplitDirection> {
+    prop_oneof![
+        Just(niri_ipc::SplitDirection::Main),
+        Just(niri_ipc::SplitDirection::Cross),
+    ]
+}
+
 #[derive(Debug, Clone, Arbitrary)]
 enum Op {
     AddOutput(#[proptest(strategy = "1..=5usize")] usize),
@@ -508,6 +515,8 @@ enum Op {
     },
     ConsumeWindowIntoColumn,
     ExpelWindowFromColumn,
+    SplitWindow(#[proptest(strategy = "arbitrary_split_direction()")] niri_ipc::SplitDirection),
+    ConsumeWindowIntoSplit,
     SwapWindowInDirection(#[proptest(strategy = "arbitrary_scroll_direction()")] ScrollDirection),
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
@@ -1170,6 +1179,16 @@ impl Op {
             }
             Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
             Op::ExpelWindowFromColumn => layout.expel_from_column(),
+            Op::SplitWindow(direction) => {
+                let dir = Some(match direction {
+                    niri_ipc::SplitDirection::Main => SplitAxis::Main,
+                    niri_ipc::SplitDirection::Cross => SplitAxis::Cross,
+                });
+                layout.split_window(dir);
+            }
+            Op::ConsumeWindowIntoSplit => {
+                layout.consume_window_into_split(None, None);
+            }
             Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
