@@ -2603,6 +2603,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
+        // Check if the active column has a Main-axis split root — swap within it first.
+        let col = &mut self.columns[self.active_column_idx];
+        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            let active_idx = col.active_tile_idx();
+            let new_idx = match direction {
+                ScrollDirection::Left => active_idx.checked_sub(1),
+                ScrollDirection::Right => {
+                    if active_idx + 1 < col.tiles_len() {
+                        Some(active_idx + 1)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(new_idx) = new_idx {
+                col.swap_tiles(active_idx, new_idx);
+                col.activate_idx(new_idx);
+                col.update_tile_sizes(true);
+                return;
+            }
+        }
+
         // if this is the first (resp. last column), then this operation is equivalent
         // to an `consume_or_expel_window_left` (resp. `consume_or_expel_window_right`)
         match direction {
