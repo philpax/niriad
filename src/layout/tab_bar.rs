@@ -5,21 +5,22 @@ use pangocairo::cairo::{self, ImageSurface};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{ImportMem, Renderer, Texture};
-use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
+use smithay::backend::renderer::ImportMem;
+use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
-use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::utils::to_physical_precise_round;
 
 use super::tab_indicator::TabInfo;
+use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 
 niri_render_elements! {
     TabBarRenderElement => {
         Background = SolidColorRenderElement,
+        Text = PrimaryGpuTextureRenderElement,
     }
 }
 
@@ -113,6 +114,8 @@ pub struct TabBar {
     cached_titles: RefCell<Vec<CachedTitle>>,
     /// Cached geometry for each tab (computed during update_render_elements).
     tab_rects: Vec<Rectangle<f64, Logical>>,
+    /// Index of the active tab (set during update_render_elements).
+    active_idx: usize,
     /// Whether textures need regeneration (scale changed).
     cached_scale: f64,
     /// Open animation.
@@ -126,6 +129,7 @@ impl TabBar {
         Self {
             cached_titles: RefCell::new(Vec::new()),
             tab_rects: Vec::new(),
+            active_idx: 0,
             cached_scale: 0.,
             open_anim: None,
             config,
@@ -222,6 +226,9 @@ impl TabBar {
         let bar_height = bar_height * progress;
 
         for (i, (tab, rect)) in tabs.zip(self.tab_rects.iter_mut()).enumerate() {
+            if tab.is_active {
+                self.active_idx = i;
+            }
             let x = area.loc.x + i as f64 * (tab_width + gap);
             *rect = Rectangle::new(
                 Point::from((x, bar_y)),
@@ -230,14 +237,11 @@ impl TabBar {
         }
     }
 
-    /// Renders the tab bar backgrounds and cached title textures.
-    /// Must be called with a mutable reference to allow texture generation.
+    /// Renders the tab bar backgrounds.
     pub fn render_backgrounds(
-        &mut self,
-        renderer: &mut GlesRenderer,
+        &self,
         pos: Point<f64, Logical>,
-        scale: f64,
-        is_active: bool,
+        is_column_active: bool,
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
         if self.config.off || self.tab_rects.is_empty() {
@@ -249,7 +253,7 @@ impl TabBar {
             let tab_size = rect.size;
 
             // Tab background color.
-            let bg_color = if i == 0 && is_active {
+            let bg_color = if i == self.active_idx && is_column_active {
                 self.config.active_color
                     .unwrap_or(niri_config::Color::new_unpremul(0.35, 0.35, 0.35, 1.))
             } else {
@@ -268,6 +272,21 @@ impl TabBar {
         }
     }
 
+    /// Renders the tab bar: backgrounds first, then title textures on top.
+    /// Texture caching uses interior mutability (RefCell), so this only needs &self.
+    pub fn render(
+        &self,
+        renderer: &mut GlesRenderer,
+        pos: Point<f64, Logical>,
+        scale: f64,
+        is_column_active: bool,
+        titles: &[&str],
+        push: &mut dyn FnMut(TabBarRenderElement),
+    ) {
+        self.render_backgrounds(pos, is_column_active, push);
+        self.render_titles(renderer, pos, scale, titles, push);
+    }
+
     /// Renders cached title textures for each tab.
     /// Call after render_backgrounds.
     pub fn render_titles(
@@ -276,7 +295,7 @@ impl TabBar {
         pos: Point<f64, Logical>,
         scale: f64,
         titles: &[&str],
-        push: &mut dyn FnMut(TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>),
+        push: &mut dyn FnMut(TabBarRenderElement),
     ) {
         if self.config.off || self.tab_rects.is_empty() {
             return;
@@ -317,7 +336,9 @@ impl TabBar {
                     None,
                     smithay::backend::renderer::element::Kind::Unspecified,
                 );
-                push(text_elem);
+                push(TabBarRenderElement::Text(PrimaryGpuTextureRenderElement(
+                    text_elem,
+                )));
             }
         }
     }

@@ -30,6 +30,8 @@ pub struct TabInfo {
     pub gradient: Gradient,
     /// Tab geometry in the same coordinate system as the area.
     pub geometry: Rectangle<f64, Logical>,
+    /// Whether this tab is the active one.
+    pub is_active: bool,
 }
 
 niri_render_elements! {
@@ -573,6 +575,6 @@ impl TabInfo {
 
         let geometry = Rectangle::new(position, tile.animated_tile_size());
 
-        TabInfo { gradient, geometry }
+        TabInfo { gradient, geometry, is_active }
     }
 }

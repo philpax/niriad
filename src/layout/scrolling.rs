@@ -14,6 +14,7 @@ use super::axis::AxisMap;
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabHeader, TabIndicator, TabIndicatorRenderElement, TabInfo};
+use super::tab_bar::TabBarRenderElement;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::tile_node::{ChildSpan, SplitAxis, SplitChildData, TileNode, TilePath};
 use super::workspace::{InteractiveResize, ResolvedSize};
@@ -111,6 +112,7 @@ niri_render_elements! {
         Tile = TileRenderElement<R>,
         ClosingWindow = ClosingWindowRenderElement,
         TabIndicator = TabIndicatorRenderElement,
+        TabBar = TabBarRenderElement,
     }
 }
 
@@ -3676,12 +3678,29 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        // Second pass: generate and cache tab bar text textures for Bar-style tab headers.
+        // Second pass: render TabBar (i3/sway-style header bar) for Bar-style tab headers.
+        // We collect the immutable per-column data first, then do a mutable pass to render,
+        // because TabBar::render needs &mut self (for texture caching) while we also need
+        // immutable access to column positions and titles.
         let view_off = main_space_vec(-self.view_main_pos());
         let column_mains: Vec<f64> = self.column_main_positions(self.data.iter().copied()).collect();
+        let active_column_idx = self.active_column_idx;
+
+        // Collect render data for each tabbed column with a Bar-style header.
+        let mut bar_render_data: Vec<(
+            usize,            // col_idx
+            Point<f64, Logical>, // pos
+            Vec<String>,     // titles
+            bool,             // is_column_active
+        )> = Vec::new();
         for col_idx in 0..self.columns.len() {
             let col = &self.columns[col_idx];
             if !col.is_tabbed() {
+                continue;
+            }
+
+            let is_bar = matches!(col.tab_header(), Some(TabHeader::Bar(_)));
+            if !is_bar {
                 continue;
             }
 
@@ -3694,22 +3713,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let titles: Vec<String> = col
                 .tiles_enumerated()
-                .map(|(_, tile)| {
-                    tile.window().title().unwrap_or_default()
-                })
+                .map(|(_, tile)| tile.window().title().unwrap_or_default())
                 .collect();
+            let is_column_active = col_idx == active_column_idx;
+
+            bar_render_data.push((col_idx, pos, titles, is_column_active));
+        }
+
+        // Now render each Bar-style tab header.
+        for (col_idx, pos, titles, is_column_active) in bar_render_data {
             let title_refs: Vec<&str> = titles.iter().map(|s| s.as_str()).collect();
-
-            let tab_header = match col.tab_header() {
-                Some(th) => th,
-                None => continue,
-            };
-            let TabHeader::Bar(bar) = tab_header else {
-                continue;
-            };
-
-            let mut gles_ctx = ctx.as_gles();
-            bar.render_titles(gles_ctx.renderer, pos, self.scale, &title_refs, &mut |_| {});
+            let col = &self.columns[col_idx];
+            if let Some(TabHeader::Bar(bar)) = col.tab_header() {
+                let mut gles_ctx = ctx.as_gles();
+                bar.render(
+                    gles_ctx.renderer,
+                    pos,
+                    self.scale,
+                    is_column_active,
+                    &title_refs,
+                    &mut |elem| push(elem.into()),
+                );
+            }
         }
     }
 
