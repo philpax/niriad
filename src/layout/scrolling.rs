@@ -4660,10 +4660,11 @@ impl<W: LayoutElement> Column<W> {
         match &self.root {
             TileNode::Leaf(_) => panic!("tiles_and_data called on a Leaf root"),
             TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
-                children.iter().zip(data.iter()).map(|(child, data)| {
+                children.iter().zip(data.iter()).filter_map(|(child, data)| {
                     match child {
-                        TileNode::Leaf(tile) => (tile, data),
-                        _ => panic!("expected a leaf child"),
+                        TileNode::Leaf(tile) => Some((tile, data)),
+                        // Skip nested splits/tabs — they don't have direct tile references.
+                        _ => None,
                     }
                 })
             }
