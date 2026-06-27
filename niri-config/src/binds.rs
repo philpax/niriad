@@ -7,7 +7,8 @@ use bitflags::bitflags;
 use knuffel::errors::DecodeError;
 use miette::miette;
 use niri_ipc::{
-    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, WorkspaceReferenceArg,
+    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, SplitDirection,
+    WorkspaceReferenceArg,
 };
 use smithay::input::keyboard::keysyms::KEY_NoSymbol;
 use smithay::input::keyboard::xkb::{keysym_from_name, KEYSYM_CASE_INSENSITIVE, KEYSYM_NO_FLAGS};
@@ -207,6 +208,13 @@ pub enum Action {
     ConsumeOrExpelWindowRightById(u64),
     ConsumeWindowIntoColumn,
     ExpelWindowFromColumn,
+    SplitWindow(#[knuffel(argument, str)] Option<SplitDirection>),
+    ConsumeWindowIntoSplit(#[knuffel(argument, str)] Option<SplitDirection>),
+    #[knuffel(skip)]
+    ConsumeWindowIntoSplitById {
+        direction: Option<SplitDirection>,
+        id: u64,
+    },
     SwapWindowLeft,
     SwapWindowRight,
     ToggleColumnTabbedDisplay,
@@ -499,6 +507,13 @@ impl From<niri_ipc::Action> for Action {
             }
             niri_ipc::Action::ConsumeWindowIntoColumn {} => Self::ConsumeWindowIntoColumn,
             niri_ipc::Action::ExpelWindowFromColumn {} => Self::ExpelWindowFromColumn,
+            niri_ipc::Action::SplitWindow { direction } => Self::SplitWindow(direction),
+            niri_ipc::Action::ConsumeWindowIntoSplit { direction, id: None } => {
+                Self::ConsumeWindowIntoSplit(direction)
+            }
+            niri_ipc::Action::ConsumeWindowIntoSplit { direction, id: Some(id) } => {
+                Self::ConsumeWindowIntoSplitById { direction, id }
+            }
             niri_ipc::Action::SwapWindowRight {} => Self::SwapWindowRight,
             niri_ipc::Action::SwapWindowLeft {} => Self::SwapWindowLeft,
             niri_ipc::Action::ToggleColumnTabbedDisplay {} => Self::ToggleColumnTabbedDisplay,

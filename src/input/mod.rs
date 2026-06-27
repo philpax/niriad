@@ -50,6 +50,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::axis::PhysicalAxis;
 use crate::layout::scrolling::ScrollDirection;
+use crate::layout::tile_node::SplitAxis;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -1673,6 +1674,41 @@ impl State {
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
+            }
+            Action::SplitWindow(direction) => {
+                let direction = direction.map(|d| match d {
+                    niri_ipc::SplitDirection::Main => SplitAxis::Main,
+                    niri_ipc::SplitDirection::Cross => SplitAxis::Cross,
+                });
+                self.niri.layout.split_window(direction);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::ConsumeWindowIntoSplit(direction) => {
+                let direction = direction.map(|d| match d {
+                    niri_ipc::SplitDirection::Main => SplitAxis::Main,
+                    niri_ipc::SplitDirection::Cross => SplitAxis::Cross,
+                });
+                self.niri.layout.consume_window_into_split(direction, None);
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::ConsumeWindowIntoSplitById { direction, id } => {
+                let direction = direction.map(|d| match d {
+                    niri_ipc::SplitDirection::Main => SplitAxis::Main,
+                    niri_ipc::SplitDirection::Cross => SplitAxis::Cross,
+                });
+                let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
+                let window = window.map(|(_, m)| m.window.clone());
+                if let Some(window) = window {
+                    self.niri
+                        .layout
+                        .consume_window_into_split(direction, Some(&window));
+                    self.maybe_warp_cursor_to_focus();
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::SwapWindowRight => {
                 self.niri

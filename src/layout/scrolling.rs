@@ -1240,6 +1240,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_next_x = self.column_main_pos(col_idx + 1);
 
         let target_column = &mut self.columns[col_idx];
+
+        // Check for pending split direction (split-then-open).
+        if let Some(split_axis) = target_column.pending_split_direction.take() {
+            // The next window opened in this column should be placed in a split
+            // with the currently-focused tile, rather than appended.
+            let active_idx = target_column.active_tile_idx();
+            target_column.add_tile_to_split(active_idx, tile, split_axis, activate);
+            self.data[col_idx].update(target_column);
+
+            if activate && self.active_column_idx != col_idx {
+                self.activate_column(col_idx);
+            }
+
+            // Move columns to account for width changes.
+            let offset = self.column_main_pos(col_idx + 1) - prev_next_x;
+            if offset != 0. {
+                if self.active_column_idx <= col_idx {
+                    for col in &mut self.columns[col_idx + 1..] {
+                        col.animate_move_from(-offset);
+                    }
+                } else {
+                    for col in &mut self.columns[..=col_idx] {
+                        col.animate_move_from(offset);
+                    }
+                }
+            }
+            return;
+        }
+
         let tile_idx = tile_idx.unwrap_or(target_column.tiles_len());
         let mut prev_active_tile_idx = target_column.active_tile_idx();
 
@@ -2369,6 +2398,121 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let new_col = &mut self.columns[target_col_idx];
         move_offset += prev_off - new_col.tile_offset(0);
         new_col.tile_mut(0).animate_move_from(move_offset);
+    }
+
+    /// Sets the pending split direction for the focused column.
+    /// The next window opened in this column will be placed in a split
+    /// with the currently-focused window, rather than appended to the column.
+    pub fn split_window(&mut self, direction: Option<SplitAxis>) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let direction = direction.unwrap_or(SplitAxis::Main);
+        let col = &mut self.columns[self.active_column_idx];
+        col.pending_split_direction = Some(direction);
+    }
+
+    /// Consumes a window from an adjacent column into a split with the focused window.
+    ///
+    /// Takes the focused window from an adjacent column (to the right by default)
+    /// and places it side-by-side with the focused window in the current column
+    /// via a main-axis split.
+    pub fn consume_window_into_split(
+        &mut self,
+        direction: Option<SplitAxis>,
+        id: Option<&W::Id>,
+    ) {
+        if self.columns.len() < 2 {
+            return;
+        }
+
+        let split_axis = direction.unwrap_or(SplitAxis::Main);
+
+        // Find the source window: either by id or the active window in the adjacent column.
+        let (source_col_idx, source_tile_idx) = if let Some(id) = id {
+            // Find the window by id in any column except the active one.
+            self.columns
+                .iter()
+                .enumerate()
+                .find_map(|(col_idx, col)| {
+                    if col_idx == self.active_column_idx {
+                        return None;
+                    }
+                    col.tiles_enumerated()
+                        .find(|(_, tile)| tile.window().id() == id)
+                        .map(|(tile_idx, _)| (col_idx, tile_idx))
+                })
+                .unwrap_or_else(|| {
+                    // Fallback: if the window is in the active column, use the adjacent column's active tile.
+                    if self.active_column_idx == 0 {
+                        (1, self.columns[1].active_tile_idx())
+                    } else {
+                        (self.active_column_idx - 1,
+                         self.columns[self.active_column_idx - 1].active_tile_idx())
+                    }
+                })
+        } else {
+            // Default: consume from the column to the right.
+            let source_col_idx = if self.active_column_idx + 1 < self.columns.len() {
+                self.active_column_idx + 1
+            } else {
+                self.active_column_idx.checked_sub(1).unwrap_or(0)
+            };
+            if source_col_idx == self.active_column_idx {
+                return;
+            }
+            (source_col_idx, self.columns[source_col_idx].active_tile_idx())
+        };
+
+        let target_col_idx = self.active_column_idx;
+        let target_tile_idx = self.columns[target_col_idx].active_tile_idx();
+
+        // Capture positions for animation.
+        let prev_target_pos = self.columns[target_col_idx].tile_offset(target_tile_idx);
+        let prev_source_pos = self.columns[source_col_idx].tile_offset(source_tile_idx)
+            + main_space_vec(
+                self.column_main_pos(source_col_idx) - self.column_main_pos(target_col_idx),
+            );
+
+        // Remove the source tile.
+        let removed =
+            self.remove_tile_by_idx(source_col_idx, source_tile_idx, Transaction::new(), None);
+
+        // Now add the removed tile as a split child of the focused tile in the target column.
+        let target_column = &mut self.columns[target_col_idx];
+        target_column.add_tile_to_split(target_tile_idx, removed.tile, split_axis, true);
+
+        self.data[target_col_idx].update(&self.columns[target_col_idx]);
+
+        // Animate the new tile from its previous position.
+        let target_column = &mut self.columns[target_col_idx];
+        let new_tile_idx = target_column.active_tile_idx();
+        let new_pos = target_column.tile_offset(new_tile_idx);
+        let move_offset = prev_source_pos - new_pos;
+        target_column.tile_mut(new_tile_idx).animate_move_from(move_offset);
+
+        // Animate column movements if width changed.
+        // (The split may have changed the column width.)
+        self.animate_columns_after_change(target_col_idx);
+    }
+
+    /// Animates column movements after a change that might have affected column width.
+    fn animate_columns_after_change(&mut self, col_idx: usize) {
+        // Move other columns to account for width changes.
+        let offset = self.column_main_pos(col_idx + 1) - self.column_main_pos(col_idx + 1);
+        if offset != 0. {
+            let movement_config = self.options.animations.window_movement.0;
+            if self.active_column_idx <= col_idx {
+                for col in &mut self.columns[col_idx + 1..] {
+                    col.animate_move_from_with_config(-offset, movement_config);
+                }
+            } else {
+                for col in &mut self.columns[..=col_idx] {
+                    col.animate_move_from_with_config(offset, movement_config);
+                }
+            }
+        }
     }
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
@@ -4236,6 +4380,113 @@ impl<W: LayoutElement> Column<W> {
     /// Swaps two tiles at the given indices (children and data together).
     fn swap_tiles(&mut self, a: usize, b: usize) {
         self.root.swap_leaves(a, b);
+    }
+
+    /// Adds a tile as a split child of the tile at `target_idx`.
+    ///
+    /// The tile at `target_idx` is replaced with a `Split { axis, children: [old_leaf, new_tile] }`.
+    /// If the root is already a `Split` with the matching axis, the new tile is appended to it
+    /// instead of nesting.
+    /// If `activate` is true, the new tile becomes the active tile.
+    fn add_tile_to_split(
+        &mut self,
+        target_idx: usize,
+        mut tile: Tile<W>,
+        axis: SplitAxis,
+        activate: bool,
+    ) {
+        tile.update_config(
+            self.map_size_out(self.view_size),
+            self.scale,
+            self.options.clone(),
+        );
+
+        // Capture previous offsets for animation.
+        let prev_offsets: Vec<_> = self.tile_offsets().collect();
+
+        let mut new_data = SplitChildData::new_auto();
+        new_data.update(&tile, self.axis());
+
+        // Check if the root is already a Split with the matching axis.
+        let already_matching_split = match &self.root {
+            TileNode::Split { axis: root_axis, .. } => *root_axis == axis,
+            _ => false,
+        };
+
+        if already_matching_split {
+            // Append to the existing split.
+            let insert_idx = target_idx + 1;
+            self.insert_tile(insert_idx, tile);
+            if activate {
+                self.activate_idx(insert_idx);
+            }
+        } else {
+            // Replace the target leaf with a nested split.
+            // This creates a Split { axis, children: [old_leaf, new_leaf] } at target_idx.
+            match &mut self.root {
+                TileNode::Split { children, data, active_idx, .. }
+                | TileNode::Tabbed { children, data, active_idx, .. } => {
+                    // Move out the old child and its data.
+                    let old_child = std::mem::replace(&mut children[target_idx], TileNode::Split {
+                        axis: SplitAxis::Cross,
+                        children: Vec::new(),
+                        active_idx: 0,
+                        data: Vec::new(),
+                    });
+                    let old_data = data[target_idx];
+                    let old_tile = match old_child {
+                        TileNode::Leaf(t) => t,
+                        _ => panic!("expected a leaf child"),
+                    };
+                    let nested = TileNode::Split {
+                        axis,
+                        children: vec![
+                            TileNode::Leaf(old_tile),
+                            TileNode::Leaf(tile),
+                        ],
+                        active_idx: if activate { 1 } else { 0 },
+                        data: vec![old_data, new_data],
+                    };
+                    children[target_idx] = nested;
+                    if activate {
+                        *active_idx = target_idx;
+                    }
+                }
+                TileNode::Leaf(_) => {
+                    // Single-tile column: replace root with a split.
+                    let old_root = std::mem::replace(&mut self.root, TileNode::Split {
+                        axis: SplitAxis::Cross,
+                        children: Vec::new(),
+                        active_idx: 0,
+                        data: Vec::new(),
+                    });
+                    let old_tile = match old_root {
+                        TileNode::Leaf(t) => t,
+                        _ => unreachable!(),
+                    };
+                    let old_data = SplitChildData::new_auto();
+                    self.root = TileNode::Split {
+                        axis,
+                        children: vec![
+                            TileNode::Leaf(old_tile),
+                            TileNode::Leaf(tile),
+                        ],
+                        active_idx: if activate { 1 } else { 0 },
+                        data: vec![old_data, new_data],
+                    };
+                }
+            }
+        }
+
+        self.update_tile_sizes(true);
+
+        // Animate tiles according to offset changes.
+        let new_offsets: Vec<_> = self.tile_offsets().collect();
+        for (i, (offset, prev)) in new_offsets.iter().zip(prev_offsets.iter()).enumerate() {
+            if offset != prev {
+                self.tile_mut(i).animate_move_from(*prev - *offset);
+            }
+        }
     }
 
     /// Returns an iterator over (tile, data) pairs for the root's children (mutable).

@@ -442,6 +442,28 @@ pub enum Action {
     ConsumeWindowIntoColumn {},
     /// Expel the bottom window from the focused column.
     ExpelWindowFromColumn {},
+    /// Split the focused window: the next window opened in this column will be placed
+    /// side-by-side with the focused window in a split.
+    SplitWindow {
+        /// Direction to split in.
+        ///
+        /// If `None`, uses the default (main axis / horizontal).
+        #[cfg_attr(feature = "clap", arg())]
+        direction: Option<SplitDirection>,
+    },
+    /// Consume the window from an adjacent column into a split with the focused window.
+    ConsumeWindowIntoSplit {
+        /// Direction to split in.
+        ///
+        /// If `None`, uses the default (main axis / horizontal).
+        #[cfg_attr(feature = "clap", arg())]
+        direction: Option<SplitDirection>,
+        /// Id of the window to consume.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
     /// Swap focused window with one to the right.
     SwapWindowRight {},
     /// Swap focused window with one to the left.
@@ -1005,6 +1027,20 @@ pub enum ColumnDisplay {
     Normal,
     /// Windows are in tabs.
     Tabbed,
+}
+
+/// Direction for splitting a window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum SplitDirection {
+    /// Split along the main axis (horizontal in normal monitors).
+    ///
+    /// This creates side-by-side windows within a column.
+    Main,
+    /// Split along the cross axis (vertical in normal monitors).
+    ///
+    /// This is the existing column behavior — windows stacked vertically.
+    Cross,
 }
 
 /// Output actions that niri can perform.
@@ -1865,6 +1901,18 @@ impl FromStr for LayoutSwitchTarget {
                 Ok(layout) => Ok(Self::Index(layout)),
                 _ => Err(r#"invalid layout action, can be "next", "prev" or a layout index"#),
             },
+        }
+    }
+}
+
+impl FromStr for SplitDirection {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "main" => Ok(Self::Main),
+            "cross" => Ok(Self::Cross),
+            _ => Err(r#"invalid split direction, can be "main" or "cross""#),
         }
     }
 }

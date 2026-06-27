@@ -59,6 +59,7 @@ use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::scrolling::ScrollDirection;
+use crate::layout::tile_node::SplitAxis;
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::offscreen::OffscreenData;
@@ -2226,6 +2227,20 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         workspace.expel_from_column();
+    }
+
+    pub fn split_window(&mut self, direction: Option<SplitAxis>) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.split_window(direction);
+    }
+
+    pub fn consume_window_into_split(&mut self, direction: Option<SplitAxis>, id: Option<&W::Id>) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.consume_window_into_split(direction, id);
     }
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
