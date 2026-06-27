@@ -4522,7 +4522,18 @@ impl<W: LayoutElement> Column<W> {
 
     /// Removes the tile at the given index and returns it.
     fn remove_tile(&mut self, idx: usize) -> Tile<W> {
-        self.root.remove_leaf_at(idx)
+        let tile = self.root.remove_leaf_at(idx);
+        // Collapse single-child nested splits (not the root itself).
+        // The root should always remain a Split/Tabbed to preserve the column structure.
+        match &mut self.root {
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                for child in children.iter_mut() {
+                    child.collapse_all_single_child();
+                }
+            }
+            TileNode::Leaf(_) => {}
+        }
+        tile
     }
 
     /// Swaps two tiles at the given indices (children and data together).

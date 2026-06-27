@@ -726,6 +726,37 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// If this Split/Tabbed node has exactly one child, replace `self` with that child.
+    /// This collapses single-child splits (i3 behavior: empty splits collapse).
+    /// Returns `true` if a collapse occurred.
+    pub fn collapse_single_child(&mut self) -> bool {
+        match self {
+            TileNode::Leaf(_) => false,
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                if children.len() == 1 {
+                    let child = children.remove(0);
+                    *self = child;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Recursively collapses all single-child splits/tabs in this subtree.
+    pub fn collapse_all_single_child(&mut self) {
+        match self {
+            TileNode::Leaf(_) => {}
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                for child in children.iter_mut() {
+                    child.collapse_all_single_child();
+                }
+                self.collapse_single_child();
+            }
+        }
+    }
+
     /// Returns the maximum cached main-axis span among all leaves.
     pub fn max_leaf_main_span(&self) -> f64 {
         match self {
