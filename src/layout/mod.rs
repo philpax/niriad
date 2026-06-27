@@ -86,6 +86,7 @@ pub mod monitor;
 pub mod opening_window;
 pub mod scrolling;
 pub mod shadow;
+pub mod tab_bar;
 pub mod tab_indicator;
 pub mod tile;
 pub mod tile_node;

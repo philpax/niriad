@@ -498,6 +498,68 @@ impl Default for TabIndicator {
     }
 }
 
+/// How tabs are displayed in a tabbed container.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TabStyle {
+    /// i3/sway-style horizontal header bar with text labels.
+    #[default]
+    Bar,
+    /// Niri-style colored gradient bars along a column edge.
+    Indicator,
+}
+
+/// Position of the tab header bar.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TabBarPosition {
+    #[default]
+    Top,
+    Bottom,
+}
+
+/// Configuration for the i3/sway-style tab header bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabBarConfig {
+    pub off: bool,
+    pub height: f64,
+    pub position: TabBarPosition,
+    pub font: String,
+    pub active_color: Option<Color>,
+    pub inactive_color: Option<Color>,
+    pub urgent_color: Option<Color>,
+    pub gaps_between_tabs: f64,
+    pub corner_radius: f64,
+    pub text_color: Color,
+    pub active_text_color: Option<Color>,
+    pub inactive_text_color: Option<Color>,
+}
+
+impl Default for TabBarConfig {
+    fn default() -> Self {
+        Self {
+            off: false,
+            height: 24.,
+            position: TabBarPosition::Top,
+            font: "sans 10".to_string(),
+            active_color: None,
+            inactive_color: None,
+            urgent_color: None,
+            gaps_between_tabs: 1.,
+            corner_radius: 4.,
+            text_color: Color::new_unpremul(0.9, 0.9, 0.9, 1.),
+            active_text_color: None,
+            inactive_text_color: None,
+        }
+    }
+}
+
+/// Configuration for tab display (style selection + per-style config).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TabHeaderConfig {
+    pub style: TabStyle,
+    pub indicator: TabIndicator,
+    pub bar: TabBarConfig,
+}
+
 impl MergeWith<TabIndicatorPart> for TabIndicator {
     fn merge_with(&mut self, part: &TabIndicatorPart) {
         self.off |= part.off;
