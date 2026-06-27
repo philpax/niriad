@@ -4380,8 +4380,9 @@ impl<W: LayoutElement> Column<W> {
     }
 
     /// Returns the number of tiles (leaves) in this column.
+    /// Returns the number of direct children in the root (not recursive leaf count).
     fn tiles_len(&self) -> usize {
-        self.root.leaf_count()
+        self.root.child_count()
     }
 
     /// Returns the active tile index (index into the root's children).
