@@ -3306,7 +3306,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         let col = &mut self.columns[col_idx];
-        col.set_column_width(change, tile_idx, true);
+        // If the column root is a Main-axis split, resize the child's span, not the column width.
+        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            let tile_idx = tile_idx.unwrap_or_else(|| col.active_tile_idx());
+            col.set_split_child_width(change, tile_idx, true);
+        } else {
+            col.set_column_width(change, tile_idx, true);
+        }
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
     }
@@ -4534,6 +4540,48 @@ impl<W: LayoutElement> Column<W> {
             TileNode::Leaf(_) => {}
         }
         tile
+    }
+
+    /// Resizes a child's main-axis span within a Main-axis split root.
+    fn set_split_child_width(&mut self, change: SizeChange, tile_idx: usize, animate: bool) {
+        let current_span = match &self.root {
+            TileNode::Split { data, .. } => data[tile_idx].size.w,
+            _ => return,
+        };
+
+        let new_span = match change {
+            SizeChange::SetFixed(fixed) => f64::from(fixed).clamp(1., 100000.),
+            SizeChange::SetProportion(proportion) => {
+                let available = self.working_area.size.w - self.options.layout.gaps;
+                available * (proportion / 100.)
+            }
+            SizeChange::AdjustFixed(delta) => (current_span + f64::from(delta)).clamp(1., 100000.),
+            SizeChange::AdjustProportion(delta) => {
+                let available = self.working_area.size.w - self.options.layout.gaps;
+                let current_proportion = if available == 0. { 1. } else { current_span / available };
+                available * (current_proportion + delta / 100.)
+            }
+        };
+
+        // Set the child's span to the new fixed value.
+        if let TileNode::Split { data, .. } = &mut self.root {
+            data[tile_idx].span = ChildSpan::Fixed(new_span);
+        }
+
+        // Convert other children to Auto to preserve their proportions.
+        if let TileNode::Split { data, .. } = &mut self.root {
+            let total_span: f64 = data.iter().map(|d| d.size.w).sum();
+            let median = data[data.len() / 2].size.w;
+            for (i, d) in data.iter_mut().enumerate() {
+                if i != tile_idx {
+                    let weight = if median > 0. { d.size.w / median } else { 1. };
+                    d.span = ChildSpan::Auto { weight };
+                }
+            }
+        }
+
+        self.is_pending_maximized = false;
+        self.update_tile_sizes(animate);
     }
 
     /// Swaps two tiles at the given indices (children and data together).
