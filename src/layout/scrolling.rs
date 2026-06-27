@@ -15,6 +15,7 @@ use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
+use super::tile_node::{ChildSpan, SplitAxis, SplitChildData, TileNode, TilePath};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
 use crate::animation::{Animation, Clock};
@@ -155,18 +156,13 @@ pub(super) struct ViewGesture {
 
 #[derive(Debug)]
 pub struct Column<W: LayoutElement> {
-    /// Tiles in this column.
+    /// Root of the recursive tile tree.
     ///
-    /// Must be non-empty.
-    tiles: Vec<Tile<W>>,
-
-    /// Extra per-tile data.
+    /// In Phase 1, this is effectively flat: either a `Leaf`, a `Split { axis: Cross }`
+    /// (normal column), or a `Tabbed` node (tabbed column).
     ///
-    /// Must have the same number of elements as `tiles`.
-    data: Vec<TileData>,
-
-    /// Index of the currently active tile.
-    active_tile_idx: usize,
+    /// Must be non-empty (at least one leaf).
+    root: TileNode<W>,
 
     /// Desired width of this column.
     ///
@@ -197,12 +193,6 @@ pub struct Column<W: LayoutElement> {
     /// rather than normal.
     is_pending_maximized: bool,
 
-    /// How this column displays and arranges windows.
-    display_mode: ColumnDisplay,
-
-    /// Tab indicator for the tabbed display mode.
-    tab_indicator: TabIndicator,
-
     /// Animation of the render offset during window swapping.
     move_animation: Option<MoveAnimation>,
 
@@ -225,6 +215,9 @@ pub struct Column<W: LayoutElement> {
 
     /// Configurable properties of the layout.
     options: Rc<Options>,
+
+    /// Pending split direction for the split-then-open interaction model (Phase 2).
+    pending_split_direction: Option<SplitAxis>,
 }
 
 /// Extra per-tile data.
@@ -458,11 +451,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
-        self.columns.iter().flat_map(|col| col.tiles.iter())
+        self.columns.iter().flat_map(|col| col.tiles_enumerated().map(|(_, tile)| tile))
     }
 
     pub fn tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
-        self.columns.iter_mut().flat_map(|col| col.tiles.iter_mut())
+        self.columns
+            .iter_mut()
+            .flat_map(|col| col.tiles_enumerated_mut().map(|(_, tile)| tile))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -475,7 +470,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &self.columns[self.active_column_idx];
-        Some(col.tiles[col.active_tile_idx].window())
+        Some(col.active_tile().window())
     }
 
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
@@ -484,7 +479,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &mut self.columns[self.active_column_idx];
-        Some(col.tiles[col.active_tile_idx].window_mut())
+        Some(col.active_tile_mut().window_mut())
     }
 
     pub fn active_tile_mut(&mut self) -> Option<&mut Tile<W>> {
@@ -493,7 +488,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &mut self.columns[self.active_column_idx];
-        Some(&mut col.tiles[col.active_tile_idx])
+        Some(col.active_tile_mut())
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
@@ -1185,15 +1180,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Find the closest gap between tiles.
         let col = &self.columns[col_idx];
 
-        let (closest_tile_idx, closest_tile_cross) = if col.display_mode == ColumnDisplay::Tabbed {
+        let (closest_tile_idx, closest_tile_cross) = if col.is_tabbed() {
             // In tabbed mode, there's only one tile visible, and we want to check its top and
             // bottom.
-            let top = col.tile_offsets().nth(col.active_tile_idx).unwrap().y;
-            let bottom = top + col.data[col.active_tile_idx].size.h;
+            let top = col.tile_offsets().nth(col.active_tile_idx()).unwrap().y;
+            let bottom = top + col.data()[col.active_tile_idx()].size.h;
             if (top - cross).abs() <= (bottom - cross).abs() {
-                (col.active_tile_idx, top)
+                (col.active_tile_idx(), top)
             } else {
-                (col.active_tile_idx + 1, bottom)
+                (col.active_tile_idx() + 1, bottom)
             }
         } else {
             col.tile_offsets()
@@ -1245,14 +1240,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_next_x = self.column_main_pos(col_idx + 1);
 
         let target_column = &mut self.columns[col_idx];
-        let tile_idx = tile_idx.unwrap_or(target_column.tiles.len());
-        let mut prev_active_tile_idx = target_column.active_tile_idx;
+        let tile_idx = tile_idx.unwrap_or(target_column.tiles_len());
+        let mut prev_active_tile_idx = target_column.active_tile_idx();
 
         target_column.add_tile_at(tile_idx, tile);
         self.data[col_idx].update(target_column);
 
         if tile_idx <= prev_active_tile_idx {
-            target_column.active_tile_idx += 1;
+            target_column.set_active_tile_idx(target_column.active_tile_idx() + 1);
             prev_active_tile_idx += 1;
         }
 
@@ -1264,14 +1259,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let target_column = &mut self.columns[col_idx];
-        if target_column.display_mode == ColumnDisplay::Tabbed {
-            if target_column.active_tile_idx == tile_idx {
+        if target_column.is_tabbed() {
+            if target_column.active_tile_idx() == tile_idx {
                 // Fade out the previously active tile.
-                let tile = &mut target_column.tiles[prev_active_tile_idx];
+                let tile = target_column.tile_mut(prev_active_tile_idx);
                 tile.animate_alpha(1., 0., self.options.animations.window_movement.0);
             } else {
                 // Fade out when adding into a tabbed column into the background.
-                let tile = &mut target_column.tiles[tile_idx];
+                let tile = target_column.tile_mut(tile_idx);
                 tile.animate_alpha(1., 0., self.options.animations.window_movement.0);
             }
         }
@@ -1379,7 +1374,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let column = &self.columns[self.active_column_idx];
         Some(self.remove_tile_by_idx(
             self.active_column_idx,
-            column.active_tile_idx,
+            column.active_tile_idx(),
             transaction,
             None,
         ))
@@ -1405,10 +1400,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         anim_config: Option<niri_config::Animation>,
     ) -> RemovedTile<W> {
         // If this is the only tile in the column, remove the whole column.
-        if self.columns[column_idx].tiles.len() == 1 {
+        if self.columns[column_idx].tiles_len() == 1 {
             let mut column = self.remove_column_by_idx(column_idx, anim_config);
             return RemovedTile {
-                tile: column.tiles.remove(tile_idx),
+                tile: column.remove_tile(tile_idx),
                 width: column.width,
                 is_full_width: column.is_full_width,
                 is_floating: false,
@@ -1425,20 +1420,19 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // one window smaller
         // than the others.
         let offset_y = column.tile_offset(tile_idx + 1).y - column.tile_offset(tile_idx).y;
-        for tile in &mut column.tiles[tile_idx + 1..] {
-            tile.animate_move_y_from(offset_y);
+        for i in (tile_idx + 1)..column.tiles_len() {
+            column.tile_mut(i).animate_move_y_from(offset_y);
         }
 
-        if column.display_mode == ColumnDisplay::Tabbed && tile_idx != column.active_tile_idx {
+        if column.is_tabbed() && tile_idx != column.active_tile_idx() {
             // Fade in when removing background tab from a tabbed column.
-            let tile = &mut column.tiles[tile_idx];
+            let tile = column.tile_mut(tile_idx);
             tile.animate_alpha(0., 1., movement_config);
         }
 
         let was_normal = column.sizing_mode().is_normal();
 
-        let tile = column.tiles.remove(tile_idx);
-        column.data.remove(tile_idx);
+        let tile = column.remove_tile(tile_idx);
 
         // If an active column became non-fullscreen after removing the tile, clear the stored
         // unfullscreen offset.
@@ -1447,8 +1441,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // If one window is left, reset its weight to 1.
-        if column.data.len() == 1 {
-            if let WindowHeight::Auto { weight } = &mut column.data[0].height {
+        if column.tiles_len() == 1 {
+            if let ChildSpan::Auto { weight } = &mut column.data_mut()[0].span {
                 *weight = 1.;
             }
         }
@@ -1468,17 +1462,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         #[allow(clippy::comparison_chain)] // What do you even want here?
-        if tile_idx < column.active_tile_idx {
+        if tile_idx < column.active_tile_idx() {
             // A tile above was removed; preserve the current position.
-            column.active_tile_idx -= 1;
-        } else if tile_idx == column.active_tile_idx {
+            column.set_active_tile_idx(column.active_tile_idx() - 1);
+        } else if tile_idx == column.active_tile_idx() {
             // The active tile was removed, so the active tile index shifted to the next tile.
-            if tile_idx == column.tiles.len() {
+            if tile_idx == column.tiles_len() {
                 // The bottom tile was removed and it was active, update active idx to remain valid.
                 column.activate_idx(tile_idx - 1);
             } else {
                 // Ensure the newly active tile animates to opaque.
-                column.tiles[tile_idx].ensure_alpha_animates_to_1();
+                column.tile_mut(tile_idx).ensure_alpha_animates_to_1();
             }
         }
 
@@ -1532,9 +1526,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
             if column
-                .tiles
-                .iter()
-                .any(|tile| tile.window().id() == &resize.window)
+                .tiles_enumerated()
+                .any(|(_, tile)| tile.window().id() == &resize.window)
             {
                 self.interactive_resize = None;
             }
@@ -1605,9 +1598,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_origin = column.tiles_origin();
 
         let (tile_idx, tile) = column
-            .tiles
-            .iter_mut()
-            .enumerate()
+            .tiles_enumerated_mut()
             .find(|(_, tile)| tile.window().id() == window)
             .unwrap();
 
@@ -1627,7 +1618,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let offset = prev_width - self.data[col_idx].width;
 
         // Move other columns in tandem with resizing.
-        let ongoing_resize_anim = column.tiles[tile_idx].resize_animation().is_some();
+        let ongoing_resize_anim = column.tile(tile_idx).resize_animation().is_some();
         if offset != 0. {
             if self.active_column_idx <= col_idx {
                 for col in &mut self.columns[col_idx + 1..] {
@@ -1817,18 +1808,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .iter()
             .enumerate()
             .find_map(|(col_idx, col)| {
-                col.tiles
-                    .iter()
-                    .position(|tile| tile.window().id() == window)
+                col.tiles_enumerated()
+                    .find_map(|(tile_idx, tile)| (tile.window().id() == window).then_some(tile_idx))
                     .map(move |tile_idx| (col_idx, tile_idx))
             })
             .unwrap();
 
         let col = &self.columns[col_idx];
-        let removing_last = col.tiles.len() == 1;
+        let removing_last = col.tiles_len() == 1;
 
         // Skip closing animation for invisible tiles in a tabbed column.
-        if col.display_mode == ColumnDisplay::Tabbed && tile_idx != col.active_tile_idx {
+        if col.is_tabbed() && tile_idx != col.active_tile_idx() {
             return;
         }
 
@@ -1840,7 +1830,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             } else {
                 self.data[col_idx].width
                     - col
-                        .data
+                        .data()
                         .iter()
                         .enumerate()
                         .filter_map(|(idx, data)| {
@@ -2122,15 +2112,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .iter_mut()
                 .enumerate()
                 .find_map(|(col_idx, col)| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
+                    col.tiles_enumerated()
+                        .find_map(|(tile_idx, tile)| (tile.window().id() == window).then_some(tile_idx))
                         .map(|tile_idx| (col_idx, tile_idx))
                 })
                 .unwrap()
         } else {
             let source_col_idx = self.active_column_idx;
-            let source_tile_idx = self.columns[self.active_column_idx].active_tile_idx;
+            let source_tile_idx = self.columns[self.active_column_idx].active_tile_idx();
             (source_col_idx, source_tile_idx)
         };
 
@@ -2138,9 +2127,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_off = source_column.tile_offset(source_tile_idx);
 
         let source_tile_was_active = self.active_column_idx == source_col_idx
-            && source_column.active_tile_idx == source_tile_idx;
+            && source_column.active_tile_idx() == source_tile_idx;
 
-        if source_column.tiles.len() == 1 {
+        if source_column.tiles_len() == 1 {
             if source_col_idx == 0 {
                 return;
             }
@@ -2181,9 +2170,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let target_column = &mut self.columns[target_column_idx];
             move_offset -= main_space_vec(target_column.render_offset().x);
-            move_offset += prev_off - target_column.tile_offset(target_column.tiles.len() - 1);
+            move_offset += prev_off - target_column.tile_offset(target_column.tiles_len() - 1);
 
-            let new_tile = target_column.tiles.last_mut().unwrap();
+            let new_tile = target_column.last_tile_mut();
             new_tile.animate_move_from(move_offset);
         } else {
             // Move out of column.
@@ -2219,7 +2208,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let new_col = &mut self.columns[target_column_idx];
             move_offset += prev_off - new_col.tile_offset(0);
-            new_col.tiles[0].animate_move_from(move_offset);
+            new_col.tile_mut(0).animate_move_from(move_offset);
         }
     }
 
@@ -2233,15 +2222,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .iter_mut()
                 .enumerate()
                 .find_map(|(col_idx, col)| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
+                    col.tiles_enumerated()
+                        .find_map(|(tile_idx, tile)| (tile.window().id() == window).then_some(tile_idx))
                         .map(|tile_idx| (col_idx, tile_idx))
                 })
                 .unwrap()
         } else {
             let source_col_idx = self.active_column_idx;
-            let source_tile_idx = self.columns[self.active_column_idx].active_tile_idx;
+            let source_tile_idx = self.columns[self.active_column_idx].active_tile_idx();
             (source_col_idx, source_tile_idx)
         };
 
@@ -2252,9 +2240,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_off = source_column.tile_offset(source_tile_idx);
 
         let source_tile_was_active = self.active_column_idx == source_col_idx
-            && source_column.active_tile_idx == source_tile_idx;
+            && source_column.active_tile_idx() == source_tile_idx;
 
-        if source_column.tiles.len() == 1 {
+        if source_column.tiles_len() == 1 {
             if source_col_idx + 1 == self.columns.len() {
                 return;
             }
@@ -2280,9 +2268,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.add_tile_to_column(target_column_idx, None, tile, source_tile_was_active);
 
             let target_column = &mut self.columns[target_column_idx];
-            move_offset += prev_off - target_column.tile_offset(target_column.tiles.len() - 1);
+            move_offset += prev_off - target_column.tile_offset(target_column.tiles_len() - 1);
 
-            let new_tile = target_column.tiles.last_mut().unwrap();
+            let new_tile = target_column.last_tile_mut();
             new_tile.animate_move_from(move_offset);
         } else {
             // Move out of column.
@@ -2312,7 +2300,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let new_col = &mut self.columns[target_column_idx];
             move_offset += prev_off - new_col.tile_offset(0);
-            new_col.tiles[0].animate_move_from(move_offset);
+            new_col.tile_mut(0).animate_move_from(move_offset);
         }
     }
 
@@ -2338,10 +2326,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.add_tile_to_column(target_column_idx, None, removed.tile, false);
 
         let target_column = &mut self.columns[target_column_idx];
-        move_offset += prev_off - target_column.tile_offset(target_column.tiles.len() - 1);
+        move_offset += prev_off - target_column.tile_offset(target_column.tiles_len() - 1);
         move_offset -= main_space_vec(target_column.render_offset().x);
 
-        let new_tile = target_column.tiles.last_mut().unwrap();
+        let new_tile = target_column.last_tile_mut();
         new_tile.animate_move_from(move_offset);
     }
 
@@ -2355,11 +2343,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let source_column_main = self.column_main_pos(source_col_idx);
 
         let source_column = &self.columns[self.active_column_idx];
-        if source_column.tiles.len() == 1 {
+        if source_column.tiles_len() == 1 {
             return;
         }
 
-        let source_tile_idx = source_column.tiles.len() - 1;
+        let source_tile_idx = source_column.tiles_len() - 1;
 
         let mut move_offset = main_space_vec(source_column.render_offset().x);
         let prev_off = source_column.tile_offset(source_tile_idx);
@@ -2380,7 +2368,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let new_col = &mut self.columns[target_col_idx];
         move_offset += prev_off - new_col.tile_offset(0);
-        new_col.tiles[0].animate_move_from(move_offset);
+        new_col.tile_mut(0).animate_move_from(move_offset);
     }
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
@@ -2411,15 +2399,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // if both source and target columns contain a single tile, then the operation is equivalent
         // to a simple column move
-        if self.columns[source_column_idx].tiles.len() == 1
-            && self.columns[target_column_idx].tiles.len() == 1
+        if self.columns[source_column_idx].tiles_len() == 1
+            && self.columns[target_column_idx].tiles_len() == 1
         {
             return self.move_column_to(target_column_idx);
         }
 
-        let source_tile_idx = self.columns[source_column_idx].active_tile_idx;
-        let target_tile_idx = self.columns[target_column_idx].active_tile_idx;
-        let source_column_drained = self.columns[source_column_idx].tiles.len() == 1;
+        let source_tile_idx = self.columns[source_column_idx].active_tile_idx();
+        let target_tile_idx = self.columns[target_column_idx].active_tile_idx();
+        let source_column_drained = self.columns[source_column_idx].tiles_len() == 1;
 
         // capture the original positions of the tiles
         let (mut source_pt, mut target_pt) = (
@@ -2490,23 +2478,31 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // update the active tile in the modified columns
-        self.columns[source_column_idx].active_tile_idx = source_tile_idx;
-        self.columns[target_column_idx].active_tile_idx = target_tile_idx;
+        self.columns[source_column_idx].set_active_tile_idx(source_tile_idx);
+        self.columns[target_column_idx].set_active_tile_idx(target_tile_idx);
 
         // Animations
-        self.columns[target_column_idx].tiles[target_tile_idx]
+        self.columns[target_column_idx]
+            .tile_mut(target_tile_idx)
             .animate_move_from(source_pt - target_pt);
-        self.columns[target_column_idx].tiles[target_tile_idx].ensure_alpha_animates_to_1();
+        self.columns[target_column_idx]
+            .tile_mut(target_tile_idx)
+            .ensure_alpha_animates_to_1();
 
         // FIXME: this stop_move_animations() causes the target tile animation to "reset" when
         // swapping. It's here as a workaround to stop the unwanted animation of moving the source
         // tile down when adding the target tile above it. This code needs to be written in some
         // other way not to trigger that animation, or to cancel it properly, so that swap doesn't
         // cancel all ongoing target tile animations.
-        self.columns[source_column_idx].tiles[source_tile_idx].stop_move_animations();
-        self.columns[source_column_idx].tiles[source_tile_idx]
+        self.columns[source_column_idx]
+            .tile_mut(source_tile_idx)
+            .stop_move_animations();
+        self.columns[source_column_idx]
+            .tile_mut(source_tile_idx)
             .animate_move_from(target_pt - source_pt);
-        self.columns[source_column_idx].tiles[source_tile_idx].ensure_alpha_animates_to_1();
+        self.columns[source_column_idx]
+            .tile_mut(source_tile_idx)
+            .ensure_alpha_animates_to_1();
 
         self.activate_column(target_column_idx);
     }
@@ -2517,7 +2513,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &mut self.columns[self.active_column_idx];
-        let display = match col.display_mode {
+        let display = match col.display_mode() {
             ColumnDisplay::Normal => ColumnDisplay::Tabbed,
             ColumnDisplay::Tabbed => ColumnDisplay::Normal,
         };
@@ -2531,7 +2527,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &mut self.columns[self.active_column_idx];
-        if col.display_mode == display {
+        if col.display_mode() == display {
             return;
         }
 
@@ -2543,8 +2539,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.update_tile_sizes(true);
 
         // Disable fullscreen if needed.
-        if col.display_mode != ColumnDisplay::Tabbed && col.tiles.len() > 1 {
-            let window = col.tiles[col.active_tile_idx].window().id().clone();
+        if !col.is_tabbed() && col.tiles_len() > 1 {
+            let window = col.active_tile().window().id().clone();
             self.set_fullscreen(&window, false);
             self.set_maximized(&window, false);
         }
@@ -2868,20 +2864,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 }
 
                 let col = &self.columns[column_index];
-                if tile_index > col.tiles.len() {
+                if tile_index > col.tiles_len() {
                     error!("insert hint tile index is out of range");
                     return None;
                 }
 
-                let is_tabbed = col.display_mode == ColumnDisplay::Tabbed;
+                let is_tabbed = col.is_tabbed();
 
                 let (height, y) = if is_tabbed {
                     // In tabbed mode, there's only one tile visible, and we want to draw the hint
                     // at its top or bottom.
-                    let top = col.tile_offset(col.active_tile_idx).y;
-                    let bottom = top + col.data[col.active_tile_idx].size.h;
+                    let top = col.tile_offset(col.active_tile_idx()).y;
+                    let bottom = top + col.data()[col.active_tile_idx()].size.h;
 
-                    if tile_index <= col.active_tile_idx {
+                    if tile_index <= col.active_tile_idx() {
                         (150., top)
                     } else {
                         (150., bottom - 150.)
@@ -2891,7 +2887,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
                     if tile_index == 0 {
                         (150., top)
-                    } else if tile_index == col.tiles.len() {
+                    } else if tile_index == col.tiles_len() {
                         (150., top - self.options.layout.gaps - 150.)
                     } else {
                         (300., top - self.options.layout.gaps / 2. - 150.)
@@ -2901,7 +2897,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // Adjust for place-within-column tab indicator.
                 let origin_x = col.tiles_origin().x;
                 let extra_w = if is_tabbed && col.sizing_mode().is_normal() {
-                    col.tab_indicator.extra_size(col.tiles.len(), col.scale).w
+                    col.tab_indicator().unwrap().extra_size(col.tiles_len(), col.scale).w
                 } else {
                     0.
                 };
@@ -2943,7 +2939,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let final_view_offset = self.view_offset.target();
         let view_off = Point::from((-final_view_offset, 0.));
 
-        let (tile, tile_off) = col.tiles().nth(col.active_tile_idx).unwrap();
+        let (tile, tile_off) = col.tiles().nth(col.active_tile_idx()).unwrap();
 
         let window_pos = view_off + tile_off + self.map_point_in(tile.window_loc());
         let window_size = self.axis().size_in(tile.window_size());
@@ -3007,20 +3003,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let (col, tile_idx) = if let Some(window) = window {
-            self.columns
-                .iter_mut()
-                .find_map(|col| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
-                        .map(|tile_idx| (col, Some(tile_idx)))
-                })
-                .unwrap()
+        let (col_idx, tile_idx) = if let Some(window) = window {
+            let col_idx = self.columns.iter().position(|col| col.contains(window)).unwrap();
+            let tile_idx = self.columns[col_idx]
+                .tiles_enumerated()
+                .find(|(_, tile)| tile.window().id() == window)
+                .map(|(idx, _)| idx);
+            (col_idx, tile_idx)
         } else {
-            (&mut self.columns[self.active_column_idx], None)
+            (self.active_column_idx, None)
         };
 
+        let col = &mut self.columns[col_idx];
         col.set_column_width(change, tile_idx, true);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
@@ -3031,20 +3025,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let (col, tile_idx) = if let Some(window) = window {
-            self.columns
-                .iter_mut()
-                .find_map(|col| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
-                        .map(|tile_idx| (col, Some(tile_idx)))
-                })
-                .unwrap()
+        let (col_idx, tile_idx) = if let Some(window) = window {
+            let col_idx = self.columns.iter().position(|col| col.contains(window)).unwrap();
+            let tile_idx = self.columns[col_idx]
+                .tiles_enumerated()
+                .find(|(_, tile)| tile.window().id() == window)
+                .map(|(idx, _)| idx);
+            (col_idx, tile_idx)
         } else {
-            (&mut self.columns[self.active_column_idx], None)
+            (self.active_column_idx, None)
         };
 
+        let col = &mut self.columns[col_idx];
         col.set_window_height(change, tile_idx, true);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
@@ -3055,20 +3047,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let (col, tile_idx) = if let Some(window) = window {
-            self.columns
-                .iter_mut()
-                .find_map(|col| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
-                        .map(|tile_idx| (col, Some(tile_idx)))
-                })
-                .unwrap()
+        let (col_idx, tile_idx) = if let Some(window) = window {
+            let col_idx = self.columns.iter().position(|col| col.contains(window)).unwrap();
+            let tile_idx = self.columns[col_idx]
+                .tiles_enumerated()
+                .find(|(_, tile)| tile.window().id() == window)
+                .map(|(idx, _)| idx);
+            (col_idx, tile_idx)
         } else {
-            (&mut self.columns[self.active_column_idx], None)
+            (self.active_column_idx, None)
         };
 
+        let col = &mut self.columns[col_idx];
         col.reset_window_height(tile_idx);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
@@ -3079,20 +3069,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let (col, tile_idx) = if let Some(window) = window {
-            self.columns
-                .iter_mut()
-                .find_map(|col| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
-                        .map(|tile_idx| (col, Some(tile_idx)))
-                })
-                .unwrap()
+        let (col_idx, tile_idx) = if let Some(window) = window {
+            let col_idx = self.columns.iter().position(|col| col.contains(window)).unwrap();
+            let tile_idx = self.columns[col_idx]
+                .tiles_enumerated()
+                .find(|(_, tile)| tile.window().id() == window)
+                .map(|(idx, _)| idx);
+            (col_idx, tile_idx)
         } else {
-            (&mut self.columns[self.active_column_idx], None)
+            (self.active_column_idx, None)
         };
 
+        let col = &mut self.columns[col_idx];
         col.toggle_width(tile_idx, forwards);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
@@ -3103,20 +3091,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let (col, tile_idx) = if let Some(window) = window {
-            self.columns
-                .iter_mut()
-                .find_map(|col| {
-                    col.tiles
-                        .iter()
-                        .position(|tile| tile.window().id() == window)
-                        .map(|tile_idx| (col, Some(tile_idx)))
-                })
-                .unwrap()
+        let (col_idx, tile_idx) = if let Some(window) = window {
+            let col_idx = self.columns.iter().position(|col| col.contains(window)).unwrap();
+            let tile_idx = self.columns[col_idx]
+                .tiles_enumerated()
+                .find(|(_, tile)| tile.window().id() == window)
+                .map(|(idx, _)| idx);
+            (col_idx, tile_idx)
         } else {
-            (&mut self.columns[self.active_column_idx], None)
+            (self.active_column_idx, None)
         };
 
+        let col = &mut self.columns[col_idx];
         col.toggle_window_height(tile_idx, forwards);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
@@ -3235,11 +3221,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let mut col = &mut self.columns[col_idx];
-        let is_tabbed = col.display_mode == ColumnDisplay::Tabbed;
+        let is_tabbed = col.is_tabbed();
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        if is_fullscreen && (col.tiles.len() > 1 && !is_tabbed) {
+        if is_fullscreen && (col.tiles_len() > 1 && !is_tabbed) {
             // This wasn't the only window in its column; extract it into a separate column.
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
@@ -3266,11 +3252,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let mut col = &mut self.columns[col_idx];
-        let is_tabbed = col.display_mode == ColumnDisplay::Tabbed;
+        let is_tabbed = col.is_tabbed();
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        if maximize && (col.tiles.len() > 1 && !is_tabbed) {
+        if maximize && (col.tiles_len() > 1 && !is_tabbed) {
             // This wasn't the only window in its column; extract it into a separate column.
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
@@ -3331,11 +3317,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let column_render_offset = col.render_offset();
 
             // Draw the tab indicator on top.
-            {
+            if let Some(tab_indicator) = col.tab_indicator() {
                 let pos = view_off + column_offset + column_render_offset;
                 let pos = self.map_point_out(pos);
                 let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                col.tab_indicator
+                tab_indicator
                     .render(ctx.renderer, pos, &mut |elem| push(elem.into()));
             }
 
@@ -3383,22 +3369,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let column_render_offset = col.render_offset();
 
             // Hit the tab indicator.
-            if col.display_mode == ColumnDisplay::Tabbed && col.sizing_mode().is_normal() {
+            if col.is_tabbed() && col.sizing_mode().is_normal() {
                 let column_pos = view_off + column_offset + column_render_offset;
                 let column_pos = column_pos
                     .to_physical_precise_round(scale)
                     .to_logical(scale);
 
-                if let Some(idx) = col.tab_indicator.hit(
+                if let Some(idx) = col.tab_indicator().unwrap().hit(
                     col.tab_indicator_area(),
-                    col.tiles.len(),
+                    col.tiles_len(),
                     scale,
                     pos_in - column_pos,
                 ) {
                     let hit = HitType::Activate {
                         is_tab_indicator: true,
                     };
-                    return Some((col.tiles[idx].window(), hit));
+                    return Some((col.tile(idx).window(), hit));
                 }
             }
 
@@ -3692,9 +3678,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let tile = col
-            .tiles
-            .iter_mut()
-            .find(|tile| tile.window().id() == &window)
+            .tiles_enumerated_mut()
+            .find(|(_, tile)| tile.window().id() == &window)
+            .map(|(_, tile)| tile)
             .unwrap();
 
         let original_window_size = axis.size_in(tile.window_size());
@@ -3735,9 +3721,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .unwrap();
 
         let tile_idx = col
-            .tiles
-            .iter()
-            .position(|tile| tile.window().id() == window)
+            .tiles_enumerated()
+            .find(|(_, tile)| tile.window().id() == window)
+            .map(|(idx, _)| idx)
             .unwrap();
 
         if resize.data.edges.intersects(ResizeEdge::LEFT_RIGHT) {
@@ -3802,7 +3788,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 }
             }
 
-            let is_tabbed = col.display_mode == ColumnDisplay::Tabbed;
+            let is_tabbed = col.is_tabbed();
             let extra_size = col.extra_size();
 
             // If transactions are disabled, also disable combined throttling, for more intuitive
@@ -3817,8 +3803,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // individually below.
                 ConfigureIntent::CanSend
             } else {
-                col.tiles
-                    .iter()
+                col.tiles_enumerated()
+                    .map(|(_, tile)| tile)
                     .fold(ConfigureIntent::NotNeeded, |intent, tile| {
                         match (intent, tile.window().configure_intent()) {
                             (_, ConfigureIntent::ShouldSend) => ConfigureIntent::ShouldSend,
@@ -3831,10 +3817,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     })
             };
 
-            for (tile_idx, tile) in col.tiles.iter_mut().enumerate() {
+            let active_tile_idx = col.active_tile_idx();
+            for (tile_idx, tile) in col.tiles_enumerated_mut() {
                 let win = tile.window_mut();
 
-                let active_in_column = col.active_tile_idx == tile_idx;
+                let active_in_column = active_tile_idx == tile_idx;
                 win.set_active_in_column(active_in_column);
                 win.set_floating(false);
 
@@ -3948,7 +3935,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             assert!(
                 self.columns
                     .iter()
-                    .flat_map(|col| &col.tiles)
+                    .flat_map(|col| col.tiles_enumerated().map(|(_, tile)| tile))
                     .any(|tile| tile.window().id() == &resize.window),
                 "interactive resize window must be present in the layout"
             );
@@ -4089,6 +4076,201 @@ impl WindowHeight {
 }
 
 impl<W: LayoutElement> Column<W> {
+    // --- Tree accessors ---
+
+    /// Returns the display mode (Normal or Tabbed).
+    fn display_mode(&self) -> ColumnDisplay {
+        self.root.display_mode()
+    }
+
+    /// Returns whether the column is in tabbed display mode.
+    fn is_tabbed(&self) -> bool {
+        self.root.is_tabbed()
+    }
+
+    /// Returns the number of tiles (leaves) in this column.
+    fn tiles_len(&self) -> usize {
+        self.root.leaf_count()
+    }
+
+    /// Returns the active tile index (index into the root's children).
+    fn active_tile_idx(&self) -> usize {
+        self.root.active_idx()
+    }
+
+    /// Returns the active tile (immutable).
+    fn active_tile(&self) -> &Tile<W> {
+        self.root.active_leaf()
+    }
+
+    /// Returns the active tile (mutable).
+    fn active_tile_mut(&mut self) -> &mut Tile<W> {
+        self.root.active_leaf_mut()
+    }
+
+    /// Returns the first leaf (immutable).
+    fn first_tile(&self) -> &Tile<W> {
+        self.root.first_leaf()
+    }
+
+    /// Returns the first leaf (mutable).
+    fn first_tile_mut(&mut self) -> &mut Tile<W> {
+        self.root.first_leaf_mut()
+    }
+
+    /// Returns the last leaf (immutable).
+    fn last_tile(&self) -> &Tile<W> {
+        self.root.last_leaf()
+    }
+
+    /// Returns the last leaf (mutable).
+    fn last_tile_mut(&mut self) -> &mut Tile<W> {
+        self.root.last_leaf_mut()
+    }
+
+    /// Returns the child data slice (for Split/Tabbed roots).
+    fn data(&self) -> &[SplitChildData] {
+        match &self.root {
+            TileNode::Leaf(_) => &[],
+            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data,
+        }
+    }
+
+    /// Returns the child data slice (mutable, for Split/Tabbed roots).
+    fn data_mut(&mut self) -> &mut [SplitChildData] {
+        match &mut self.root {
+            TileNode::Leaf(_) => &mut [],
+            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data,
+        }
+    }
+
+    /// Returns a reference to the tile at the given child index.
+    fn tile(&self, idx: usize) -> &Tile<W> {
+        match &self.root {
+            TileNode::Leaf(tile) => {
+                assert_eq!(idx, 0);
+                tile
+            }
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                match &children[idx] {
+                    TileNode::Leaf(tile) => tile,
+                    _ => panic!("expected a leaf child"),
+                }
+            }
+        }
+    }
+
+    /// Returns a mutable reference to the tile at the given child index.
+    fn tile_mut(&mut self, idx: usize) -> &mut Tile<W> {
+        match &mut self.root {
+            TileNode::Leaf(tile) => {
+                assert_eq!(idx, 0);
+                tile
+            }
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                match &mut children[idx] {
+                    TileNode::Leaf(tile) => tile,
+                    _ => panic!("expected a leaf child"),
+                }
+            }
+        }
+    }
+
+    /// Returns the tab indicator (if tabbed).
+    fn tab_indicator(&self) -> Option<&TabIndicator> {
+        self.root.tab_indicator()
+    }
+
+    /// Returns the tab indicator (mutable, if tabbed).
+    fn tab_indicator_mut(&mut self) -> Option<&mut TabIndicator> {
+        self.root.tab_indicator_mut()
+    }
+
+    /// Returns an iterator over all tiles (leaves) with their indices.
+    fn tiles_enumerated(&self) -> impl Iterator<Item = (usize, &Tile<W>)> {
+        self.children().iter().enumerate().map(|(idx, child)| {
+            let tile = match child {
+                TileNode::Leaf(tile) => tile,
+                _ => panic!("expected a leaf child"),
+            };
+            (idx, tile)
+        })
+    }
+
+    /// Returns a mutable iterator over all tiles (leaves) with their indices.
+    fn tiles_enumerated_mut(&mut self) -> impl Iterator<Item = (usize, &mut Tile<W>)> {
+        self.children_mut().iter_mut().enumerate().map(|(idx, child)| {
+            let tile = match child {
+                TileNode::Leaf(tile) => tile,
+                _ => panic!("expected a leaf child"),
+            };
+            (idx, tile)
+        })
+    }
+
+    // --- Tree mutators ---
+
+    /// Sets the active tile index (root-level active child).
+    fn set_active_tile_idx(&mut self, idx: usize) {
+        self.root.set_active_idx(idx);
+    }
+
+    /// Sets the display mode (Normal/Tabbed), toggling the root node type.
+    fn set_display_mode(&mut self, display: ColumnDisplay) {
+        self.root
+            .set_display(display, self.options.layout.tab_indicator);
+    }
+
+    /// Inserts a tile at the given index, creating a new leaf child with auto span.
+    fn insert_tile(&mut self, idx: usize, tile: Tile<W>) {
+        let mut data = SplitChildData::new_auto();
+        data.update(&tile, self.axis());
+        self.root.insert_leaf(idx, tile, data);
+    }
+
+    /// Removes the tile at the given index and returns it.
+    fn remove_tile(&mut self, idx: usize) -> Tile<W> {
+        self.root.remove_leaf_at(idx)
+    }
+
+    /// Swaps two tiles at the given indices (children and data together).
+    fn swap_tiles(&mut self, a: usize, b: usize) {
+        self.root.swap_leaves(a, b);
+    }
+
+    /// Returns an iterator over (tile, data) pairs for the root's children (mutable).
+    fn tiles_and_data_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, &mut SplitChildData)> {
+        match &mut self.root {
+            TileNode::Leaf(tile) => {
+                // Shouldn't be called on a leaf, but provide a safe fallback.
+                panic!("tiles_and_data_mut called on a Leaf root");
+            }
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                children.iter_mut().zip(data.iter_mut()).map(|(child, data)| {
+                    match child {
+                        TileNode::Leaf(tile) => (tile, data),
+                        _ => panic!("expected a leaf child"),
+                    }
+                })
+            }
+        }
+    }
+
+    /// Returns an iterator over (tile, data) pairs for the root's children (immutable).
+    fn tiles_and_data(&self) -> impl Iterator<Item = (&Tile<W>, &SplitChildData)> {
+        match &self.root {
+            TileNode::Leaf(_) => panic!("tiles_and_data called on a Leaf root"),
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                children.iter().zip(data.iter()).map(|(child, data)| {
+                    match child {
+                        TileNode::Leaf(tile) => (tile, data),
+                        _ => panic!("expected a leaf child"),
+                    }
+                })
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new_with_tile(
         tile: Tile<W>,
@@ -4123,29 +4305,55 @@ impl<W: LayoutElement> Column<W> {
             .iter()
             .position(|preset| width == ColumnWidth::from(*preset));
 
+        let clock = tile.clock.clone();
+        let options_clone = options.clone();
+        let tab_indicator_config = options.layout.tab_indicator;
+        let anim_config = options.animations.window_movement.0;
+        let anim_open_config = options.animations.window_open.anim;
+        let hide_when_single_tab = options.layout.tab_indicator.hide_when_single_tab;
+
+        // Create the root as a cross-axis split with one child (the initial tile).
+        // This matches the existing column behavior where tiles stack along the cross axis.
+        // For tabbed display, we use a Tabbed node instead.
+        let tab_indicator = TabIndicator::new(tab_indicator_config);
+        let root = if display_mode == ColumnDisplay::Tabbed {
+            TileNode::tabbed(vec![tile], 0, tab_indicator)
+        } else {
+            TileNode::cross_split(vec![tile], 0)
+        };
+
         let mut rv = Self {
-            tiles: vec![],
-            data: vec![],
-            active_tile_idx: 0,
+            root,
             width,
             preset_width_idx,
             is_full_width,
             is_pending_maximized: false,
             is_pending_fullscreen: false,
-            display_mode,
-            tab_indicator: TabIndicator::new(options.layout.tab_indicator),
             move_animation: None,
             view_size,
             working_area,
             parent_area,
             scale,
-            clock: tile.clock.clone(),
+            clock,
             options,
+            pending_split_direction: None,
         };
 
-        let pending_sizing_mode = tile.window().pending_sizing_mode();
+        // Update the tile's config and create its data.
+        let axis = rv.axis();
+        let tile_view_size = rv.map_size_out(view_size);
+        rv.tile_mut(0).update_config(tile_view_size, scale, options_clone);
+        // Update data for the first child.
+        let tile_size = rv.tile(0).tile_size();
+        rv.data_mut()[0].size = axis.size_in(tile_size);
+        rv.data_mut()[0].interactively_resizing_by_start_edge = rv.tile(0)
+            .window()
+            .interactive_resize_data()
+            .is_some_and(|data| data.edges.contains(crate::utils::ResizeEdge::LEFT));
 
-        rv.add_tile_at(0, tile);
+        let pending_sizing_mode = rv.tile(0).window().pending_sizing_mode();
+
+        rv.update_tile_sizes(false);
 
         match pending_sizing_mode {
             SizingMode::Normal => (),
@@ -4155,13 +4363,15 @@ impl<W: LayoutElement> Column<W> {
 
         // Animate the tab indicator for new columns.
         if display_mode == ColumnDisplay::Tabbed
-            && !rv.options.layout.tab_indicator.hide_when_single_tab
+            && !hide_when_single_tab
             && rv.sizing_mode().is_normal()
         {
             // Usually new columns are created together with window movement actions. For new
             // windows, we handle that in start_open_animation().
-            rv.tab_indicator
-                .start_open_animation(rv.clock.clone(), rv.options.animations.window_movement.0);
+            let clock_clone = rv.clock.clone();
+            if let Some(tab_indicator) = rv.tab_indicator_mut() {
+                tab_indicator.start_open_animation(clock_clone, anim_config);
+            }
         }
 
         rv
@@ -4216,13 +4426,14 @@ impl<W: LayoutElement> Column<W> {
             update_sizes = true;
         }
 
-        for (tile, data) in zip(&mut self.tiles, &mut self.data) {
+        for (tile, data) in self.tiles_and_data_mut() {
             tile.update_config(tile_view_size, scale, options.clone());
             data.update(tile, axis);
         }
 
-        self.tab_indicator
-            .update_config(options.layout.tab_indicator);
+        if let Some(tab_indicator) = self.tab_indicator_mut() {
+            tab_indicator.update_config(options.layout.tab_indicator);
+        }
         self.view_size = view_size;
         self.working_area = working_area;
         self.parent_area = parent_area;
@@ -4235,11 +4446,13 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn update_shaders(&mut self) {
-        for tile in &mut self.tiles {
+        for (_, tile) in self.tiles_enumerated_mut() {
             tile.update_shaders();
         }
 
-        self.tab_indicator.update_shaders();
+        if let Some(tab_indicator) = self.tab_indicator_mut() {
+            tab_indicator.update_shaders();
+        }
     }
 
     pub fn advance_animations(&mut self) {
@@ -4249,27 +4462,31 @@ impl<W: LayoutElement> Column<W> {
             }
         }
 
-        for tile in &mut self.tiles {
+        for (_, tile) in self.tiles_enumerated_mut() {
             tile.advance_animations();
         }
 
-        self.tab_indicator.advance_animations();
+        if let Some(tab_indicator) = self.tab_indicator_mut() {
+            tab_indicator.advance_animations();
+        }
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.move_animation.is_some()
-            || self.tab_indicator.are_animations_ongoing()
-            || self.tiles.iter().any(Tile::are_animations_ongoing)
+            || self.tab_indicator().map_or(false, |ti| ti.are_animations_ongoing())
+            || self.tiles_enumerated().any(|(_, tile)| tile.are_animations_ongoing())
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         self.move_animation.is_some()
-            || self.tab_indicator.are_animations_ongoing()
-            || self.tiles.iter().any(Tile::are_transitions_ongoing)
+            || self.tab_indicator().map_or(false, |ti| ti.are_animations_ongoing())
+            || self
+                .tiles_enumerated()
+                .any(|(_, tile)| tile.are_transitions_ongoing())
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, view_rect: Rectangle<f64, Logical>) {
-        let active_idx = self.active_tile_idx;
+        let active_idx = self.active_tile_idx();
         for (tile_idx, (tile, tile_off)) in self.tiles_mut().enumerate() {
             let is_active = is_active && tile_idx == active_idx;
 
@@ -4278,32 +4495,43 @@ impl<W: LayoutElement> Column<W> {
             tile.update_render_elements(is_active, tile_view_rect);
         }
 
-        let config = self.tab_indicator.config();
-        let offsets = self.tile_offsets_iter(self.data.iter().copied());
-        let tabs = zip(&self.tiles, offsets)
-            .enumerate()
-            .map(|(tile_idx, (tile, tile_off))| {
-                let is_active = tile_idx == active_idx;
-                let is_urgent = tile.window().is_urgent();
-                let tile_pos = tile_off + tile.render_offset();
-                TabInfo::from_tile(tile, tile_pos, is_active, is_urgent, &config)
-            });
+        // Only update tab indicator render elements when in tabbed mode.
+        // Extract all needed data before the mutable borrow of tab_indicator_mut().
+        let config = self.tab_indicator().map(|ti| ti.config());
+        if let Some(config) = config {
+            let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
+            let tabs: Vec<_> = self
+                .tiles_enumerated()
+                .zip(offsets)
+                .map(|((tile_idx, tile), tile_off)| {
+                    let is_active = tile_idx == active_idx;
+                    let is_urgent = tile.window().is_urgent();
+                    let tile_pos = tile_off + tile.render_offset();
+                    TabInfo::from_tile(tile, tile_pos, is_active, is_urgent, &config)
+                })
+                .collect();
 
-        // Hide the tab indicator in fullscreen. If you have it configured to overlap the window,
-        // you don't want that to happen in fullscreen. Also, laying things out correctly when the
-        // tab indicator is within the column and the column goes fullscreen, would require too
-        // many changes to the code for too little benefit (it's mostly invisible anyway).
-        let enabled = self.display_mode == ColumnDisplay::Tabbed && self.sizing_mode().is_normal();
+            // Hide the tab indicator in fullscreen. If you have it configured to overlap the window,
+            // you don't want that to happen in fullscreen. Also, laying things out correctly when the
+            // tab indicator is within the column and the column goes fullscreen, would require too
+            // many changes to the code for too little benefit (it's mostly invisible anyway).
+            let enabled = self.is_tabbed() && self.sizing_mode().is_normal();
+            let tab_indicator_area = self.tab_indicator_area();
+            let tiles_len = self.tiles_len();
+            let scale = self.scale;
 
-        self.tab_indicator.update_render_elements(
-            enabled,
-            self.tab_indicator_area(),
-            view_rect,
-            self.tiles.len(),
-            tabs,
-            is_active,
-            self.scale,
-        );
+            if let Some(tab_indicator) = self.tab_indicator_mut() {
+                tab_indicator.update_render_elements(
+                    enabled,
+                    tab_indicator_area,
+                    view_rect,
+                    tiles_len,
+                    tabs.into_iter(),
+                    is_active,
+                    scale,
+                );
+            }
+        }
     }
 
     pub fn is_pending_fullscreen(&self) -> bool {
@@ -4429,7 +4657,7 @@ impl<W: LayoutElement> Column<W> {
         // The logic that satisfies these behaviors is to check if *any* tile is fullscreen.
         let mut any_fullscreen = false;
         let mut any_maximized = false;
-        for tile in &self.tiles {
+        for (_, tile) in self.tiles_enumerated() {
             match tile.sizing_mode() {
                 SizingMode::Normal => (),
                 SizingMode::Maximized => any_maximized = true,
@@ -4447,27 +4675,24 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn contains(&self, window: &W::Id) -> bool {
-        self.tiles
-            .iter()
-            .map(Tile::window)
+        self.tiles_enumerated()
+            .map(|(_, tile)| tile.window())
             .any(|win| win.id() == window)
     }
 
     pub fn position(&self, window: &W::Id) -> Option<usize> {
-        self.tiles
-            .iter()
-            .map(Tile::window)
-            .position(|win| win.id() == window)
+        self.tiles_enumerated()
+            .find_map(|(idx, tile)| (tile.window().id() == window).then_some(idx))
     }
 
     fn activate_idx(&mut self, idx: usize) -> bool {
-        if self.active_tile_idx == idx {
+        if self.active_tile_idx() == idx {
             return false;
         }
 
-        self.active_tile_idx = idx;
+        self.set_active_tile_idx(idx);
 
-        self.tiles[idx].ensure_alpha_animates_to_1();
+        self.tile_mut(idx).ensure_alpha_animates_to_1();
 
         true
     }
@@ -4486,19 +4711,15 @@ impl<W: LayoutElement> Column<W> {
 
         // Inserting a tile pushes down all tiles below it, but also in always-centering mode it
         // will affect the main-axis position of all tiles in the column.
-        let mut prev_offsets = Vec::with_capacity(self.tiles.len() + 1);
-        prev_offsets.extend(self.tile_offsets().take(self.tiles.len()));
+        let mut prev_offsets = Vec::with_capacity(self.tiles_len() + 1);
+        prev_offsets.extend(self.tile_offsets().take(self.tiles_len()));
 
-        if self.display_mode != ColumnDisplay::Tabbed {
+        if !self.is_tabbed() {
             self.is_pending_fullscreen = false;
             self.is_pending_maximized = false;
         }
 
-        self.data.insert(
-            idx,
-            TileData::new(&tile, WindowHeight::auto_1(), self.axis()),
-        );
-        self.tiles.insert(idx, tile);
+        self.insert_tile(idx, tile);
         self.update_tile_sizes(true);
 
         // Animate tiles according to the offset changes.
@@ -4515,21 +4736,28 @@ impl<W: LayoutElement> Column<W> {
     fn update_window(&mut self, window: &W::Id) {
         let axis = self.axis();
 
-        let (tile_idx, tile) = self
-            .tiles
-            .iter_mut()
-            .enumerate()
+        let tile_idx = self
+            .tiles_enumerated()
             .find(|(_, tile)| tile.window().id() == window)
+            .map(|(idx, _)| idx)
             .unwrap();
 
-        let prev_height = self.data[tile_idx].size.h;
+        let prev_height = self.data()[tile_idx].size.h;
 
-        tile.update_window();
-        self.data[tile_idx].update(tile, axis);
+        self.tile_mut(tile_idx).update_window();
+        // Update data for this child — extract values first to avoid borrow conflicts.
+        let tile_size = axis.size_in(self.tile(tile_idx).tile_size());
+        let resizing_by_start = self
+            .tile(tile_idx)
+            .window()
+            .interactive_resize_data()
+            .is_some_and(|data| data.edges.contains(crate::utils::ResizeEdge::LEFT));
+        self.data_mut()[tile_idx].size = tile_size;
+        self.data_mut()[tile_idx].interactively_resizing_by_start_edge = resizing_by_start;
 
-        let offset = prev_height - self.data[tile_idx].size.h;
+        let offset = prev_height - self.data()[tile_idx].size.h;
 
-        let is_tabbed = self.display_mode == ColumnDisplay::Tabbed;
+        let is_tabbed = self.is_tabbed();
 
         // Move windows below in tandem with resizing.
         //
@@ -4538,14 +4766,17 @@ impl<W: LayoutElement> Column<W> {
         // animated vs. non-animated resizes? For example, an animated +20 resize followed by two
         // non-animated -10 resizes.
         if !is_tabbed && offset != 0. {
-            if tile.resize_animation().is_some() {
+            let has_resize_anim = self.tile(tile_idx).resize_animation().is_some();
+            let resize_anim_config = self.options.animations.window_resize.anim;
+            let tiles_len = self.tiles_len();
+            if has_resize_anim {
                 // If there's a resize animation (that may have just started in
                 // tile.update_window()), then the apparent size change is smooth with no sudden
                 // jumps. This corresponds to adding a cross-axis animation to tiles below.
-                for tile in &mut self.tiles[tile_idx + 1..] {
-                    tile.animate_move_y_from_with_config(
+                for i in (tile_idx + 1)..tiles_len {
+                    self.tile_mut(i).animate_move_y_from_with_config(
                         offset,
-                        self.options.animations.window_resize.anim,
+                        resize_anim_config,
                     );
                 }
             } else {
@@ -4563,8 +4794,8 @@ impl<W: LayoutElement> Column<W> {
                 //
                 // Notably, this is necessary to fix the animation jump when resizing height back
                 // and forth in quick succession (in a way that cancels the resize animation).
-                for tile in &mut self.tiles[tile_idx + 1..] {
-                    tile.offset_move_y_anim_current(offset);
+                for i in (tile_idx + 1)..self.tiles_len() {
+                    self.tile_mut(i).offset_move_y_anim_current(offset);
                 }
             }
         }
@@ -4572,8 +4803,8 @@ impl<W: LayoutElement> Column<W> {
 
     /// Extra size taken up by elements in the column such as the tab indicator.
     fn extra_size(&self) -> Size<f64, Logical> {
-        if self.display_mode == ColumnDisplay::Tabbed {
-            self.tab_indicator.extra_size(self.tiles.len(), self.scale)
+        if self.is_tabbed() {
+            self.tab_indicator().unwrap().extra_size(self.tiles_len(), self.scale)
         } else {
             Size::from((0., 0.))
         }
@@ -4622,10 +4853,13 @@ impl<W: LayoutElement> Column<W> {
         let axis = self.axis();
         let sizing_mode = self.pending_sizing_mode();
         if matches!(sizing_mode, SizingMode::Fullscreen | SizingMode::Maximized) {
-            for (tile_idx, tile) in self.tiles.iter_mut().enumerate() {
+            let active_tile_idx = self.active_tile_idx();
+            let is_tabbed = self.is_tabbed();
+            let parent_area_size = axis.size_out(self.parent_area.size);
+            for (tile_idx, tile) in self.tiles_enumerated_mut() {
                 // In tabbed mode, only the visible window participates in the transaction.
-                let is_active = tile_idx == self.active_tile_idx;
-                let transaction = if self.display_mode == ColumnDisplay::Tabbed && !is_active {
+                let is_active = tile_idx == active_tile_idx;
+                let transaction = if is_tabbed && !is_active {
                     None
                 } else {
                     Some(transaction.clone())
@@ -4635,7 +4869,7 @@ impl<W: LayoutElement> Column<W> {
                     tile.request_fullscreen(animate, transaction);
                 } else {
                     tile.request_maximized(
-                        axis.size_out(self.parent_area.size),
+                        parent_area_size,
                         animate,
                         transaction,
                     );
@@ -4644,12 +4878,11 @@ impl<W: LayoutElement> Column<W> {
             return;
         }
 
-        let is_tabbed = self.display_mode == ColumnDisplay::Tabbed;
+        let is_tabbed = self.is_tabbed();
 
         let min_size: Vec<_> = self
-            .tiles
-            .iter()
-            .map(Tile::min_size_nonfullscreen)
+            .tiles_enumerated()
+            .map(|(_, tile)| tile.min_size_nonfullscreen())
             .map(|size| axis.size_in(size))
             .map(|mut size| {
                 size.w = size.w.max(1.);
@@ -4658,9 +4891,8 @@ impl<W: LayoutElement> Column<W> {
             })
             .collect();
         let max_size: Vec<_> = self
-            .tiles
-            .iter()
-            .map(Tile::max_size_nonfullscreen)
+            .tiles_enumerated()
+            .map(|(_, tile)| tile.max_size_nonfullscreen())
             .map(|size| axis.size_in(size))
             .collect();
 
@@ -4702,11 +4934,11 @@ impl<W: LayoutElement> Column<W> {
         // If there are multiple windows in a column, clamp the non-auto window's cross span
         // according to other windows' min spans.
         let mut max_non_auto_window_cross_span = None;
-        if self.tiles.len() > 1 && !is_tabbed {
+        if self.tiles_len() > 1 && !is_tabbed {
             if let Some(non_auto_idx) = self
-                .data
+                .data()
                 .iter()
-                .position(|data| !matches!(data.height, WindowHeight::Auto { .. }))
+                .position(|data| !matches!(data.span, ChildSpan::Auto { .. }))
             {
                 let min_cross_span_taken = min_size
                     .iter()
@@ -4715,7 +4947,7 @@ impl<W: LayoutElement> Column<W> {
                     .map(|(_, min_size)| min_size.h + self.options.layout.gaps)
                     .sum::<f64>();
 
-                let tile = &self.tiles[non_auto_idx];
+                let tile = self.tile(non_auto_idx);
                 let cross_span_left = max_tile_cross_span - min_cross_span_taken;
                 max_non_auto_window_cross_span = Some(f64::max(
                     1.,
@@ -4726,10 +4958,11 @@ impl<W: LayoutElement> Column<W> {
         }
 
         // Compute the tile cross spans. Start by converting window cross spans to tile cross spans.
-        let mut cross_spans = zip(&self.tiles, &self.data)
-            .map(|(tile, data)| match data.height {
-                auto @ WindowHeight::Auto { .. } => auto,
-                WindowHeight::Fixed(window_cross_span) => {
+        let mut cross_spans = self
+            .tiles_and_data()
+            .map(|(tile, data)| match data.span {
+                auto @ ChildSpan::Auto { .. } => auto,
+                ChildSpan::Fixed(window_cross_span) => {
                     let mut window_cross_span = window_cross_span.round().max(1.);
                     if let Some(max_cross_span) = max_non_auto_window_cross_span {
                         window_cross_span = f64::min(window_cross_span, max_cross_span);
@@ -4741,11 +4974,11 @@ impl<W: LayoutElement> Column<W> {
                         window_cross_span = f64::min(window_cross_span, max_cross_span);
                     }
 
-                    WindowHeight::Fixed(
+                    ChildSpan::Fixed(
                         self.tile_cross_span_for_window_cross_span(tile, window_cross_span),
                     )
                 }
-                WindowHeight::Preset(idx) => {
+                ChildSpan::Preset(idx) => {
                     let preset = self.options.layout.preset_window_heights[idx];
                     let window_cross_span = match self.resolve_preset_cross_span(preset) {
                         ResolvedSize::Tile(cross_span) => {
@@ -4761,7 +4994,7 @@ impl<W: LayoutElement> Column<W> {
 
                     let tile_cross_span =
                         self.tile_cross_span_for_window_cross_span(tile, window_cross_span);
-                    WindowHeight::Fixed(tile_cross_span)
+                    ChildSpan::Fixed(tile_cross_span)
                 }
             })
             .collect::<Vec<_>>();
@@ -4773,7 +5006,7 @@ impl<W: LayoutElement> Column<W> {
             let tabbed_cross_span = cross_spans
                 .iter()
                 .find_map(|h| {
-                    if let WindowHeight::Fixed(h) = h {
+                    if let ChildSpan::Fixed(h) = h {
                         Some(*h)
                     } else {
                         None
@@ -4793,23 +5026,23 @@ impl<W: LayoutElement> Column<W> {
             let min_cross_span = f64::min(max_tile_cross_span, min_cross_span);
             let tabbed_cross_span = f64::max(tabbed_cross_span, min_cross_span);
 
-            cross_spans.fill(WindowHeight::Fixed(tabbed_cross_span));
+            cross_spans.fill(ChildSpan::Fixed(tabbed_cross_span));
 
             // The following logic will apply individual min/max cross span, etc.
         }
 
-        let gap_span_left = self.options.layout.gaps * (self.tiles.len() + 1) as f64;
+        let gap_span_left = self.options.layout.gaps * (self.tiles_len() + 1) as f64;
         let mut cross_span_left = working_size.h - gap_span_left;
-        let mut auto_tiles_left = self.tiles.len();
+        let mut auto_tiles_left = self.tiles_len();
 
         // Subtract all fixed cross-span tiles.
         for (h, (min_size, max_size)) in zip(&mut cross_spans, zip(&min_size, &max_size)) {
             // Check if the tile has an exact cross-span constraint.
             if min_size.h == max_size.h {
-                *h = WindowHeight::Fixed(min_size.h);
+                *h = ChildSpan::Fixed(min_size.h);
             }
 
-            if let WindowHeight::Fixed(h) = h {
+            if let ChildSpan::Fixed(ref mut h) = h {
                 if max_size.h > 0. {
                     *h = f64::min(*h, max_size.h);
                 }
@@ -4823,7 +5056,7 @@ impl<W: LayoutElement> Column<W> {
         let mut total_weight: f64 = cross_spans
             .iter()
             .filter_map(|h| {
-                if let WindowHeight::Auto { weight } = *h {
+                if let ChildSpan::Auto { weight } = *h {
                     Some(weight)
                 } else {
                     None
@@ -4848,11 +5081,15 @@ impl<W: LayoutElement> Column<W> {
             // pixels, therefore we compute the remaining auto cross span dynamically.
             let mut remaining_cross_span = cross_span_left;
             let mut remaining_weight = total_weight;
-            for ((h, tile), min_size) in zip(zip(&mut cross_spans, &self.tiles), &min_size) {
+            for ((h, tile), min_size) in cross_spans
+                .iter_mut()
+                .zip(self.tiles_enumerated().map(|(_, t)| t))
+                .zip(&min_size)
+            {
                 let weight = match *h {
-                    WindowHeight::Auto { weight } => weight,
-                    WindowHeight::Fixed(_) => continue,
-                    WindowHeight::Preset(_) => unreachable!(),
+                    ChildSpan::Auto { weight } => weight,
+                    ChildSpan::Fixed(_) => continue,
+                    ChildSpan::Preset(_) => unreachable!(),
                 };
                 let factor = weight / remaining_weight;
 
@@ -4862,7 +5099,7 @@ impl<W: LayoutElement> Column<W> {
                 // Check if the auto cross span satisfies the min cross span.
                 if min_size.h > auto_cross_span {
                     auto_cross_span = min_size.h;
-                    *h = WindowHeight::Fixed(auto_cross_span);
+                    *h = ChildSpan::Fixed(auto_cross_span);
                     cross_span_left -= auto_cross_span;
                     total_weight -= weight;
                     auto_tiles_left -= 1;
@@ -4885,11 +5122,14 @@ impl<W: LayoutElement> Column<W> {
             }
 
             // All min cross spans were satisfied, fill them in.
-            for (h, tile) in zip(&mut cross_spans, &self.tiles) {
+            for (h, tile) in cross_spans
+                .iter_mut()
+                .zip(self.tiles_enumerated().map(|(_, t)| t))
+            {
                 let weight = match *h {
-                    WindowHeight::Auto { weight } => weight,
-                    WindowHeight::Fixed(_) => continue,
-                    WindowHeight::Preset(_) => unreachable!(),
+                    ChildSpan::Auto { weight } => weight,
+                    ChildSpan::Fixed(_) => continue,
+                    ChildSpan::Preset(_) => unreachable!(),
                 };
                 let factor = weight / total_weight;
 
@@ -4902,7 +5142,7 @@ impl<W: LayoutElement> Column<W> {
                         .max(1.),
                 );
 
-                *h = WindowHeight::Fixed(auto_cross_span);
+                *h = ChildSpan::Fixed(auto_cross_span);
                 cross_span_left -= auto_cross_span;
                 total_weight -= weight;
                 auto_tiles_left -= 1;
@@ -4911,16 +5151,18 @@ impl<W: LayoutElement> Column<W> {
             assert_eq!(auto_tiles_left, 0);
         }
 
-        for (tile_idx, (tile, h)) in zip(&mut self.tiles, cross_spans).enumerate() {
-            let WindowHeight::Fixed(tile_cross_span) = h else {
+        let active_tile_idx = self.active_tile_idx();
+        let is_tabbed = self.is_tabbed();
+        for ((tile_idx, tile), h) in self.tiles_enumerated_mut().zip(cross_spans) {
+            let ChildSpan::Fixed(tile_cross_span) = h else {
                 unreachable!()
             };
 
             let size = axis.size_out(Size::from((column_main_span, tile_cross_span)));
 
             // In tabbed mode, only the visible window participates in the transaction.
-            let is_active = tile_idx == self.active_tile_idx;
-            let transaction = if self.display_mode == ColumnDisplay::Tabbed && !is_active {
+            let is_active = tile_idx == active_tile_idx;
+            let transaction = if is_tabbed && !is_active {
                 None
             } else {
                 Some(transaction.clone())
@@ -4932,15 +5174,15 @@ impl<W: LayoutElement> Column<W> {
 
     fn width(&self) -> f64 {
         let mut max_tile_main_span = self
-            .data
+            .data()
             .iter()
             .map(|data| NotNan::new(data.size.w).unwrap())
             .max()
             .map(NotNan::into_inner)
             .unwrap();
 
-        if self.display_mode == ColumnDisplay::Tabbed && self.sizing_mode().is_normal() {
-            let extra_size = self.tab_indicator.extra_size(self.tiles.len(), self.scale);
+        if self.is_tabbed() && self.sizing_mode().is_normal() {
+            let extra_size = self.tab_indicator().unwrap().extra_size(self.tiles_len(), self.scale);
             max_tile_main_span += extra_size.w;
         }
 
@@ -4948,16 +5190,16 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn focus_index(&mut self, index: u8) {
-        let idx = min(usize::from(index.saturating_sub(1)), self.tiles.len() - 1);
+        let idx = min(usize::from(index.saturating_sub(1)), self.tiles_len() - 1);
         self.activate_idx(idx);
     }
 
     fn focus_up(&mut self) -> bool {
-        self.activate_idx(self.active_tile_idx.saturating_sub(1))
+        self.activate_idx(self.active_tile_idx().saturating_sub(1))
     }
 
     fn focus_down(&mut self) -> bool {
-        self.activate_idx(min(self.active_tile_idx + 1, self.tiles.len() - 1))
+        self.activate_idx(min(self.active_tile_idx() + 1, self.tiles_len() - 1))
     }
 
     fn focus_top(&mut self) {
@@ -4965,11 +5207,11 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn focus_bottom(&mut self) {
-        self.activate_idx(self.tiles.len() - 1);
+        self.activate_idx(self.tiles_len() - 1);
     }
 
     fn move_active_tile_to_adjacent(&mut self, new_idx: usize) -> bool {
-        let old_idx = self.active_tile_idx;
+        let old_idx = self.active_tile_idx();
         if old_idx == new_idx {
             return false;
         }
@@ -4977,34 +5219,33 @@ impl<W: LayoutElement> Column<W> {
         let active_cross_pos = self.tile_offset(old_idx).y;
         let adjacent_cross_pos = self.tile_offset(new_idx).y;
 
-        self.tiles.swap(old_idx, new_idx);
-        self.data.swap(old_idx, new_idx);
-        self.active_tile_idx = new_idx;
+        self.swap_tiles(old_idx, new_idx);
+        self.set_active_tile_idx(new_idx);
 
         // Animate the movement along the cross axis.
         let new_active_cross_pos = self.tile_offset(new_idx).y;
-        self.tiles[new_idx].animate_move_y_from(active_cross_pos - new_active_cross_pos);
+        self.tile_mut(new_idx).animate_move_y_from(active_cross_pos - new_active_cross_pos);
         if new_idx < old_idx {
-            self.tiles[new_idx + 1].animate_move_y_from(active_cross_pos - adjacent_cross_pos);
+            self.tile_mut(new_idx + 1).animate_move_y_from(active_cross_pos - adjacent_cross_pos);
         } else {
-            self.tiles[new_idx - 1].animate_move_y_from(adjacent_cross_pos - active_cross_pos);
+            self.tile_mut(new_idx - 1).animate_move_y_from(adjacent_cross_pos - active_cross_pos);
         }
 
         true
     }
 
     fn move_up(&mut self) -> bool {
-        let new_idx = self.active_tile_idx.saturating_sub(1);
+        let new_idx = self.active_tile_idx().saturating_sub(1);
         self.move_active_tile_to_adjacent(new_idx)
     }
 
     fn move_down(&mut self) -> bool {
-        let new_idx = min(self.active_tile_idx + 1, self.tiles.len() - 1);
+        let new_idx = min(self.active_tile_idx() + 1, self.tiles_len() - 1);
         self.move_active_tile_to_adjacent(new_idx)
     }
 
     fn toggle_width(&mut self, tile_idx: Option<usize>, forwards: bool) {
-        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
+        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
 
         let preset_idx = if self.is_full_width || self.is_pending_maximized {
             None
@@ -5016,7 +5257,7 @@ impl<W: LayoutElement> Column<W> {
         let preset_idx = if let Some(idx) = preset_idx {
             (idx + if forwards { 1 } else { len - 1 }) % len
         } else {
-            let tile = &self.tiles[tile_idx];
+            let tile = self.tile(tile_idx);
             let current_window = self.map_size_in(tile.window_expected_or_current_size()).w;
             let current_tile = self.map_size_in(tile.tile_expected_or_current_size()).w;
 
@@ -5084,8 +5325,8 @@ impl<W: LayoutElement> Column<W> {
                 // As a special case, setting a fixed column width will compute it in such a way
                 // that the specified (usually active) window gets that width. This is the
                 // intention behind the ability to set a fixed size.
-                let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
-                let tile = &self.tiles[tile_idx];
+                let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
+                let tile = self.tile(tile_idx);
                 ColumnWidth::Fixed(
                     self.tile_main_span_for_window_main_span(tile, f64::from(fixed))
                         .clamp(1., MAX_MAIN_SPAN),
@@ -5123,24 +5364,24 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn set_window_height(&mut self, change: SizeChange, tile_idx: Option<usize>, animate: bool) {
-        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
+        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
 
         // Start by converting all heights to automatic, since only one window in the column can be
         // non-auto-height. If the current tile is already non-auto, however, we can skip that
         // step. Which is not only for optimization, but also preserves automatic weights in case
         // one window is resized in such a way that other windows hit their min size, and then
         // back.
-        if matches!(self.data[tile_idx].height, WindowHeight::Auto { .. }) {
+        if matches!(self.data()[tile_idx].span, ChildSpan::Auto { .. }) {
             self.convert_heights_to_auto();
         }
 
-        let current_height = self.data[tile_idx].height;
-        let tile = &self.tiles[tile_idx];
+        let current_height = self.data()[tile_idx].span;
+        let tile = self.tile(tile_idx);
         let current_window_cross_span = match current_height {
-            WindowHeight::Auto { .. } | WindowHeight::Preset(_) => {
+            ChildSpan::Auto { .. } | ChildSpan::Preset(_) => {
                 self.map_size_in(tile.window_size()).h
             }
-            WindowHeight::Fixed(window_cross_span) => window_cross_span,
+            ChildSpan::Fixed(window_cross_span) => window_cross_span,
         };
         let current_tile_cross_span =
             self.tile_cross_span_for_window_cross_span(tile, current_window_cross_span);
@@ -5175,12 +5416,10 @@ impl<W: LayoutElement> Column<W> {
         };
 
         // Clamp the height according to other windows' min sizes, or simply to working area height.
-        let min_cross_span_taken = if self.display_mode == ColumnDisplay::Tabbed {
+        let min_cross_span_taken = if self.is_tabbed() {
             0.
         } else {
-            self.tiles
-                .iter()
-                .enumerate()
+            self.tiles_enumerated()
                 .filter(|(idx, _)| *idx != tile_idx)
                 .map(|(_, tile)| {
                     f64::max(1., self.map_size_in(tile.min_size_nonfullscreen()).h) + gaps
@@ -5196,7 +5435,7 @@ impl<W: LayoutElement> Column<W> {
         new_window_cross_span = f64::min(cross_span_left, new_window_cross_span);
 
         // Clamp it against the window height constraints.
-        let win = &self.tiles[tile_idx].window();
+        let win = self.tile(tile_idx).window();
         let min_h = win.min_size().h;
         let max_h = win.max_size().h;
 
@@ -5207,47 +5446,47 @@ impl<W: LayoutElement> Column<W> {
             new_window_cross_span = f64::max(new_window_cross_span, f64::from(min_h));
         }
 
-        self.data[tile_idx].height =
-            WindowHeight::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN));
+        self.data_mut()[tile_idx].span =
+            ChildSpan::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN));
         self.is_pending_maximized = false;
         self.update_tile_sizes(animate);
     }
 
     fn reset_window_height(&mut self, tile_idx: Option<usize>) {
-        if self.display_mode == ColumnDisplay::Tabbed {
+        if self.is_tabbed() {
             // When tabbed, reset window height should work on any window, not just the fixed-size
             // one.
-            for data in &mut self.data {
-                data.height = WindowHeight::auto_1();
+            for data in self.data_mut() {
+                data.span = ChildSpan::auto_1();
             }
         } else {
-            let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
-            self.data[tile_idx].height = WindowHeight::auto_1();
+            let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
+            self.data_mut()[tile_idx].span = ChildSpan::auto_1();
         }
 
         self.update_tile_sizes(true);
     }
 
     fn toggle_window_height(&mut self, tile_idx: Option<usize>, forwards: bool) {
-        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx);
+        let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
 
         // Start by converting all heights to automatic, since only one window in the column can be
         // non-auto-height. If the current tile is already non-auto, however, we can skip that
         // step. Which is not only for optimization, but also preserves automatic weights in case
         // one window is resized in such a way that other windows hit their min size, and then
         // back.
-        if matches!(self.data[tile_idx].height, WindowHeight::Auto { .. }) {
+        if matches!(self.data()[tile_idx].span, ChildSpan::Auto { .. }) {
             self.convert_heights_to_auto();
         }
 
         let len = self.options.layout.preset_window_heights.len();
-        let preset_idx = match self.data[tile_idx].height {
-            WindowHeight::Preset(idx) if !self.is_pending_maximized => {
+        let preset_idx = match self.data()[tile_idx].span {
+            ChildSpan::Preset(idx) if !self.is_pending_maximized => {
                 (idx + if forwards { 1 } else { len - 1 }) % len
             }
             _ => {
-                let current_tile_cross_span = self.data[tile_idx].size.h;
-                let tile = &self.tiles[tile_idx];
+                let current_tile_cross_span = self.data()[tile_idx].size.h;
+                let tile = self.tile(tile_idx);
 
                 let mut it = self
                     .options
@@ -5283,7 +5522,7 @@ impl<W: LayoutElement> Column<W> {
                 }
             }
         };
-        self.data[tile_idx].height = WindowHeight::Preset(preset_idx);
+        self.data_mut()[tile_idx].span = ChildSpan::Preset(preset_idx);
         self.is_pending_maximized = false;
         self.update_tile_sizes(true);
     }
@@ -5296,7 +5535,7 @@ impl<W: LayoutElement> Column<W> {
     /// One case where apparent heights will not be preserved is when the column is taller than the
     /// working area.
     fn convert_heights_to_auto(&mut self) {
-        let heights: Vec<_> = self.data.iter().map(|data| data.size.h).collect();
+        let heights: Vec<_> = self.data().iter().map(|data| data.size.h).collect();
 
         // Weights are invariant to multiplication: a column with weights 2, 2, 1 is equivalent to
         // a column with weights 4, 4, 2. So we find the median window height and use that as 1.
@@ -5304,9 +5543,9 @@ impl<W: LayoutElement> Column<W> {
         sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let median = sorted[sorted.len() / 2];
 
-        for (data, height) in zip(&mut self.data, heights) {
+        for (data, height) in self.data_mut().iter_mut().zip(heights) {
             let weight = height / median;
-            data.height = WindowHeight::Auto { weight };
+            data.span = ChildSpan::Auto { weight };
         }
     }
 
@@ -5316,7 +5555,7 @@ impl<W: LayoutElement> Column<W> {
         }
 
         if is_fullscreen {
-            assert!(self.tiles.len() == 1 || self.display_mode == ColumnDisplay::Tabbed);
+            assert!(self.tiles_len() == 1 || self.is_tabbed());
         }
 
         self.is_pending_fullscreen = is_fullscreen;
@@ -5329,7 +5568,7 @@ impl<W: LayoutElement> Column<W> {
         }
 
         if maximize {
-            assert!(self.tiles.len() == 1 || self.display_mode == ColumnDisplay::Tabbed);
+            assert!(self.tiles_len() == 1 || self.is_tabbed());
         }
 
         self.is_pending_maximized = maximize;
@@ -5337,7 +5576,7 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn set_column_display(&mut self, display: ColumnDisplay) {
-        if self.display_mode == display {
+        if self.display_mode() == display {
             return;
         }
 
@@ -5349,12 +5588,14 @@ impl<W: LayoutElement> Column<W> {
         // Doing it this way to avoid storing all tile positions in a vector. If more display modes
         // are added it might be simpler to just collect everything into a smallvec.
         let prev_origin = self.tiles_origin();
-        self.display_mode = display;
+        self.set_display_mode(display);
         let new_origin = self.tiles_origin();
         let origin_delta = prev_origin - new_origin;
 
         // We need to walk the tiles in the normal display mode to get the right offsets.
-        self.display_mode = ColumnDisplay::Normal;
+        self.set_display_mode(ColumnDisplay::Normal);
+        let active_tile_idx = self.active_tile_idx();
+        let anim_config = self.options.animations.window_movement.0;
         for (tile, pos) in self.tiles_mut() {
             let mut cross_delta = pos.y - prev_origin.y;
 
@@ -5368,28 +5609,29 @@ impl<W: LayoutElement> Column<W> {
         }
 
         // Animate the opacity.
-        for (idx, tile) in self.tiles.iter_mut().enumerate() {
-            let is_active = idx == self.active_tile_idx;
+        for (idx, tile) in self.tiles_enumerated_mut() {
+            let is_active = idx == active_tile_idx;
             if !is_active {
                 let (from, to) = if display == ColumnDisplay::Tabbed {
                     (1., 0.)
                 } else {
                     (0., 1.)
                 };
-                tile.animate_alpha(from, to, self.options.animations.window_movement.0);
+                tile.animate_alpha(from, to, anim_config);
             }
         }
 
+        // Now switch the display mode for real.
+        self.set_display_mode(display);
+
         // Animate the appearance of the tab indicator.
         if display == ColumnDisplay::Tabbed {
-            self.tab_indicator.start_open_animation(
-                self.clock.clone(),
-                self.options.animations.window_movement.0,
-            );
+            let clock = self.clock.clone();
+            if let Some(tab_indicator) = self.tab_indicator_mut() {
+                tab_indicator.start_open_animation(clock, anim_config);
+            }
         }
 
-        // Now switch the display mode for real.
-        self.display_mode = display;
         self.update_tile_sizes(true);
     }
 
@@ -5407,10 +5649,11 @@ impl<W: LayoutElement> Column<W> {
 
         origin += cross_space_vec(self.working_area.loc.y + self.options.layout.gaps);
 
-        if self.display_mode == ColumnDisplay::Tabbed {
+        if self.is_tabbed() {
             origin += self
-                .tab_indicator
-                .content_offset(self.tiles.len(), self.scale);
+                .tab_indicator()
+                .unwrap()
+                .content_offset(self.tiles_len(), self.scale);
         }
 
         origin
@@ -5420,7 +5663,7 @@ impl<W: LayoutElement> Column<W> {
     // borrowing. Note that this method's return value does not borrow the entire &Self!
     fn tile_offsets_iter(
         &self,
-        data: impl Iterator<Item = TileData>,
+        data: impl Iterator<Item = SplitChildData>,
     ) -> impl Iterator<Item = Point<f64, Logical>> {
         // FIXME: this should take into account always-center-single-column, which means that
         // Column should somehow know when it is being centered due to being the single column on
@@ -5428,11 +5671,11 @@ impl<W: LayoutElement> Column<W> {
         let center_tiles_on_main_axis =
             self.options.layout.center_focused_column == CenterFocusedColumn::Always;
         let gap_span = self.options.layout.gaps;
-        let tabbed = self.display_mode == ColumnDisplay::Tabbed;
+        let tabbed = self.is_tabbed();
 
         // Does not include extra size from the tab indicator.
         let max_tile_main_span = self
-            .data
+            .data()
             .iter()
             .map(|data| NotNan::new(data.size.w).unwrap())
             .max()
@@ -5443,17 +5686,17 @@ impl<W: LayoutElement> Column<W> {
         let mut next_tile_cross_pos = origin.y;
 
         // Chain with a dummy value to be able to get one past all tiles' cross-axis offsets.
-        let dummy = TileData {
-            height: WindowHeight::auto_1(),
+        let dummy = SplitChildData {
+            span: ChildSpan::auto_1(),
             size: Size::default(),
-            interactively_resizing_by_left_edge: false,
+            interactively_resizing_by_start_edge: false,
         };
         let data = data.chain(iter::once(dummy));
 
         data.map(move |data| {
             let main_pos = if center_tiles_on_main_axis {
                 origin.x + (max_tile_main_span - data.size.w) / 2.
-            } else if data.interactively_resizing_by_left_edge {
+            } else if data.interactively_resizing_by_start_edge {
                 origin.x + max_tile_main_span - data.size.w
             } else {
                 origin.x
@@ -5469,7 +5712,7 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn tile_offsets(&self) -> impl Iterator<Item = Point<f64, Logical>> + '_ {
-        self.tile_offsets_iter(self.data.iter().copied())
+        self.tile_offsets_iter(self.data().iter().copied())
     }
 
     fn tile_offset(&self, tile_idx: usize) -> Point<f64, Logical> {
@@ -5478,9 +5721,9 @@ impl<W: LayoutElement> Column<W> {
 
     fn tile_offsets_in_render_order(
         &self,
-        data: impl Iterator<Item = TileData>,
+        data: impl Iterator<Item = SplitChildData>,
     ) -> impl Iterator<Item = Point<f64, Logical>> {
-        let active_idx = self.active_tile_idx;
+        let active_idx = self.active_tile_idx();
         let active_pos = self.tile_offset(active_idx);
         let offsets = self
             .tile_offsets_iter(data)
@@ -5490,43 +5733,95 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets = self.tile_offsets_iter(self.data.iter().copied());
-        zip(&self.tiles, offsets)
+        let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
+        self.tiles_enumerated()
+            .map(|(_, tile)| tile)
+            .zip(offsets)
     }
 
     fn tiles_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets = self.tile_offsets_iter(self.data.iter().copied());
-        zip(&mut self.tiles, offsets)
+        let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
+        self.tiles_enumerated_mut()
+            .map(|(_, tile)| tile)
+            .zip(offsets)
     }
 
     fn tiles_in_render_order(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        let offsets = self.tile_offsets_in_render_order(self.data.iter().copied());
+        let offsets: Vec<_> = self
+            .tile_offsets_in_render_order(self.data().iter().copied())
+            .collect();
 
-        let (first, rest) = self.tiles.split_at(self.active_tile_idx);
-        let (active, rest) = rest.split_at(1);
+        let active_idx = self.active_tile_idx();
+        let rest_visible = !self.is_tabbed();
 
-        let active = active.iter().map(|tile| (tile, true));
+        // Walk tiles in render order: active first, then the rest.
+        let active = std::iter::once(active_idx);
+        let before = (0..active_idx).rev();
+        let after = (active_idx + 1)..self.tiles_len();
+        let order: Vec<_> = active.chain(before).chain(after).collect();
 
-        let rest_visible = self.display_mode != ColumnDisplay::Tabbed;
-        let rest = first.iter().chain(rest);
-        let rest = rest.map(move |tile| (tile, rest_visible));
+        order
+            .into_iter()
+            .zip(offsets)
+            .map(move |(idx, pos)| {
+                let visible = idx == active_idx || rest_visible;
+                (self.tile(idx), pos, visible)
+            })
+    }
 
-        let tiles = active.chain(rest);
-        zip(tiles, offsets).map(|((tile, visible), pos)| (tile, pos, visible))
+    /// Returns a mutable slice of the root's children (panics for Leaf root).
+    fn children_mut(&mut self) -> &mut [TileNode<W>] {
+        match &mut self.root {
+            TileNode::Leaf(_) => panic!("children_mut called on a Leaf root"),
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => children,
+        }
+    }
+
+    /// Returns an immutable slice of the root's children (panics for Leaf root).
+    fn children(&self) -> &[TileNode<W>] {
+        match &self.root {
+            TileNode::Leaf(_) => panic!("children called on a Leaf root"),
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => children,
+        }
     }
 
     fn tiles_in_render_order_mut(
         &mut self,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets = self.tile_offsets_in_render_order(self.data.iter().copied());
+        let offsets: Vec<_> = self
+            .tile_offsets_in_render_order(self.data().iter().copied())
+            .collect();
 
-        let (first, rest) = self.tiles.split_at_mut(self.active_tile_idx);
-        let (active, rest) = rest.split_at_mut(1);
+        let active_idx = self.active_tile_idx();
 
-        let tiles = active.iter_mut().chain(first).chain(rest);
-        zip(tiles, offsets)
+        // Walk tiles in render order: active first, then the rest in normal order.
+        // We split the children slice to get the active tile separately from the rest.
+        let children = self.children_mut();
+        let (before, rest) = children.split_at_mut(active_idx);
+        let (active_arr, after) = rest.split_at_mut(1);
+
+        // offsets is: [active_offset, 0_offset, ..., (active-1)_offset, (active+1)_offset, ...]
+        // Split offsets to match the children split, collecting by value to avoid lifetime issues.
+        let active_offset = offsets[0];
+        let before_offsets: Vec<_> = offsets[1..active_idx + 1].to_vec();
+        let after_offsets: Vec<_> = offsets[active_idx + 1..].to_vec();
+
+        let active_iter = active_arr.iter_mut().zip(std::iter::once(active_offset));
+        let before_iter = before.iter_mut().zip(before_offsets.into_iter());
+        let after_iter = after.iter_mut().zip(after_offsets.into_iter());
+
+        active_iter
+            .chain(before_iter)
+            .chain(after_iter)
+            .map(|(child, offset)| {
+                let tile = match child {
+                    TileNode::Leaf(tile) => tile,
+                    _ => panic!("expected a leaf child"),
+                };
+                (tile, offset)
+            })
     }
 
     fn tab_indicator_area(&self) -> Rectangle<f64, Logical> {
@@ -5547,11 +5842,11 @@ impl<W: LayoutElement> Column<W> {
         // cross axis, and using the active tile's animated size in this case only works for the
         // topmost tile, and looks broken otherwise.
         let mut max_tile_cross_span = 0.;
-        for data in &self.data {
+        for data in self.data() {
             max_tile_cross_span = f64::max(max_tile_cross_span, data.size.h);
         }
 
-        let tile = &self.tiles[self.active_tile_idx];
+        let tile = self.active_tile();
         let active_size = self.map_size_in(tile.animated_tile_size());
         let indicator_size = Size::from((active_size.w, max_tile_cross_span));
 
@@ -5559,24 +5854,33 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {
-        for tile in &mut self.tiles {
-            if tile.window().id() == id {
-                tile.start_open_animation();
+        let is_tabbed = self.is_tabbed();
+        let sizing_normal = self.sizing_mode().is_normal();
+        let tiles_len = self.tiles_len();
+        let hide_when_single_tab = self.tab_indicator().map_or(true, |ti| ti.config().hide_when_single_tab);
+        let clock = self.clock.clone();
+        let open_anim = self.options.animations.window_open.anim;
 
-                // Animate the appearance of the tab indicator.
-                if self.display_mode == ColumnDisplay::Tabbed
-                    && self.sizing_mode().is_normal()
-                    && self.tiles.len() == 1
-                    && !self.tab_indicator.config().hide_when_single_tab
-                {
-                    self.tab_indicator.start_open_animation(
-                        self.clock.clone(),
-                        self.options.animations.window_open.anim,
-                    );
-                }
+        // Find the tile index first, then do the work outside the iterator borrow.
+        let found_idx = self.tiles_enumerated().find(|(_, tile)| tile.window().id() == id).map(|(idx, _)| idx);
 
-                return true;
+        if let Some(_) = found_idx {
+            let idx = found_idx.unwrap();
+            self.tile_mut(idx).start_open_animation();
+
+            // Animate the appearance of the tab indicator.
+            if is_tabbed
+                && sizing_normal
+                && tiles_len == 1
+                && !hide_when_single_tab
+            {
+                self.tab_indicator_mut().unwrap().start_open_animation(
+                    clock,
+                    open_anim,
+                );
             }
+
+            return true;
         }
 
         false
@@ -5584,23 +5888,23 @@ impl<W: LayoutElement> Column<W> {
 
     #[cfg(test)]
     fn verify_invariants(&self) {
-        assert!(!self.tiles.is_empty(), "columns can't be empty");
-        assert!(self.active_tile_idx < self.tiles.len());
-        assert_eq!(self.tiles.len(), self.data.len());
+        assert!(self.tiles_len() != 0, "columns can't be empty");
+        assert!(self.active_tile_idx() < self.tiles_len());
+        assert_eq!(self.tiles_len(), self.data().len());
 
         if !self.pending_sizing_mode().is_normal() {
-            assert!(self.tiles.len() == 1 || self.display_mode == ColumnDisplay::Tabbed);
+            assert!(self.tiles_len() == 1 || self.is_tabbed());
         }
 
         if let Some(idx) = self.preset_width_idx {
             assert!(idx < self.options.layout.preset_column_widths.len());
         }
 
-        let is_tabbed = self.display_mode == ColumnDisplay::Tabbed;
+        let is_tabbed = self.is_tabbed();
 
-        let tile_count = self.tiles.len();
+        let tile_count = self.tiles_len();
         if tile_count == 1 {
-            if let WindowHeight::Auto { weight } = self.data[0].height {
+            if let ChildSpan::Auto { weight } = self.data()[0].span {
                 assert_eq!(
                     weight, 1.,
                     "auto height weight must reset to 1 for a single window"
@@ -5615,7 +5919,7 @@ impl<W: LayoutElement> Column<W> {
         let mut found_fixed = false;
         let mut total_height = 0.;
         let mut total_min_height = 0.;
-        for (tile, data) in zip(&self.tiles, &self.data) {
+        for (tile, data) in self.tiles_and_data() {
             assert!(Rc::ptr_eq(&self.options, &tile.options));
             assert_eq!(self.clock, tile.clock);
             assert_eq!(self.scale, tile.scale());
@@ -5630,7 +5934,7 @@ impl<W: LayoutElement> Column<W> {
             data2.update(tile, self.axis());
             assert_eq!(data, &data2, "tile data must be up to date");
 
-            if matches!(data.height, WindowHeight::Fixed(_)) {
+            if matches!(data.span, ChildSpan::Fixed(_)) {
                 assert!(
                     !found_fixed,
                     "there can only be one fixed-height window in a column"
@@ -5638,7 +5942,7 @@ impl<W: LayoutElement> Column<W> {
                 found_fixed = true;
             }
 
-            if let WindowHeight::Preset(idx) = data.height {
+            if let ChildSpan::Preset(idx) = data.span {
                 assert!(self.options.layout.preset_window_heights.len() > idx);
             }
 
@@ -5778,7 +6082,7 @@ fn cancel_resize_for_column<W: LayoutElement>(
         }
     }
 
-    for tile in &mut column.tiles {
+    for (_, tile) in column.tiles_enumerated_mut() {
         tile.window_mut().cancel_interactive_resize();
     }
 }
