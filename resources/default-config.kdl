@@ -557,6 +557,11 @@ binds {
     // Expel the bottom window from the focused column to the right.
     Mod+Period { expel-window-from-column; }
 
+    // Split the focused window: the next window opened will be placed side-by-side.
+    Mod+Shift+S { split-window; }
+    // Consume a window from an adjacent column into a split with the focused window.
+    Mod+Shift+Comma { consume-window-into-split; }
+
     // Cycle through widths set in preset-column-widths.
     Mod+R { switch-preset-column-width; }
     // Cycling through the presets in reverse order is also possible.
@@ -606,6 +611,12 @@ binds {
     // Windows in this column will appear as vertical tabs,
     // rather than stacked on top of each other.
     Mod+W { toggle-column-tabbed-display; }
+
+    // Toggle tabbed display at any tree level (generalized).
+    Mod+Shift+W { toggle-tabbed; }
+    // Move the focused tab left/right within its tabbed container.
+    Mod+Shift+BracketLeft { move-tab left; }
+    Mod+Shift+BracketRight { move-tab right; }
 
     // Actions to switch layouts.
     // Note: if you uncomment these, make sure you do NOT have
