@@ -1201,6 +1201,13 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_tabbed();
     }
 
+    pub fn move_tab(&mut self, direction: ScrollDirection) {
+        if self.floating_is_active.get() {
+            return;
+        }
+        self.scrolling.move_tab(direction);
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         if self.floating_is_active.get() {
             return;

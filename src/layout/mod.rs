@@ -2264,6 +2264,13 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_tabbed();
     }
 
+    pub fn move_tab(&mut self, direction: ScrollDirection) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.move_tab(direction);
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

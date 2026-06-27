@@ -474,6 +474,12 @@ pub enum Action {
     ///
     /// This generalizes tabbed mode to work at any tree level, not just the column root.
     ToggleTabbed {},
+    /// Move the focused tab left or right within its tabbed container.
+    MoveTab {
+        /// Direction to move the tab.
+        #[cfg_attr(feature = "clap", arg())]
+        direction: TabDirection,
+    },
     /// Set the display mode of the focused column.
     SetColumnDisplay {
         /// Display mode to set.
@@ -1045,6 +1051,16 @@ pub enum SplitDirection {
     ///
     /// This is the existing column behavior — windows stacked vertically.
     Cross,
+}
+
+/// Direction for moving a tab within a tabbed container.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum TabDirection {
+    /// Move the tab to the left.
+    Left,
+    /// Move the tab to the right.
+    Right,
 }
 
 /// Output actions that niri can perform.
@@ -1917,6 +1933,18 @@ impl FromStr for SplitDirection {
             "main" => Ok(Self::Main),
             "cross" => Ok(Self::Cross),
             _ => Err(r#"invalid split direction, can be "main" or "cross""#),
+        }
+    }
+}
+
+impl FromStr for TabDirection {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            _ => Err(r#"invalid tab direction, can be "left" or "right""#),
         }
     }
 }

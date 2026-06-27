@@ -2762,6 +2762,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         );
     }
 
+    /// Moves the active tab left or right within its tabbed container.
+    pub fn move_tab(&mut self, direction: ScrollDirection) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let col = &mut self.columns[self.active_column_idx];
+        if !col.is_tabbed() {
+            return;
+        }
+
+        let active_idx = col.active_tile_idx();
+        let new_idx = match direction {
+            ScrollDirection::Left => active_idx.checked_sub(1).unwrap_or(0),
+            ScrollDirection::Right => {
+                let max = col.tiles_len().saturating_sub(1);
+                (active_idx + 1).min(max)
+            }
+        };
+
+        if new_idx == active_idx {
+            return;
+        }
+
+        // Swap the tab and its data, then activate the new position.
+        col.swap_tiles(active_idx, new_idx);
+        col.activate_idx(new_idx);
+        col.update_tile_sizes(true);
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         if self.columns.is_empty() {
             return;

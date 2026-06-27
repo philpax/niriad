@@ -411,6 +411,13 @@ fn arbitrary_split_direction() -> impl Strategy<Value = niri_ipc::SplitDirection
     ]
 }
 
+fn arbitrary_tab_direction() -> impl Strategy<Value = niri_ipc::TabDirection> {
+    prop_oneof![
+        Just(niri_ipc::TabDirection::Left),
+        Just(niri_ipc::TabDirection::Right),
+    ]
+}
+
 #[derive(Debug, Clone, Arbitrary)]
 enum Op {
     AddOutput(#[proptest(strategy = "1..=5usize")] usize),
@@ -520,6 +527,7 @@ enum Op {
     SwapWindowInDirection(#[proptest(strategy = "arbitrary_scroll_direction()")] ScrollDirection),
     ToggleColumnTabbedDisplay,
     ToggleTabbed,
+    MoveTab(#[proptest(strategy = "arbitrary_tab_direction()")] niri_ipc::TabDirection),
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
     CenterColumn,
     CenterWindow {
@@ -1193,6 +1201,13 @@ impl Op {
             Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
             Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
             Op::ToggleTabbed => layout.toggle_tabbed(),
+            Op::MoveTab(direction) => {
+                let dir = match direction {
+                    niri_ipc::TabDirection::Left => ScrollDirection::Left,
+                    niri_ipc::TabDirection::Right => ScrollDirection::Right,
+                };
+                layout.move_tab(dir);
+            }
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
             Op::CenterColumn => layout.center_column(),
             Op::CenterWindow { id } => {
