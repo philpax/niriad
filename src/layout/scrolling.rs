@@ -5131,6 +5131,14 @@ impl<W: LayoutElement> Column<W> {
 
         let is_tabbed = self.is_tabbed();
 
+        // Handle Main-axis split: distribute main-axis span (width) among children,
+        // each child gets full cross-axis span (height).
+        let root_is_main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+        if root_is_main_split {
+            self.update_tile_sizes_main_split(animate, transaction, axis);
+            return;
+        }
+
         let min_size: Vec<_> = self
             .tiles_enumerated()
             .map(|(_, tile)| tile.min_size_nonfullscreen())
@@ -5420,6 +5428,140 @@ impl<W: LayoutElement> Column<W> {
             };
 
             tile.request_tile_size(size, animate, transaction);
+        }
+    }
+
+    /// Layout for a Main-axis split root: distributes the column width among children,
+    /// each getting a main-axis portion and full cross-axis span.
+    fn update_tile_sizes_main_split(
+        &mut self,
+        animate: bool,
+        transaction: Transaction,
+        axis: AxisMap,
+    ) {
+        let working_size = self.working_area.size;
+        let gaps = self.options.layout.gaps;
+        let extra_size = self.extra_size();
+
+        // The cross-axis span for all children is the full working area height.
+        let cross_span = working_size.h - gaps * 2. - extra_size.h;
+        let cross_span = cross_span.max(1.);
+
+        // Compute min/max sizes for all children.
+        let min_sizes: Vec<_> = self
+            .tiles_enumerated()
+            .map(|(_, tile)| {
+                let mut s = axis.size_in(tile.min_size_nonfullscreen());
+                s.w = s.w.max(1.);
+                s.h = s.h.max(1.);
+                s
+            })
+            .collect();
+        let max_sizes: Vec<_> = self
+            .tiles_enumerated()
+            .map(|(_, tile)| axis.size_in(tile.max_size_nonfullscreen()))
+            .collect();
+
+        // Compute the column main-axis span (width).
+        let min_main_span = min_sizes
+            .iter()
+            .map(|s| NotNan::new(s.w).unwrap())
+            .max()
+            .map(NotNan::into_inner)
+            .unwrap_or(1.);
+        let max_main_span = max_sizes
+            .iter()
+            .filter_map(|s| {
+                if s.w == 0. { None } else { Some(NotNan::new(s.w).unwrap()) }
+            })
+            .min()
+            .map(NotNan::into_inner)
+            .unwrap_or(f64::from(i32::MAX));
+        let max_main_span = f64::max(max_main_span, min_main_span);
+
+        let desired_width = if self.is_full_width {
+            ColumnWidth::Proportion(1.)
+        } else {
+            self.width
+        };
+        let column_main_span = self.resolve_column_main_span(desired_width);
+        let column_main_span = f64::max(f64::min(column_main_span, max_main_span), min_main_span);
+
+        // Distribute main-axis span among children using the same weighted algorithm.
+        // Each child's span is determined by its data.span (Auto/Fixed/Preset).
+        let gap_span_left = gaps * (self.tiles_len() + 1) as f64;
+        let mut main_span_left = column_main_span - gap_span_left;
+        let mut auto_tiles_left = self.tiles_len();
+
+        // Collect the spans (in main-axis terms).
+        let mut main_spans: Vec<f64> = self
+            .data()
+            .iter()
+            .enumerate()
+            .map(|(idx, data)| match data.span {
+                ChildSpan::Auto { .. } => 0., // Will be filled in
+                ChildSpan::Fixed(span) => {
+                    let mut span = span;
+                    if max_sizes[idx].w > 0. {
+                        span = f64::min(span, max_sizes[idx].w);
+                    }
+                    span = f64::max(span, min_sizes[idx].w);
+                    main_span_left -= span;
+                    auto_tiles_left -= 1;
+                    span
+                }
+                ChildSpan::Preset(_) => {
+                    // Treat presets as auto for now in main splits.
+                    0.
+                }
+            })
+            .collect();
+
+        // Compute auto weights.
+        let total_weight: f64 = self
+            .data()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, data)| {
+                if main_spans[idx] == 0. && matches!(data.span, ChildSpan::Auto { .. }) {
+                    if let ChildSpan::Auto { weight } = data.span {
+                        Some(weight)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        // Distribute remaining main-axis span among auto tiles.
+        let mut remaining = main_span_left;
+        let mut remaining_weight = total_weight;
+        for (idx, data) in self.data().iter().enumerate() {
+            if main_spans[idx] != 0. {
+                continue;
+            }
+            if let ChildSpan::Auto { weight } = data.span {
+                let factor = if remaining_weight > 0. {
+                    weight / remaining_weight
+                } else {
+                    1. / self.tiles_len() as f64
+                };
+                let span = (remaining * factor).max(1.);
+                main_spans[idx] = span;
+                remaining -= span;
+                remaining_weight -= weight;
+                auto_tiles_left -= 1;
+            }
+        }
+
+        // Now request sizes for all tiles.
+        let active_tile_idx = self.active_tile_idx();
+        for (tile_idx, (_, tile)) in self.tiles_enumerated_mut().enumerate() {
+            let main_span = main_spans[tile_idx];
+            let size = axis.size_out(Size::from((main_span, cross_span)));
+            tile.request_tile_size(size, animate, Some(transaction.clone()));
         }
     }
 
@@ -5923,6 +6065,7 @@ impl<W: LayoutElement> Column<W> {
             self.options.layout.center_focused_column == CenterFocusedColumn::Always;
         let gap_span = self.options.layout.gaps;
         let tabbed = self.is_tabbed();
+        let main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
 
         // Does not include extra size from the tab indicator.
         let max_tile_main_span = self
@@ -5935,6 +6078,7 @@ impl<W: LayoutElement> Column<W> {
 
         let origin = self.tiles_origin();
         let mut next_tile_cross_pos = origin.y;
+        let mut next_tile_main_pos = origin.x;
 
         // Chain with a dummy value to be able to get one past all tiles' cross-axis offsets.
         let dummy = SplitChildData {
@@ -5945,20 +6089,28 @@ impl<W: LayoutElement> Column<W> {
         let data = data.chain(iter::once(dummy));
 
         data.map(move |data| {
-            let main_pos = if center_tiles_on_main_axis {
-                origin.x + (max_tile_main_span - data.size.w) / 2.
-            } else if data.interactively_resizing_by_start_edge {
-                origin.x + max_tile_main_span - data.size.w
+            if main_split {
+                // In a Main-axis split, tiles are arranged along the main axis (x).
+                let cross_pos = origin.y;
+                let pos = Point::from((next_tile_main_pos, cross_pos));
+                next_tile_main_pos += data.size.w + gap_span;
+                pos
             } else {
-                origin.x
-            };
-            let pos = Point::from((main_pos, next_tile_cross_pos));
+                let main_pos = if center_tiles_on_main_axis {
+                    origin.x + (max_tile_main_span - data.size.w) / 2.
+                } else if data.interactively_resizing_by_start_edge {
+                    origin.x + max_tile_main_span - data.size.w
+                } else {
+                    origin.x
+                };
+                let pos = Point::from((main_pos, next_tile_cross_pos));
 
-            if !tabbed {
-                next_tile_cross_pos += data.size.h + gap_span;
+                if !tabbed {
+                    next_tile_cross_pos += data.size.h + gap_span;
+                }
+
+                pos
             }
-
-            pos
         })
     }
 
