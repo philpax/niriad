@@ -1455,12 +1455,14 @@ pub struct Timestamp {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct WindowLayout {
-    /// Location of a tiled window within a workspace: (column index, tile index in column).
+    /// Location of a tiled window within a workspace: (column index, path within column).
     ///
-    /// The indices are 1-based, i.e. the leftmost column is at index 1 and the topmost tile in a
-    /// column is at index 1. This is consistent with [`Action::FocusColumn`] and
-    /// [`Action::FocusWindowInColumn`].
-    pub pos_in_scrolling_layout: Option<(usize, usize)>,
+    /// The column index is 1-based, i.e. the leftmost column is at index 1.
+    /// The path is a sequence of 1-based child indices from the column root to the leaf.
+    /// For a flat column, this is a single element (the tile index + 1).
+    /// For a split/tabbed column, the path encodes the tree structure.
+    /// This is consistent with [`Action::FocusColumn`] and [`Action::FocusWindowInColumn`].
+    pub pos_in_scrolling_layout: Option<(usize, Vec<usize>)>,
     /// Size of the tile this window is in, including decorations like borders.
     pub tile_size: (f64, f64),
     /// Size of the window's visual geometry itself.

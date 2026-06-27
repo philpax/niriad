@@ -708,13 +708,11 @@ fn print_window(window: &Window) {
         println!("  Workspace ID: (none)");
     }
 
-    let WindowLayout {
-        pos_in_scrolling_layout,
-        tile_size,
-        window_size,
-        tile_pos_in_workspace_view,
-        window_offset_in_tile,
-    } = window.layout;
+    let pos_in_scrolling_layout = window.layout.pos_in_scrolling_layout.clone();
+    let tile_size = window.layout.tile_size;
+    let window_size = window.layout.window_size;
+    let tile_pos_in_workspace_view = window.layout.tile_pos_in_workspace_view;
+    let window_offset_in_tile = window.layout.window_offset_in_tile;
 
     println!("  Layout:");
     println!(
@@ -724,7 +722,8 @@ fn print_window(window: &Window) {
     );
 
     if let Some(pos) = pos_in_scrolling_layout {
-        println!("    Scrolling position: column {}, tile {}", pos.0, pos.1);
+        let path_str = pos.1.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".");
+        println!("    Scrolling position: column {}, path {}", pos.0, path_str);
     }
 
     if let Some(pos) = tile_pos_in_workspace_view {

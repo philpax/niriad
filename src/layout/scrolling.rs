@@ -3083,7 +3083,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         let layout = WindowLayout {
                             tile_pos_in_workspace_view: Some(pos.into()),
                             // Our indices are 1-based, consistent with the actions.
-                            pos_in_scrolling_layout: Some((col_idx + 1, tile_idx + 1)),
+                            pos_in_scrolling_layout: Some((col_idx + 1, vec![tile_idx + 1])),
                             ..tile.ipc_layout_template()
                         };
                         (tile, layout)
