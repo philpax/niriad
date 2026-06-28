@@ -646,6 +646,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_tile_to_split(
         &mut self,
         workspace_idx: usize,

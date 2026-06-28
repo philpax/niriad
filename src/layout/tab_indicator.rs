@@ -4,7 +4,7 @@ use std::mem;
 use niri_config::{CornerRadius, Gradient, GradientRelativeTo, TabIndicatorPosition, TabStyle};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use super::tab_bar::{TabBar, TabBarRenderElement};
+use super::tab_bar::TabBar;
 
 use super::tile::Tile;
 use super::LayoutElement;
@@ -126,7 +126,7 @@ impl TabHeader {
     pub fn config(&self) -> niri_config::TabIndicator {
         match self {
             TabHeader::Indicator(ti) => ti.config(),
-            TabHeader::Bar(bar) => {
+            TabHeader::Bar(_bar) => {
                 // Return default indicator config for Bar style.
                 niri_config::TabIndicator::default()
             }

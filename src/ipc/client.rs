@@ -8,7 +8,7 @@ use niri_config::OutputName;
 use niri_ipc::socket::Socket;
 use niri_ipc::{
     Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LogicalOutput, Mode, Output,
-    OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
+    OutputConfigChanged, Overview, Request, Response, Transform, Window,
 };
 use serde_json::json;
 

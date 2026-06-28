@@ -5,7 +5,6 @@ use pangocairo::cairo::{self, ImageSurface};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::ImportMem;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 
 use crate::animation::{Animation, Clock};
@@ -168,7 +167,7 @@ impl TabBar {
     }
 
     /// Extra size taken up by the tab bar (height + gap).
-    pub fn extra_size(&self, tab_count: usize, scale: f64) -> Size<f64, Logical> {
+    pub fn extra_size(&self, _tab_count: usize, _scale: f64) -> Size<f64, Logical> {
         if self.config.off || (self.config.height <= 0.) {
             return Size::from((0., 0.));
         }
@@ -176,7 +175,7 @@ impl TabBar {
     }
 
     /// Content offset — shifts tab content to make room for the bar.
-    pub fn content_offset(&self, tab_count: usize, scale: f64) -> Point<f64, Logical> {
+    pub fn content_offset(&self, _tab_count: usize, _scale: f64) -> Point<f64, Logical> {
         if self.config.off {
             return Point::from((0., 0.));
         }
@@ -196,7 +195,7 @@ impl TabBar {
         _area_view_rect: Rectangle<f64, Logical>,
         tab_count: usize,
         tabs: impl Iterator<Item = TabInfo>,
-        is_active: bool,
+        _is_active: bool,
         scale: f64,
     ) {
         if !enabled || self.config.off {
@@ -393,9 +392,9 @@ impl TabBar {
     /// Hit-test against tab rectangles. Returns the tab index if hit.
     pub fn hit(
         &self,
-        area: Rectangle<f64, Logical>,
-        count: usize,
-        scale: f64,
+        _area: Rectangle<f64, Logical>,
+        _count: usize,
+        _scale: f64,
         pos: Point<f64, Logical>,
     ) -> Option<usize> {
         for (i, rect) in self.tab_rects.iter().enumerate() {

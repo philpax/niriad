@@ -1,17 +1,13 @@
 use std::rc::Rc;
 
-use niri_config::{CenterFocusedColumn, PresetSize};
-use niri_ipc::{ColumnDisplay, WindowLayout};
+use niri_ipc::ColumnDisplay;
 use ordered_float::NotNan;
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Point, Size};
 
 use super::axis::AxisMap;
-use super::tab_indicator::{TabHeader, TabIndicator};
+use super::tab_indicator::TabHeader;
 use super::tile::Tile;
-use super::workspace::ResolvedSize;
 use super::{LayoutElement, Options};
-use crate::animation::Clock;
-use crate::layout::SizingMode;
 use crate::utils::transaction::Transaction;
 
 /// Axis along which a split's children are arranged.
@@ -90,6 +86,7 @@ impl SplitChildData {
 /// `Tabbed` node (tabbed column). Later phases introduce `Split { axis: Main }` and
 /// nested structures.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TileNode<W: LayoutElement> {
     /// A single window.
     Leaf(Tile<W>),
@@ -220,6 +217,7 @@ impl<W: LayoutElement> TileNode<W> {
 
     /// Returns the offset of the active leaf (recursive).
     /// `origin` is the starting position, `gaps` is the inter-tile gap.
+    #[allow(clippy::only_used_in_recursion)]
     pub fn active_leaf_offset(
         &self,
         origin: Point<f64, Logical>,
@@ -483,7 +481,7 @@ impl<W: LayoutElement> TileNode<W> {
 
                 // If this is the last path element, remove the child directly.
                 if path.len() == 1 {
-                    if let TileNode::Leaf(tile) = &children[idx] {
+                    if let TileNode::Leaf(_tile) = &children[idx] {
                         let tile = children.remove(idx).into_leaf();
                         data.remove(idx);
 
@@ -905,7 +903,7 @@ impl<W: LayoutElement> TileNode<W> {
             // SAFETY: both pointers were derived from &mut self, and we hold &mut self.
             // We're swapping the Tile objects, not the tree structure.
             unsafe {
-                std::mem::swap(&mut *a, &mut *b);
+                core::ptr::swap(a, b);
             }
         }
     }
@@ -999,7 +997,7 @@ impl<W: LayoutElement> TileNode<W> {
                 // This is in axis-mapped coordinates (w = main, h = cross).
                 tile.tile_size().w
             }
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Split { children: _, data, .. } | TileNode::Tabbed { children: _, data, .. } => {
                 // For Phase 1 (flat tree), all children are leaves, and the max main span
                 // is the max of all children's cached sizes.
                 data.iter()
