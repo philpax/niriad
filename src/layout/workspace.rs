@@ -724,12 +724,13 @@ impl<W: LayoutElement> Workspace<W> {
         col_idx: usize,
         tile_idx: usize,
         axis: SplitAxis,
+        place_after: bool,
         tile: Tile<W>,
         activate: bool,
     ) {
         self.enter_output_for_window(tile.window());
         self.scrolling
-            .add_tile_to_split(col_idx, tile_idx, axis, tile, activate);
+            .add_tile_to_split(col_idx, tile_idx, axis, place_after, tile, activate);
 
         if activate {
             self.floating_is_active = FloatingActive::No;

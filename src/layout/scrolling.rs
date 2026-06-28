@@ -1195,6 +1195,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Only trigger InSplit (side-by-side) when the pointer is in the main-axis center
         // of the tile (left/right halves). Near the top/bottom edges, fall through to
         // InColumn (below/above insertion) for vertical stacking.
+        // Per-leaf tile size by flat-leaf index, resolved through the tree path so it stays
+        // correct for nested splits (where the leaf index is not a root child index).
+        let leaf_size = |idx: usize| -> Size<f64, Logical> {
+            col.root
+                .path_for_leaf_index(idx)
+                .and_then(|p| col.root.leaf_data(&p))
+                .map(|d| d.size)
+                .unwrap_or_default()
+        };
+
         let gap_threshold = self.options.layout.gaps * 2.;
         if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
             // Find the tile containing the pointer vertically.
@@ -1204,7 +1214,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .enumerate()
                 .find(|(idx, off)| {
                     let tile_top = off.y;
-                    let tile_h = col.data().get(*idx).map(|d| d.size.h).unwrap_or(0.);
+                    let tile_h = leaf_size(*idx).h;
                     cross >= tile_top && cross <= tile_top + tile_h
                 })
                 .map(|(idx, _)| idx)
@@ -1214,7 +1224,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // (vertical insertion) instead of InSplit (horizontal split).
             if let Some(&tile_off) = offsets.get(tile_idx) {
                 let tile_top = tile_off.y;
-                let tile_h = col.data().get(tile_idx).map(|d| d.size.h).unwrap_or(0.);
+                let tile_h = leaf_size(tile_idx).h;
                 let tile_bottom = tile_top + tile_h;
                 let dist_to_top = (cross - tile_top).abs();
                 let dist_to_bottom = (cross - tile_bottom).abs();
@@ -1230,7 +1240,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     // Interior — horizontal split (side-by-side).
                     // Determine which half based on the main-axis position relative to tile center.
                     let col_main_start = self.column_main_pos(col_idx);
-                    let tile_w = col.data().get(tile_idx).map(|d| d.size.w).unwrap_or(0.);
+                    let tile_w = leaf_size(tile_idx).w;
                     let tile_center = col_main_start + tile_off.x + tile_w / 2.;
                     let is_right_half = main > tile_center;
                     InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, is_right_half)
@@ -1251,6 +1261,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col_idx: usize,
         tile_idx: usize,
         axis: SplitAxis,
+        place_after: bool,
         tile: Tile<W>,
         activate: bool,
     ) {
@@ -1263,7 +1274,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_next_x = self.column_main_pos(col_idx + 1);
 
         let target_column = &mut self.columns[col_idx];
-        target_column.add_tile_to_split(tile_idx, tile, axis, activate);
+        target_column.add_tile_to_split(tile_idx, tile, axis, place_after, activate);
         self.data[col_idx].update(target_column);
 
         if activate
@@ -1295,6 +1306,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         is_full_width: bool,
         anim_config: Option<niri_config::Animation>,
     ) {
+        // Split-then-open: if no explicit column was requested and the active column has a pending
+        // split direction (set by `split-window`), place the new window into that column as a
+        // split with the focused tile, rather than opening a brand-new column.
+        if col_idx.is_none() && !self.columns.is_empty() {
+            let active = self.active_column_idx;
+            let col = &self.columns[active];
+            if col.pending_sizing_mode().is_normal() {
+                if let Some(axis) = col.pending_split_direction {
+                    self.columns[active].pending_split_direction = None;
+                    let target_idx = self.columns[active].active_tile_idx();
+                    self.add_tile_to_split(active, target_idx, axis, true, tile, activate);
+                    return;
+                }
+            }
+        }
+
         let column = Column::new_with_tile(
             tile,
             self.view_size,
@@ -1330,7 +1357,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // The next window opened in this column should be placed in a split
                 // with the currently-focused tile, rather than appended.
                 let active_idx = target_column.active_tile_idx();
-                target_column.add_tile_to_split(active_idx, tile, split_axis, activate);
+                target_column.add_tile_to_split(active_idx, tile, split_axis, true, activate);
                 self.data[col_idx].update(target_column);
 
                 if activate && self.active_column_idx != col_idx {
@@ -1732,8 +1759,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_width = self.data[col_idx].width;
 
         column.update_window(window);
-        self.data[col_idx].update(column);
         column.update_tile_sizes(false);
+        // Refresh the cached width after the size recompute, not before — otherwise it reflects
+        // the pre-layout state and goes stale (e.g. after a display-mode change widens the column).
+        self.data[col_idx].update(column);
 
         let offset = prev_width - self.data[col_idx].width;
 
@@ -2612,9 +2641,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             target_col_idx
         };
 
+        // Capture the start position of the columns after the target before the split changes the
+        // target column's width, so we can animate the shift.
+        let prev_next_main_pos = self.column_main_pos(target_col_idx + 1);
+
         // Now add the removed tile as a split child of the focused tile in the target column.
         let target_column = &mut self.columns[target_col_idx];
-        target_column.add_tile_to_split(target_tile_idx, removed.tile, split_axis, true);
+        target_column.add_tile_to_split(target_tile_idx, removed.tile, split_axis, true, true);
 
         self.data[target_col_idx].update(&self.columns[target_col_idx]);
 
@@ -2626,13 +2659,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Animate column movements if width changed.
         // (The split may have changed the column width.)
-        self.animate_columns_after_change(target_col_idx);
+        self.animate_columns_after_change(target_col_idx, prev_next_main_pos);
     }
 
     /// Animates column movements after a change that might have affected column width.
-    fn animate_columns_after_change(&mut self, col_idx: usize) {
+    ///
+    /// `prev_next_main_pos` is the main-axis position of the first column after `col_idx`,
+    /// captured *before* the change.
+    fn animate_columns_after_change(&mut self, col_idx: usize, prev_next_main_pos: f64) {
         // Move other columns to account for width changes.
-        let offset = self.column_main_pos(col_idx + 1) - self.column_main_pos(col_idx + 1);
+        let offset = self.column_main_pos(col_idx + 1) - prev_next_main_pos;
         if offset != 0. {
             let movement_config = self.options.animations.window_movement.0;
             if self.active_column_idx <= col_idx {
@@ -2830,6 +2866,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.set_column_display(
             if col.is_tabbed() { ColumnDisplay::Normal } else { ColumnDisplay::Tabbed },
         );
+
+        // Toggling display can change the column width (e.g. a Main split, summed across children,
+        // becomes a single-width tabbed stack), so refresh the cached column data.
+        self.data[self.active_column_idx].update(&self.columns[self.active_column_idx]);
     }
 
     /// Moves the active tab left or right within its tabbed container.
@@ -2874,12 +2914,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
         col.set_column_display(display);
-
-        // With place_within_column, the tab indicator changes the column size immediately.
-        self.data[self.active_column_idx].update(col);
         col.update_tile_sizes(true);
 
+        // Refresh the cached column data after the size recompute (toggling display can change the
+        // column width, e.g. tabbing a Main split widens it).
+        self.data[self.active_column_idx].update(&self.columns[self.active_column_idx]);
+
         // Disable fullscreen if needed.
+        let col = &self.columns[self.active_column_idx];
         if !col.is_tabbed() && col.tiles_len() > 1 {
             let window = col.active_tile().window().id().clone();
             self.set_fullscreen(&window, false);
@@ -3150,10 +3192,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         // Round to physical pixels.
                         let pos = pos.to_physical_precise_round(scale).to_logical(scale);
 
+                        // The full tree path from the column root to this leaf, as 1-based child
+                        // indices (consistent with the actions). For a flat column this is a
+                        // single element; for split/tabbed columns it encodes the nesting.
+                        let path: Vec<usize> = col
+                            .root
+                            .path_for_leaf_index(tile_idx)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|i| i + 1)
+                            .collect();
+
                         let layout = WindowLayout {
                             tile_pos_in_workspace_view: Some(pos.into()),
-                            // Our indices are 1-based, consistent with the actions.
-                            pos_in_scrolling_layout: Some((col_idx + 1, vec![tile_idx + 1])),
+                            pos_in_scrolling_layout: Some((col_idx + 1, path)),
                             ..tile.ipc_layout_template()
                         };
                         (tile, layout)
@@ -4224,7 +4276,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
 
             let window_width = (resize.original_window_size.w + dx).round() as i32;
-            col.set_column_width(SizeChange::SetFixed(window_width), Some(tile_idx), false);
+            // If the tile lives in a Main-axis split, resize the boundary with its sibling rather
+            // than the whole column (mirrors `set_window_width`).
+            if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+                col.set_split_child_width(SizeChange::SetFixed(window_width), tile_idx, false);
+            } else {
+                col.set_column_width(SizeChange::SetFixed(window_width), Some(tile_idx), false);
+            }
         }
 
         if resize.data.edges.intersects(ResizeEdge::TOP_BOTTOM) {
@@ -4753,15 +4811,18 @@ impl<W: LayoutElement> Column<W> {
 
     /// Adds a tile as a split child of the tile at `target_idx`.
     ///
-    /// The tile at `target_idx` is replaced with a `Split { axis, children: [old_leaf, new_tile] }`.
-    /// If the root is already a `Split` with the matching axis, the new tile is appended to it
-    /// instead of nesting.
-    /// If `activate` is true, the new tile becomes the active tile.
+    /// `place_after` controls which side of the target the new tile lands on (the half the user
+    /// hovered when dragging): `true` inserts after/right/below, `false` before/left/above.
+    ///
+    /// If the root is already a `Split` with the matching axis, the new tile is inserted into it.
+    /// Otherwise the target leaf is replaced with a nested `Split { axis, [target, new] }` (ordered
+    /// by `place_after`). If `activate` is true, the new tile becomes the active tile.
     fn add_tile_to_split(
         &mut self,
         target_idx: usize,
         mut tile: Tile<W>,
         axis: SplitAxis,
+        place_after: bool,
         activate: bool,
     ) {
         tile.update_config(
@@ -4770,11 +4831,30 @@ impl<W: LayoutElement> Column<W> {
             self.options.clone(),
         );
 
-        // Capture previous offsets for animation (recursive — all leaves).
-        let prev_offsets: Vec<_> = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
+        // Capture previous on-screen positions keyed by window id, so existing tiles animate to
+        // their new positions after the structure changes (id keys survive Vec reordering).
+        let prev = self.leaf_positions_by_id();
 
         let mut new_data = SplitChildData::new_auto();
         new_data.update(&tile, self.axis());
+
+        // Builds the two-element child/data vecs for a fresh nested split, ordered by `place_after`,
+        // and returns them along with the index the new tile ends up at.
+        let make_pair = |old_tile: Tile<W>, old_data: SplitChildData, new_tile: Tile<W>| {
+            if place_after {
+                (
+                    vec![TileNode::Leaf(old_tile), TileNode::Leaf(new_tile)],
+                    vec![old_data, new_data],
+                    1usize,
+                )
+            } else {
+                (
+                    vec![TileNode::Leaf(new_tile), TileNode::Leaf(old_tile)],
+                    vec![new_data, old_data],
+                    0usize,
+                )
+            }
+        };
 
         // Check if the root is already a Split with the matching axis.
         let already_matching_split = match &self.root {
@@ -4783,8 +4863,8 @@ impl<W: LayoutElement> Column<W> {
         };
 
         if already_matching_split {
-            // Append to the existing split.
-            let insert_idx = target_idx + 1;
+            // Insert into the existing split on the requested side of the target.
+            let insert_idx = if place_after { target_idx + 1 } else { target_idx };
             self.insert_tile(insert_idx, tile);
             if activate {
                 self.activate_idx(insert_idx);
@@ -4801,99 +4881,126 @@ impl<W: LayoutElement> Column<W> {
                 TileNode::Leaf(t) => t,
                 _ => unreachable!(),
             };
-            let old_data = SplitChildData::new_auto();
+            let (children, data, new_idx) =
+                make_pair(old_tile, SplitChildData::new_auto(), tile);
+            let other_idx = if new_idx == 0 { 1 } else { 0 };
             self.root = TileNode::Split {
                 axis,
-                children: vec![
-                    TileNode::Leaf(old_tile),
-                    TileNode::Leaf(tile),
-                ],
-                active_idx: if activate { 1 } else { 0 },
-                data: vec![old_data, new_data],
+                active_idx: if activate { new_idx } else { other_idx },
+                children,
+                data,
             };
         } else {
-            // The root is a Split/Tabbed with a different axis.
-            // Create a nested split: replace the target leaf with a Split containing
-            // the old leaf and the new tile. This creates true nesting (Split inside Split),
-            // which is handled by the recursive layout path.
-            let old_root = std::mem::replace(&mut self.root, TileNode::Split {
+            // The root is a Split/Tabbed with a different axis. Replace the target leaf with a
+            // nested split (true nesting, handled by the recursive layout path). If the target is
+            // itself already a nested node, fall back to inserting beside it at the root level.
+            let dummy = || TileNode::Split {
                 axis: SplitAxis::Cross,
-                children: Vec::new(),
+                children: vec![],
                 active_idx: 0,
-                data: Vec::new(),
-            });
+                data: vec![],
+            };
 
+            macro_rules! graft {
+                ($children:ident, $data:ident, $active_idx:ident) => {{
+                    let old_child = $children
+                        .splice(target_idx..=target_idx, std::iter::once(dummy()))
+                        .next()
+                        .unwrap();
+                    let old_data = $data[target_idx];
+                    match old_child {
+                        TileNode::Leaf(old_tile) => {
+                            let (children, data, new_idx) = make_pair(old_tile, old_data, tile);
+                            $children[target_idx] = TileNode::Split {
+                                axis,
+                                active_idx: new_idx,
+                                children,
+                                data,
+                            };
+                            let new_active = if activate { target_idx } else { $active_idx };
+                            (new_active)
+                        }
+                        other => {
+                            $children[target_idx] = other;
+                            let insert_idx = if place_after { target_idx + 1 } else { target_idx };
+                            $children.insert(insert_idx, TileNode::Leaf(tile));
+                            $data.insert(insert_idx, new_data);
+                            let new_active = if activate {
+                                insert_idx
+                            } else if $active_idx >= insert_idx {
+                                $active_idx + 1
+                            } else {
+                                $active_idx
+                            };
+                            (new_active)
+                        }
+                    }
+                }};
+            }
+
+            let old_root = std::mem::replace(&mut self.root, dummy());
             self.root = match old_root {
                 TileNode::Split { axis: root_axis, mut children, mut data, active_idx } => {
-                    // Take the child out of the Vec (replaces with a dummy empty Split).
-                    let old_child = children.splice(target_idx..=target_idx, vec![TileNode::Split {
-                        axis: SplitAxis::Cross, children: vec![], active_idx: 0, data: vec![],
-                    }]).next().unwrap();
-                    // Note: we do NOT remove from data — we'll reuse data[target_idx] for the nested split.
-                    let old_data = data[target_idx];
-                    match old_child {
-                        TileNode::Leaf(old_tile) => {
-                            let nested = TileNode::Split {
-                                axis,
-                                children: vec![TileNode::Leaf(old_tile), TileNode::Leaf(tile)],
-                                active_idx: if activate { 1 } else { 0 },
-                                data: vec![old_data, new_data],
-                            };
-                            // Replace the dummy back with the nested split.
-                            children[target_idx] = nested;
-                            let new_active = if activate { target_idx } else { active_idx };
-                            TileNode::Split { axis: root_axis, children, active_idx: new_active, data }
-                        }
-                        other => {
-                            // Target is already nested; append the new tile at root level instead.
-                            children[target_idx] = other;
-                            // data[target_idx] still has old_data (we didn't remove it).
-                            let insert_idx = children.len();
-                            children.push(TileNode::Leaf(tile));
-                            data.push(new_data);
-                            let new_active = if activate { insert_idx } else { active_idx };
-                            TileNode::Split { axis: root_axis, children, active_idx: new_active, data }
-                        }
-                    }
+                    let new_active = graft!(children, data, active_idx);
+                    TileNode::Split { axis: root_axis, children, active_idx: new_active, data }
                 }
                 TileNode::Tabbed { mut children, mut data, active_idx, tab_header } => {
-                    let old_child = children.splice(target_idx..=target_idx, vec![TileNode::Split {
-                        axis: SplitAxis::Cross, children: vec![], active_idx: 0, data: vec![],
-                    }]).next().unwrap();
-                    let old_data = data[target_idx];
-                    match old_child {
-                        TileNode::Leaf(old_tile) => {
-                            let nested = TileNode::Split {
-                                axis,
-                                children: vec![TileNode::Leaf(old_tile), TileNode::Leaf(tile)],
-                                active_idx: if activate { 1 } else { 0 },
-                                data: vec![old_data, new_data],
-                            };
-                            children[target_idx] = nested;
-                            let new_active = if activate { target_idx } else { active_idx };
-                            TileNode::Tabbed { children, active_idx: new_active, data, tab_header }
-                        }
-                        other => {
-                            children[target_idx] = other;
-                            // data[target_idx] still has old_data (we didn't remove it).
-                            let insert_idx = children.len();
-                            children.push(TileNode::Leaf(tile));
-                            data.push(new_data);
-                            let new_active = if activate { insert_idx } else { active_idx };
-                            TileNode::Tabbed { children, active_idx: new_active, data, tab_header }
-                        }
-                    }
+                    let new_active = graft!(children, data, active_idx);
+                    TileNode::Tabbed { children, active_idx: new_active, data, tab_header }
                 }
                 other => other,
             };
         }
 
+        // Avoid a redundant single-child wrapper: when the column root is a Split/Tabbed with a
+        // single child that is itself a Split/Tabbed (e.g. the implicit Cross root wrapping a lone
+        // Main split created above), collapse it so the meaningful split becomes the root. This
+        // keeps `toggle-tabbed`, swapping and the render/alpha logic operating on real tabs rather
+        // than a one-tab container that holds a split.
+        let collapse = matches!(
+            &self.root,
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. }
+                if children.len() == 1 && !matches!(children[0], TileNode::Leaf(_))
+        );
+        if collapse {
+            let child = match &mut self.root {
+                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                    children.remove(0)
+                }
+                TileNode::Leaf(_) => unreachable!(),
+            };
+            self.root = child;
+        }
+
         self.update_tile_sizes(true);
 
-        // Animate tiles according to offset changes (recursive — all leaves).
-        let origin = self.tiles_origin();
-        let gaps = self.options.layout.gaps;
-        self.root.animate_leaves_if_moved(origin, gaps, &prev_offsets);
+        // Animate existing tiles according to their position changes.
+        self.animate_leaves_if_moved(&prev);
+    }
+
+    /// Captures on-screen leaf positions keyed by window id (stable across tree reordering).
+    fn leaf_positions_by_id(&self) -> Vec<(W::Id, Point<f64, Logical>)> {
+        let positions = self.leaf_positions();
+        self.root
+            .leaves()
+            .map(|(t, _)| t.window().id().clone())
+            .zip(positions.into_iter().map(|(_, p)| p))
+            .collect()
+    }
+
+    /// Animates any leaf whose on-screen position changed from `prev` (keyed by window id).
+    fn animate_leaves_if_moved(&mut self, prev: &[(W::Id, Point<f64, Logical>)]) {
+        let new = self.leaf_positions_by_id();
+        for (tile, _) in self.root.leaves_mut() {
+            let id = tile.window().id();
+            let new_pos = new.iter().find(|(i, _)| i == id).map(|(_, p)| *p);
+            let prev_pos = prev.iter().find(|(i, _)| i == id).map(|(_, p)| *p);
+            if let (Some(new_pos), Some(prev_pos)) = (new_pos, prev_pos) {
+                if new_pos != prev_pos {
+                    tile.animate_move_from(prev_pos - new_pos);
+                }
+            }
+        }
     }
 
     /// Returns an iterator over (tile, data) pairs for the root's children (immutable).
@@ -5125,7 +5232,9 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, view_rect: Rectangle<f64, Logical>) {
-        let active_idx = self.active_tile_idx();
+        // `tiles_mut()` yields leaves in flat-leaf order, so compare against the active *leaf*
+        // index (which follows active_idx down the tree), not the root-level active child index.
+        let active_idx = self.root.path_for_leaf_index_from_active().unwrap_or(0);
         for (tile_idx, (tile, tile_off)) in self.tiles_mut().enumerate() {
             let is_active = is_active && tile_idx == active_idx;
 
@@ -5138,12 +5247,13 @@ impl<W: LayoutElement> Column<W> {
         // Extract all needed data before the mutable borrow of tab_header_mut().
         let config = self.tab_header().map(|ti| ti.config());
         if let Some(config) = config {
-            let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
+            let active_leaf_idx = self.root.path_for_leaf_index_from_active().unwrap_or(0);
+            let offsets: Vec<_> = self.leaf_positions().into_iter().map(|(_, p)| p).collect();
             let tabs: Vec<_> = self
                 .tiles_enumerated()
                 .zip(offsets)
                 .map(|((tile_idx, tile), tile_off)| {
-                    let is_active = tile_idx == active_idx;
+                    let is_active = tile_idx == active_leaf_idx;
                     let is_urgent = tile.window().is_urgent();
                     let tile_pos = tile_off + tile.render_offset();
                     TabInfo::from_tile(tile, tile_pos, is_active, is_urgent, &config)
@@ -5526,21 +5636,13 @@ impl<W: LayoutElement> Column<W> {
 
         let is_tabbed = self.is_tabbed();
 
-        // Check if the root has any nested (non-Leaf) children. If so, use the recursive
-        // layout path which handles nested splits/tabs. Otherwise, use the existing flat
-        // layout (which has important features like max_non_auto clamping, preset handling,
-        // etc. that the recursive path doesn't yet replicate).
+        // The flat cross-split path below has important features (max_non_auto clamping, preset
+        // handling, window/tile span conversion) that only apply to a normal vertically-stacked
+        // column or a tabbed column. Any main-axis split or any nested structure goes through the
+        // recursive path, which distributes space recursively and honors per-child minimums.
         let has_nested = self.root.has_nested_children();
-
-        // Handle Main-axis split: distribute main-axis span (width) among children,
-        // each child gets full cross-axis span (height).
         let root_is_main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
-        if root_is_main_split && !has_nested {
-            self.update_tile_sizes_main_split(animate, transaction, axis);
-            return;
-        }
-
-        if has_nested {
+        if has_nested || root_is_main_split {
             self.update_tile_sizes_recursive(animate, transaction, axis);
             return;
         }
@@ -5835,139 +5937,12 @@ impl<W: LayoutElement> Column<W> {
 
             tile.request_tile_size(size, animate, transaction);
         }
-    }
 
-    /// Layout for a Main-axis split root: distributes the column width among children,
-    /// each getting a main-axis portion and full cross-axis span.
-    fn update_tile_sizes_main_split(
-        &mut self,
-        animate: bool,
-        transaction: Transaction,
-        axis: AxisMap,
-    ) {
-        let working_size = self.working_area.size;
-        let gaps = self.options.layout.gaps;
-        let extra_size = self.extra_size();
-
-        // The cross-axis span for all children is the full working area height.
-        let cross_span = working_size.h - gaps * 2. - extra_size.h;
-        let cross_span = cross_span.max(1.);
-
-        // Compute min/max sizes for all children.
-        let min_sizes: Vec<_> = self
-            .tiles_enumerated()
-            .map(|(_, tile)| {
-                let mut s = axis.size_in(tile.min_size_nonfullscreen());
-                s.w = s.w.max(1.);
-                s.h = s.h.max(1.);
-                s
-            })
-            .collect();
-        let max_sizes: Vec<_> = self
-            .tiles_enumerated()
-            .map(|(_, tile)| axis.size_in(tile.max_size_nonfullscreen()))
-            .collect();
-
-        // Compute the column main-axis span (width).
-        let min_main_span = min_sizes
-            .iter()
-            .map(|s| NotNan::new(s.w).unwrap())
-            .max()
-            .map(NotNan::into_inner)
-            .unwrap_or(1.);
-        let max_main_span = max_sizes
-            .iter()
-            .filter_map(|s| {
-                if s.w == 0. { None } else { Some(NotNan::new(s.w).unwrap()) }
-            })
-            .min()
-            .map(NotNan::into_inner)
-            .unwrap_or(f64::from(i32::MAX));
-        let max_main_span = f64::max(max_main_span, min_main_span);
-
-        let desired_width = if self.is_full_width {
-            ColumnWidth::Proportion(1.)
-        } else {
-            self.width
-        };
-        let column_main_span = self.resolve_column_main_span(desired_width);
-        let column_main_span = f64::max(f64::min(column_main_span, max_main_span), min_main_span);
-
-        // Distribute main-axis span among children using the same weighted algorithm.
-        // Each child's span is determined by its data.span (Auto/Fixed/Preset).
-        let gap_span_left = gaps * (self.tiles_len() + 1) as f64;
-        let mut main_span_left = column_main_span - gap_span_left;
-        let mut auto_tiles_left = self.tiles_len();
-
-        // Collect the spans (in main-axis terms).
-        let mut main_spans: Vec<f64> = self
-            .data()
-            .iter()
-            .enumerate()
-            .map(|(idx, data)| match data.span {
-                ChildSpan::Auto { .. } => 0., // Will be filled in
-                ChildSpan::Fixed(span) => {
-                    let mut span = span;
-                    if max_sizes[idx].w > 0. {
-                        span = f64::min(span, max_sizes[idx].w);
-                    }
-                    span = f64::max(span, min_sizes[idx].w);
-                    main_span_left -= span;
-                    auto_tiles_left -= 1;
-                    span
-                }
-                ChildSpan::Preset(_) => {
-                    // Treat presets as auto for now in main splits.
-                    0.
-                }
-            })
-            .collect();
-
-        // Compute auto weights.
-        let total_weight: f64 = self
-            .data()
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, data)| {
-                if main_spans[idx] == 0. && matches!(data.span, ChildSpan::Auto { .. }) {
-                    if let ChildSpan::Auto { weight } = data.span {
-                        Some(weight)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-            .sum();
-
-        // Distribute remaining main-axis span among auto tiles.
-        let mut remaining = main_span_left;
-        let mut remaining_weight = total_weight;
-        for (idx, data) in self.data().iter().enumerate() {
-            if main_spans[idx] != 0. {
-                continue;
-            }
-            if let ChildSpan::Auto { weight } = data.span {
-                let factor = if remaining_weight > 0. {
-                    weight / remaining_weight
-                } else {
-                    1. / self.tiles_len() as f64
-                };
-                let span = (remaining * factor).max(1.);
-                main_spans[idx] = span;
-                remaining -= span;
-                remaining_weight -= weight;
-            }
-        }
-
-        // Now request sizes for all tiles.
-        let _active_tile_idx = self.active_tile_idx();
-        for (tile_idx, (_, tile)) in self.tiles_enumerated_mut().enumerate() {
-            let main_span = main_spans[tile_idx];
-            let size = axis.size_out(Size::from((main_span, cross_span)));
-            tile.request_tile_size(size, animate, Some(transaction.clone()));
-        }
+        // Keep each leaf's cached data in sync with its tile. Unlike the recursive path (which
+        // stores intended spans for positioning), the flat path's `data` mirrors the tiles, so
+        // refresh it here — otherwise a column that just switched out of the recursive path (e.g.
+        // tabbing a Main split) would keep stale sizes.
+        self.root.update_data(axis);
     }
 
     /// Recursive layout for columns with nested splits/tabs.
@@ -6006,20 +5981,30 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn width(&self) -> f64 {
-        let mut max_tile_main_span = self
-            .data()
-            .iter()
-            .map(|data| NotNan::new(data.size.w).unwrap())
-            .max()
-            .map(NotNan::into_inner)
-            .unwrap();
+        let gaps = self.options.layout.gaps;
+        // The column's main-axis extent depends on how its root arranges children:
+        // a Main split lays children side by side (sum + inter-child gaps), while a Cross
+        // split, a Tabbed node, or a lone Leaf all share the main axis (max).
+        let mut main_span = match &self.root {
+            TileNode::Leaf(tile) => self.axis().size_in(tile.tile_size()).w,
+            TileNode::Split { axis: SplitAxis::Main, data, .. } => {
+                let sum: f64 = data.iter().map(|d| d.size.w).sum();
+                sum + gaps * data.len().saturating_sub(1) as f64
+            }
+            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data
+                .iter()
+                .map(|data| NotNan::new(data.size.w).unwrap())
+                .max()
+                .map(NotNan::into_inner)
+                .unwrap_or(0.),
+        };
 
         if self.is_tabbed() && self.sizing_mode().is_normal() {
             let extra_size = self.tab_header().unwrap().extra_size(self.tiles_len(), self.scale);
-            max_tile_main_span += extra_size.w;
+            main_span += extra_size.w;
         }
 
-        max_tile_main_span
+        main_span
     }
 
     fn focus_index(&mut self, index: u8) {
@@ -6204,6 +6189,27 @@ impl<W: LayoutElement> Column<W> {
             .root
             .path_for_leaf_index(tile_idx)
             .unwrap_or_else(|| panic!("set_window_height: tile index {tile_idx} out of bounds"));
+
+        // A "height" is a span along the cross axis, so resize the child of the nearest
+        // cross-arranging ancestor (Cross split or Tabbed node) that contains this leaf — not the
+        // leaf's own span, which for a Main-split parent would be a *width*. If there is no such
+        // ancestor (e.g. a bare child of a Main split), a vertical resize is meaningless: the tile
+        // already fills the column's cross extent.
+        let path = {
+            let mut target_len = None;
+            for k in 0..path.len() {
+                if matches!(
+                    self.root.node_at(&path[..k]),
+                    TileNode::Split { axis: SplitAxis::Cross, .. } | TileNode::Tabbed { .. }
+                ) {
+                    target_len = Some(k + 1);
+                }
+            }
+            match target_len {
+                Some(len) => path[..len].to_vec(),
+                None => return,
+            }
+        };
 
         // Start by converting all heights to automatic, since only one window in the column can be
         // non-auto-height. If the current tile is already non-auto, however, we can skip that
@@ -6514,75 +6520,46 @@ impl<W: LayoutElement> Column<W> {
         origin
     }
 
-    // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
-    // borrowing. Note that this method's return value does not borrow the entire &Self!
-    fn tile_offsets_iter(
-        &self,
-        data: impl Iterator<Item = SplitChildData>,
-    ) -> impl Iterator<Item = Point<f64, Logical>> {
-        // FIXME: this should take into account always-center-single-column, which means that
-        // Column should somehow know when it is being centered due to being the single column on
-        // the workspace or some other reason.
-        let center_tiles_on_main_axis =
-            self.options.layout.center_focused_column == CenterFocusedColumn::Always;
-        let gap_span = self.options.layout.gaps;
-        let tabbed = self.is_tabbed();
-        let main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
-
-        // Does not include extra size from the tab indicator.
-        let max_tile_main_span = self
-            .data()
-            .iter()
-            .map(|data| NotNan::new(data.size.w).unwrap())
-            .max()
-            .map(NotNan::into_inner)
-            .unwrap_or(0.);
-
+    /// The single source of truth for on-screen leaf positions.
+    ///
+    /// Recursive tree geometry (from `TileNode::leaf_layout`) with main-axis centering and
+    /// interactive start-edge resize shift applied at the column level. Returns one
+    /// `(tile_ptr, position)` per leaf, in tree (flat-leaf) order. All rendering, hit-testing and
+    /// animation goes through this so they can never disagree.
+    fn leaf_positions(&self) -> Vec<(*const Tile<W>, Point<f64, Logical>)> {
         let origin = self.tiles_origin();
-        let mut next_tile_cross_pos = origin.y;
-        let mut next_tile_main_pos = origin.x;
+        let raw = self.root.leaf_layout(origin, self.options.layout.gaps);
 
-        // Chain with a dummy value to be able to get one past all tiles' cross-axis offsets.
-        let dummy = SplitChildData {
-            span: ChildSpan::auto_1(),
-            size: Size::default(),
-            interactively_resizing_by_start_edge: false,
-        };
-        let data = data.chain(iter::once(dummy));
+        // Centering / start-edge shift only applies to leaves that share the column's main-axis
+        // origin (no Main-split ancestor); the max main span is taken over just those leaves.
+        let center = self.options.layout.center_focused_column == CenterFocusedColumn::Always;
+        let max_main = raw
+            .iter()
+            .filter(|l| l.aligned)
+            .map(|l| l.main_size)
+            .fold(0., f64::max);
 
-        data.map(move |data| {
-            if main_split {
-                // In a Main-axis split, tiles are arranged along the main axis (x).
-                let cross_pos = origin.y;
-                let pos = Point::from((next_tile_main_pos, cross_pos));
-                next_tile_main_pos += data.size.w + gap_span;
-                pos
-            } else {
-                let main_pos = if center_tiles_on_main_axis {
-                    origin.x + (max_tile_main_span - data.size.w) / 2.
-                } else if data.interactively_resizing_by_start_edge {
-                    origin.x + max_tile_main_span - data.size.w
-                } else {
-                    origin.x
-                };
-                let pos = Point::from((main_pos, next_tile_cross_pos));
-
-                if !tabbed {
-                    next_tile_cross_pos += data.size.h + gap_span;
+        raw.into_iter()
+            .map(|l| {
+                let mut pos = l.pos;
+                if l.aligned {
+                    if center {
+                        pos.x = origin.x + (max_main - l.main_size) / 2.;
+                    } else if l.resizing_by_start {
+                        pos.x = origin.x + max_main - l.main_size;
+                    }
                 }
-
-                pos
-            }
-        })
+                (l.tile, pos)
+            })
+            .collect()
     }
 
     fn tile_offsets(&self) -> impl Iterator<Item = Point<f64, Logical>> + '_ {
-        self.tile_offsets_iter(self.data().iter().copied())
+        self.leaf_positions().into_iter().map(|(_, pos)| pos)
     }
 
     fn tile_offset(&self, tile_idx: usize) -> Point<f64, Logical> {
-        // Use recursive leaf offsets for nested splits.
-        let offsets = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
+        let offsets = self.leaf_positions();
         if let Some((_, pos)) = offsets.get(tile_idx) {
             return *pos;
         }
@@ -6598,93 +6575,63 @@ impl<W: LayoutElement> Column<W> {
     }
 
     pub fn tiles(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
-        self.tiles_enumerated()
-            .map(|(_, tile)| tile)
-            .zip(offsets)
+        let positions = self.leaf_positions();
+        self.root
+            .leaves()
+            .map(|(t, _)| t)
+            .zip(positions.into_iter().map(|(_, pos)| pos))
     }
 
     fn tiles_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
-        self.tiles_enumerated_mut()
-            .map(|(_, tile)| tile)
-            .zip(offsets)
+        let positions: Vec<_> = self.leaf_positions().into_iter().map(|(_, pos)| pos).collect();
+        self.root.leaves_mut().map(|(t, _)| t).zip(positions)
+    }
+
+    /// Builds the active-first render order over leaf indices.
+    fn render_order(&self, n: usize) -> (usize, Vec<usize>) {
+        let active = self.root.path_for_leaf_index_from_active().unwrap_or(0);
+        let mut order = Vec::with_capacity(n);
+        if active < n {
+            order.push(active);
+        }
+        for i in 0..n {
+            if i != active {
+                order.push(i);
+            }
+        }
+        (active, order)
     }
 
     fn tiles_in_render_order(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        let is_tabbed = self.is_tabbed();
-        let rest_visible = !is_tabbed;
+        let rest_visible = !self.is_tabbed();
+        let positions = self.leaf_positions();
+        let (active, order) = self.render_order(positions.len());
+        let leaves: Vec<&Tile<W>> = self.root.leaves().map(|(t, _)| t).collect();
 
-        // Use recursive leaf offsets for nested split support.
-        let all_offsets: Vec<_> = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
-
-        // Build render order: active leaf first, then the rest.
-        // For nested splits, the "active" leaf is found by following active_idx down the tree.
-        // Find which flat leaf index is the active one.
-        let active_leaf_idx = self.root.path_for_leaf_index_from_active();
-        let active_leaf_idx = active_leaf_idx.unwrap_or(0);
-
-        let mut order: Vec<usize> = Vec::with_capacity(all_offsets.len());
-        if active_leaf_idx < all_offsets.len() {
-            order.push(active_leaf_idx);
-        }
-        for i in 0..all_offsets.len() {
-            if i != active_leaf_idx {
-                order.push(i);
-            }
-        }
-
-        order
-            .into_iter()
-            .zip(all_offsets)
-            .map(move |(idx, (_, pos))| {
-                let visible = idx == active_leaf_idx || rest_visible;
-                // Get the tile by flat index (recursive).
-                let tile = self.root.leaves().nth(idx).map(|(t, _)| t).unwrap();
-                (tile, pos, visible)
-            })
+        order.into_iter().map(move |idx| {
+            let visible = idx == active || rest_visible;
+            (leaves[idx], positions[idx].1, visible)
+        })
     }
 
     fn tiles_in_render_order_mut(
         &mut self,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        // Use recursive leaf offsets for nested split support.
-        let offsets: Vec<_> = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
+        let positions: Vec<_> = self.leaf_positions().into_iter().map(|(_, pos)| pos).collect();
+        let (_active, order) = self.render_order(positions.len());
 
-        // Find the active leaf's flat index.
-        let active_leaf_idx = self.root.path_for_leaf_index_from_active().unwrap_or(0);
+        let leaf_ptrs: Vec<*mut Tile<W>> =
+            self.root.leaves_mut().map(|(t, _)| t as *mut _).collect();
 
-        // Build render order: active first, then the rest.
-        let mut order: Vec<usize> = Vec::with_capacity(offsets.len());
-        if active_leaf_idx < offsets.len() {
-            order.push(active_leaf_idx);
-        }
-        for i in 0..offsets.len() {
-            if i != active_leaf_idx {
-                order.push(i);
-            }
-        }
-
-        // Collect leaves in flat order, then reorder to render order.
-        let leaves: Vec<&mut Tile<W>> = self.root.leaves_mut().map(|(t, _)| t).collect();
-        let ordered_offsets: Vec<_> = order.iter().map(|&i| offsets[i].1).collect();
-        // Reorder leaves to match render order using raw pointers.
-        let mut leaf_ptrs: Vec<*mut Tile<W>> = leaves.into_iter().map(|t| t as *mut _).collect();
-        let ordered_leaves: Vec<&mut Tile<W>> = order
-            .iter()
-            .map(|&i| {
-                // SAFETY: leaf_ptrs were derived from &mut self.root, and we hold &mut self.
-                // The pointers don't overlap and are valid for the lifetime of self.
-                unsafe { &mut *leaf_ptrs[i] }
-            })
-            .collect();
-
-        ordered_offsets
-            .into_iter()
-            .zip(ordered_leaves)
-            .map(|(pos, tile)| (tile, pos))
+        order.into_iter().map(move |idx| {
+            // SAFETY: `order` is a permutation of distinct leaf indices, so each pointer is
+            // dereferenced exactly once and they never alias. All were derived from &mut self.root.
+            let ptr = leaf_ptrs[idx];
+            let tile = unsafe { &mut *ptr };
+            (tile, positions[idx])
+        })
     }
 
     fn tab_indicator_area(&self) -> Rectangle<f64, Logical> {
@@ -6800,10 +6747,15 @@ impl<W: LayoutElement> Column<W> {
             assert_eq!(self.map_size_out(self.view_size), tile.view_size());
             tile.verify_invariants();
 
-            // Skip the data consistency check for nested columns — tiles_and_data()
-            // only yields root-level Leaf children, so the data pairing is incorrect
-            // for tiles inside nested splits.
-            if !has_nested {
+            // Skip the data consistency check for columns laid out by the recursive path
+            // (any nested structure, or a Main-axis split root). There, `request_sizes` stores
+            // the *intended* per-child span in `data.size` — which is what positioning needs —
+            // rather than the tile's currently-committed size, so the two legitimately differ
+            // until the window commits its configure. The flat cross-split path instead derives
+            // `data` from the tiles, so the check is meaningful there.
+            let root_is_main_split =
+                matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+            if !has_nested && !root_is_main_split {
                 let mut data2 = *data;
                 data2.update(tile, self.axis());
                 assert_eq!(data, &data2, "tile data must be up to date");

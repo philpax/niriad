@@ -654,6 +654,7 @@ impl<W: LayoutElement> Monitor<W> {
         column_idx: usize,
         tile_idx: usize,
         axis: SplitAxis,
+        place_after: bool,
         tile: Tile<W>,
         activate: bool,
         // FIXME: Refactor ActivateWindow enum to make this better.
@@ -661,7 +662,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile_to_split(column_idx, tile_idx, axis, tile, activate);
+        workspace.add_tile_to_split(column_idx, tile_idx, axis, place_after, tile, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {

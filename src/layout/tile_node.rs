@@ -80,6 +80,21 @@ impl SplitChildData {
     }
 }
 
+/// Per-leaf layout metadata produced by [`TileNode::leaf_layout`].
+///
+/// `tile` is a raw pointer so callers can capture geometry before a subsequent mutable walk
+/// without fighting the borrow checker; it is only valid for as long as the tree is unchanged.
+pub struct LeafLayout<W: LayoutElement> {
+    pub tile: *const Tile<W>,
+    pub pos: Point<f64, Logical>,
+    /// The leaf's main-axis size (axis-mapped width), used for centering.
+    pub main_size: f64,
+    /// Whether the leaf is being interactively resized by its start edge.
+    pub resizing_by_start: bool,
+    /// Whether the leaf shares the column's main-axis origin (no Main split ancestor).
+    pub aligned: bool,
+}
+
 /// A recursive tile tree node.
 ///
 /// A column's root is a `TileNode`. In Phase 1, the tree is effectively flat: the root is
@@ -251,56 +266,57 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// Captures (tile_ptr, offset) pairs for all leaves (recursive).
-    /// Returns raw pointers to avoid borrow conflicts with subsequent mutations.
-    pub fn leaf_offsets_ptr(
+    /// Collects full layout metadata for every leaf in tree order (recursive).
+    ///
+    /// This is the single source of truth for leaf geometry. It computes each leaf's
+    /// position by walking the tree, and additionally reports the leaf's main-axis size, its
+    /// interactive-resize flag, and whether it is "main-axis aligned" — i.e. reachable from the
+    /// root without crossing a Main split, so it shares the column's main-axis origin and is
+    /// eligible for main-axis centering. Centering itself is applied by the caller (the column),
+    /// which knows the relevant options.
+    pub fn leaf_layout(&self, origin: Point<f64, Logical>, gaps: f64) -> Vec<LeafLayout<W>> {
+        let mut out = Vec::new();
+        self.collect_leaf_layout(origin, gaps, true, &mut out);
+        out
+    }
+
+    fn collect_leaf_layout(
         &self,
         origin: Point<f64, Logical>,
         gaps: f64,
-    ) -> Vec<(*const Tile<W>, Point<f64, Logical>)> {
-        let mut results = Vec::new();
-        self.collect_leaves_with_offsets_ptr(origin, gaps, &mut results);
-        results
-    }
-
-    /// Animates all leaves that have moved from their previous positions (recursive).
-    /// `prev_offsets` is a list of (tile_ptr, prev_position) pairs captured before layout change.
-    pub fn animate_leaves_if_moved(
-        &mut self,
-        origin: Point<f64, Logical>,
-        gaps: f64,
-        prev_offsets: &[(*const Tile<W>, Point<f64, Logical>)],
-    ) {
-        let mut new_offsets: Vec<(*const Tile<W>, Point<f64, Logical>)> = Vec::new();
-        self.collect_leaves_with_offsets_ptr(origin, gaps, &mut new_offsets);
-        for (tile_ptr, new_pos) in new_offsets {
-            if let Some((_, prev_pos)) = prev_offsets.iter().find(|(t, _)| *t == tile_ptr) {
-                if new_pos != *prev_pos {
-                    // SAFETY: tile_ptr was derived from &self, and we're mutating the
-                    // tile's animation state only. The pointer is valid for the lifetime
-                    // of self, and we hold &mut self.
-                    let tile = unsafe { &mut *tile_ptr.cast_mut() };
-                    tile.animate_move_from(*prev_pos - new_pos);
-                }
-            }
-        }
-    }
-
-    fn collect_leaves_with_offsets_ptr(
-        &self,
-        origin: Point<f64, Logical>,
-        gaps: f64,
-        out: &mut Vec<(*const Tile<W>, Point<f64, Logical>)>,
+        aligned: bool,
+        out: &mut Vec<LeafLayout<W>>,
     ) {
         match self {
             TileNode::Leaf(tile) => {
-                out.push((tile as *const _, origin));
+                // A bare leaf root: no parent split, so no main size/centering applies.
+                out.push(LeafLayout {
+                    tile: tile as *const _,
+                    pos: origin,
+                    main_size: 0.,
+                    resizing_by_start: false,
+                    aligned: false,
+                });
             }
             TileNode::Split { axis: split_axis, children, data, .. } => {
                 let is_main = *split_axis == SplitAxis::Main;
+                // Children of a Main split are spread along the main axis, so they are no longer
+                // aligned to the column's main origin.
+                let child_aligned = aligned && !is_main;
                 let mut pos = origin;
                 for (i, child) in children.iter().enumerate() {
-                    child.collect_leaves_with_offsets_ptr(pos, gaps, out);
+                    match child {
+                        TileNode::Leaf(tile) => out.push(LeafLayout {
+                            tile: tile as *const _,
+                            pos,
+                            main_size: data.get(i).map_or(0., |d| d.size.w),
+                            resizing_by_start: data
+                                .get(i)
+                                .is_some_and(|d| d.interactively_resizing_by_start_edge),
+                            aligned: child_aligned,
+                        }),
+                        _ => child.collect_leaf_layout(pos, gaps, child_aligned, out),
+                    }
                     if i < data.len() {
                         if is_main {
                             pos.x += data[i].size.w + gaps;
@@ -310,9 +326,20 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 }
             }
-            TileNode::Tabbed { children, .. } => {
-                for child in children.iter() {
-                    child.collect_leaves_with_offsets_ptr(origin, gaps, out);
+            TileNode::Tabbed { children, data, .. } => {
+                for (i, child) in children.iter().enumerate() {
+                    match child {
+                        TileNode::Leaf(tile) => out.push(LeafLayout {
+                            tile: tile as *const _,
+                            pos: origin,
+                            main_size: data.get(i).map_or(0., |d| d.size.w),
+                            resizing_by_start: data
+                                .get(i)
+                                .is_some_and(|d| d.interactively_resizing_by_start_edge),
+                            aligned,
+                        }),
+                        _ => child.collect_leaf_layout(origin, gaps, aligned, out),
+                    }
                 }
             }
         }
@@ -1186,53 +1213,85 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 }).collect();
 
-                // Separate fixed and auto spans.
-                let mut spans: Vec<f64> = Vec::with_capacity(count);
+                assert_eq!(data.len(), count, "data.len ({}) != children.len ({}) in {:?} split", data.len(), count, split_axis);
+
+                // Resolved span per child, and whether it has been pinned to a fixed value yet.
+                // Auto/Preset children start unresolved and get distributed below; fixed children
+                // (and any auto child whose minimum exceeds its weighted share) are pinned.
+                let mut spans: Vec<f64> = vec![0.; count];
+                let mut resolved: Vec<bool> = vec![false; count];
                 let mut span_left = distributable;
                 let mut total_weight: f64 = 0.;
 
-                assert_eq!(data.len(), count, "data.len ({}) != children.len ({}) in {:?} split", data.len(), count, split_axis);
+                // Per-child weight for auto/preset distribution (presets are treated as auto-1
+                // for now). Fixed children carry no weight.
+                let weights: Vec<f64> = data
+                    .iter()
+                    .map(|d| match d.span {
+                        ChildSpan::Auto { weight } => weight,
+                        ChildSpan::Preset(_) => 1.,
+                        ChildSpan::Fixed(_) => 0.,
+                    })
+                    .collect();
 
                 for (i, d) in data.iter().enumerate() {
-                    match d.span {
-                        ChildSpan::Auto { weight } => {
-                            spans.push(0.);
-                            total_weight += weight;
-                        }
-                        ChildSpan::Fixed(span) => {
-                            let s = span.max(min_spans[i]);
-                            spans.push(s);
-                            span_left -= s;
-                        }
-                        ChildSpan::Preset(_) => {
-                            // Treat presets as auto for now.
-                            spans.push(0.);
-                            total_weight += 1.;
-                        }
+                    if let ChildSpan::Fixed(span) = d.span {
+                        let s = span.max(min_spans[i]).round().max(1.);
+                        spans[i] = s;
+                        resolved[i] = true;
+                        span_left -= s;
+                    } else {
+                        total_weight += weights[i];
                     }
                 }
 
-                // Distribute remaining span among auto children.
-                let mut remaining = span_left;
-                let mut remaining_weight = total_weight;
-                for (i, d) in data.iter().enumerate() {
-                    if spans[i] != 0. {
-                        continue;
+                // Iteratively distribute the remaining span among auto children, honoring each
+                // child's minimum. If a child's weighted share is below its minimum, pin it to the
+                // minimum and re-run, since the other children now have less to share. This mirrors
+                // the flat-column algorithm in `update_tile_sizes` so nested splits reach the same
+                // steady state. Spans are rounded to integer logical pixels (Wayland requirement),
+                // which also guarantees the committed tile size matches the cached span exactly.
+                let mut auto_left = count - resolved.iter().filter(|r| **r).count();
+                'outer: while auto_left > 0 {
+                    let mut remaining = span_left;
+                    let mut remaining_weight = total_weight;
+                    for i in 0..count {
+                        if resolved[i] {
+                            continue;
+                        }
+                        let weight = weights[i];
+                        let factor = if remaining_weight > 0. {
+                            weight / remaining_weight
+                        } else {
+                            1. / auto_left as f64
+                        };
+                        let share = remaining * factor;
+                        if min_spans[i] > share {
+                            let s = min_spans[i].round().max(1.);
+                            spans[i] = s;
+                            resolved[i] = true;
+                            span_left -= s;
+                            total_weight -= weight;
+                            auto_left -= 1;
+                            continue 'outer;
+                        }
+                        let s = share.round().max(1.);
+                        spans[i] = s;
+                        remaining -= s;
+                        remaining_weight -= weight;
                     }
-                    let weight = match d.span {
-                        ChildSpan::Auto { weight } => weight,
-                        ChildSpan::Preset(_) => 1.,
-                        ChildSpan::Fixed(_) => unreachable!(),
-                    };
-                    let factor = if remaining_weight > 0. {
-                        weight / remaining_weight
-                    } else {
-                        1. / count as f64
-                    };
-                    let s = (remaining * factor).max(1.);
-                    spans[i] = s;
-                    remaining -= s;
-                    remaining_weight -= weight;
+
+                    // All minimums satisfied: pin the computed spans.
+                    for i in 0..count {
+                        if resolved[i] {
+                            continue;
+                        }
+                        resolved[i] = true;
+                        span_left -= spans[i];
+                        total_weight -= weights[i];
+                        auto_left -= 1;
+                    }
+                    debug_assert_eq!(auto_left, 0);
                 }
 
                 // Now recurse into each child with its allocated span.
