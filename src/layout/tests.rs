@@ -4780,6 +4780,49 @@ fn wide_window(id: usize) -> TestWindowParams {
     p
 }
 
+/// Builds a row (col 0: Main[1,2]) + window 3 in col 1, drags window 3 onto col 0 at the given
+/// cursor and drops it, then returns the settled window geometries (1, 2, 3).
+fn drag_window3_onto_row(px: f64, py: f64) -> [Point<f64, Logical>; 3] {
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::AddWindow { params: wide_window(3) },
+    ]);
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 3, output_idx: 1, px: 900., py: 360. },
+            Op::InteractiveMoveUpdate { window: 3, dx: -700., dy: 0., output_idx: 1, px, py },
+            Op::InteractiveMoveEnd { window: 3 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    [
+        window_geo(&layout, 1).unwrap().0,
+        window_geo(&layout, 2).unwrap().0,
+        window_geo(&layout, 3).unwrap().0,
+    ]
+}
+
+#[test]
+fn drag_below_a_row_stacks_below_drag_above_stacks_above() {
+    // Dropping in the bottom region of the row puts window 3 below it (greater y), keeping 1 and 2
+    // as the top row (shared, smaller y).
+    let [p1, p2, p3] = drag_window3_onto_row(166., 600.);
+    assert_eq!(p1.y, p2.y, "the row stays a row");
+    assert!(p3.y > p1.y, "drag to the bottom should stack the window BELOW the row (p3={p3:?}, row y={})", p1.y);
+
+    // Dropping in the top region puts it above (smaller y than the row).
+    let [p1, p2, p3] = drag_window3_onto_row(166., 100.);
+    assert_eq!(p1.y, p2.y, "the row stays a row");
+    assert!(p3.y < p1.y, "drag to the top should stack the window ABOVE the row (p3={p3:?}, row y={})", p1.y);
+}
+
 #[test]
 fn drag_into_row_targets_the_tile_under_the_cursor() {
     use super::monitor::InsertPosition;
