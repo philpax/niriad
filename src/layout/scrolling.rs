@@ -1368,20 +1368,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let leaf_idx = tile_idx.unwrap_or(target_column.tiles_len());
-        let prev_active_root = target_column.root.active_idx();
         let prev_active_id = target_column.active_tile().window().id().clone();
 
-        let root_idx = target_column.add_tile_at(leaf_idx, tile);
+        // add_tile_at handles insertion (including wrapping a Main row), activation and animation.
+        let new_leaf_idx = target_column.add_tile_at(leaf_idx, tile, activate);
 
-        if activate {
-            target_column.set_active_tile_idx(root_idx);
-            target_column.active_tile_mut().ensure_alpha_animates_to_1();
-            if self.active_column_idx != col_idx {
-                self.activate_column(col_idx);
-            }
-        } else if root_idx <= prev_active_root {
-            // Keep the previously-active row active after the insert shifted it over.
-            target_column.set_active_tile_idx(prev_active_root + 1);
+        if activate && self.active_column_idx != col_idx {
+            self.activate_column(col_idx);
         }
 
         let target_column = &mut self.columns[col_idx];
@@ -1394,7 +1387,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 }
             } else {
                 // Added a background tab; fade it out (it sits behind the active one).
-                let new_leaf_idx = target_column.root_child_first_leaf_idx(root_idx);
                 target_column.tile_mut(new_leaf_idx).animate_alpha(1., 0., anim);
             }
         }
@@ -5405,18 +5397,17 @@ impl<W: LayoutElement> Column<W> {
         self.activate_idx(idx);
     }
 
-    /// Inserts `tile` as a new top-level row of the column at flat-leaf position `leaf_idx`.
-    /// Returns the root child index the new leaf ends up at.
-    fn add_tile_at(&mut self, leaf_idx: usize, mut tile: Tile<W>) -> usize {
+    /// Inserts `tile` as a new top-level row of the column at flat-leaf position `leaf_idx`
+    /// (a vertical / cross-axis insertion). If the column root is itself a horizontal Main split
+    /// (the whole column is a single row), it is wrapped in a Cross split so the new tile becomes a
+    /// row above (`leaf_idx == 0`) or below it. Activates the new tile if `activate`. Returns the
+    /// new leaf's flat-leaf index.
+    fn add_tile_at(&mut self, leaf_idx: usize, mut tile: Tile<W>, activate: bool) -> usize {
         tile.update_config(
             self.map_size_out(self.view_size),
             self.scale,
             self.options.clone(),
         );
-
-        // `leaf_idx` is a flat-leaf position; insert a new top-level row at the corresponding root
-        // child boundary (correct for nested columns, and never out of bounds).
-        let root_idx = self.leaf_idx_to_root_child(leaf_idx);
 
         // Inserting a tile pushes other tiles over; capture their positions (by id) to animate.
         let prev = self.leaf_positions_by_id();
@@ -5426,11 +5417,64 @@ impl<W: LayoutElement> Column<W> {
             self.is_pending_maximized = false;
         }
 
-        self.insert_tile(root_idx, tile);
+        let mut new_data = SplitChildData::new_auto();
+        new_data.update(&tile, self.axis());
+
+        let new_root_idx;
+        if matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            // The column is a single horizontal row; wrap it in a Cross split so the new tile lands
+            // above or below the whole row rather than beside its tiles.
+            let above = leaf_idx == 0;
+            let old_root = std::mem::replace(
+                &mut self.root,
+                TileNode::Split {
+                    axis: SplitAxis::Cross,
+                    children: Vec::new(),
+                    active_idx: 0,
+                    data: Vec::new(),
+                },
+            );
+            let old_data = SplitChildData::new_auto();
+            let (children, data, new_idx) = if above {
+                (vec![TileNode::Leaf(tile), old_root], vec![new_data, old_data], 0)
+            } else {
+                (vec![old_root, TileNode::Leaf(tile)], vec![old_data, new_data], 1)
+            };
+            self.root = TileNode::Split {
+                axis: SplitAxis::Cross,
+                active_idx: if activate { new_idx } else { 1 - new_idx },
+                children,
+                data,
+            };
+            new_root_idx = new_idx;
+        } else {
+            // Cross stack / tabbed / lone leaf: insert at the matching root-child boundary (a new
+            // row, or a new tab for a tabbed column).
+            let root_idx = self.leaf_idx_to_root_child(leaf_idx);
+            let old_active = self.root.active_idx();
+            self.insert_tile(root_idx, tile);
+            let new_active = if activate {
+                root_idx
+            } else if old_active >= root_idx {
+                old_active + 1
+            } else {
+                old_active
+            };
+            self.root.set_active_idx(new_active);
+            new_root_idx = root_idx;
+        }
+
+        if activate {
+            self.root
+                .leaf_at_mut(&[new_root_idx])
+                .ensure_alpha_animates_to_1();
+        }
+
         self.update_tile_sizes(true);
         self.animate_leaves_if_moved(&prev);
 
-        root_idx
+        // The new tile is a direct root-child leaf; return its flat-leaf index.
+        self.root_child_first_leaf_idx(new_root_idx)
     }
 
     fn update_window(&mut self, window: &W::Id) {
@@ -6581,13 +6625,18 @@ impl<W: LayoutElement> Column<W> {
         if let Some((_, pos)) = offsets.get(tile_idx) {
             return *pos;
         }
-        // Handle the "one past the end" case (used by remove_tile_by_idx to
-        // compute the gap after the last tile). Return the position after the last tile.
+        // Handle the "one past the end" case: the position just below the last tile (used by the
+        // insert hint for "below the column" and by remove for gap deltas). Include the last tile's
+        // cross size so it lands at the column's bottom, not back at the last tile's top.
         if tile_idx == offsets.len() && !offsets.is_empty() {
-            let (_, last_pos) = offsets[offsets.len() - 1];
-            // The "next" position is last_pos + gap (simplified — doesn't account
-            // for tile height, but this is only used for delta computation).
-            return Point::from((last_pos.x, last_pos.y + self.options.layout.gaps));
+            let last = offsets.len() - 1;
+            let (_, last_pos) = offsets[last];
+            let last_h = self
+                .root
+                .path_for_leaf_index(last)
+                .and_then(|p| self.root.leaf_data(&p))
+                .map_or(0., |d| d.size.h);
+            return Point::from((last_pos.x, last_pos.y + last_h + self.options.layout.gaps));
         }
         panic!("tile_offset: index {tile_idx} out of bounds (leaves: {})", offsets.len())
     }

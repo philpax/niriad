@@ -4773,6 +4773,35 @@ fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
 }
 
 #[test]
+fn vertical_insert_into_a_row_stacks_above_below_not_beside() {
+    // Column 0 is a horizontal row (Main split of windows 1 and 2). Moving window 3 into it
+    // vertically (consume) must wrap the row in a Cross split so window 3 becomes a new row, not a
+    // third cell beside the others.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ConsumeOrExpelWindowLeft { id: None },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert_eq!(tile_count(&layout), 3);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    let (p3, _) = window_geo(&layout, 3).unwrap();
+    // Windows 1 and 2 remain the side-by-side row.
+    assert_eq!(p1.y, p2.y, "the row stays a row");
+    assert_ne!(p1.x, p2.x, "the row stays a row");
+    // Window 3 lands on a different row (different y), not beside 1/2.
+    assert_ne!(p3.y, p1.y, "consumed window stacks as a new row, not into the row");
+}
+
+#[test]
 fn split_nests_at_target_leaf_not_root() {
     // Repeatedly splitting the active window builds a genuinely nested tree rather than appending
     // at the column root. Final shape: Cross[1, Main[2, Cross[3, 4]]] (window 4 stacked under 3,
