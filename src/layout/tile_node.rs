@@ -1049,6 +1049,7 @@ impl<W: LayoutElement> TileNode<W> {
         available: Size<f64, Logical>,
         gaps: f64,
         axis: AxisMap,
+        scale: f64,
         animate: bool,
         transaction: Option<&Transaction>,
     ) {
@@ -1148,7 +1149,7 @@ impl<W: LayoutElement> TileNode<W> {
                     // Store the computed size in data for position computation.
                     data[i].size = child_size;
 
-                    child.request_sizes(child_size, gaps, axis, animate, transaction);
+                    child.request_sizes(child_size, gaps, axis, scale, animate, transaction);
                 }
 
                 // Ensure active_idx is valid.
@@ -1163,7 +1164,7 @@ impl<W: LayoutElement> TileNode<W> {
                 }
 
                 // All children get the same span.
-                let extra = tab_header.extra_size(count, 1.0);
+                let extra = tab_header.extra_size(count, scale);
                 let child_cross = (available.h - extra.h).max(1.);
                 let child_size = Size::from((available.w, child_cross));
 
@@ -1172,7 +1173,7 @@ impl<W: LayoutElement> TileNode<W> {
                     let is_active = i == *active_idx;
                     // In tabbed mode, only the active child participates in the transaction.
                     let child_txn = if is_active { transaction } else { None };
-                    child.request_sizes(child_size, gaps, axis, animate, child_txn);
+                    child.request_sizes(child_size, gaps, axis, scale, animate, child_txn);
                 }
             }
         }

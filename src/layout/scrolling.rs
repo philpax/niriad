@@ -5989,7 +5989,7 @@ impl<W: LayoutElement> Column<W> {
         ));
 
         self.root
-            .request_sizes(available, gaps, axis, animate, Some(&transaction));
+            .request_sizes(available, gaps, axis, self.scale, animate, Some(&transaction));
     }
 
     fn width(&self) -> f64 {
