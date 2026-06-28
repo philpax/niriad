@@ -208,6 +208,117 @@ impl<W: LayoutElement> TileNode<W> {
         })
     }
 
+    /// Returns true if any direct child is a Split or Tabbed (i.e. nesting exists).
+    pub fn has_nested_children(&self) -> bool {
+        match self {
+            TileNode::Leaf(_) => false,
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                children.iter().any(|c| !matches!(c, TileNode::Leaf(_)))
+            }
+        }
+    }
+
+    /// Returns the offset of the active leaf (recursive).
+    /// `origin` is the starting position, `gaps` is the inter-tile gap.
+    pub fn active_leaf_offset(
+        &self,
+        origin: Point<f64, Logical>,
+        gaps: f64,
+        axis: AxisMap,
+    ) -> Point<f64, Logical> {
+        match self {
+            TileNode::Leaf(_) => origin,
+            TileNode::Split { axis: split_axis, children, data, active_idx } => {
+                let is_main = *split_axis == SplitAxis::Main;
+                // Adjust origin for siblings before the active child.
+                let mut offset = origin;
+                for (i, d) in data.iter().enumerate() {
+                    if i == *active_idx {
+                        break;
+                    }
+                    if is_main {
+                        offset.x += d.size.w + gaps;
+                    } else {
+                        offset.y += d.size.h + gaps;
+                    }
+                }
+                children[*active_idx].active_leaf_offset(offset, gaps, axis)
+            }
+            TileNode::Tabbed { children, active_idx, tab_header, .. } => {
+                // All children are at the same position (tabbed), offset by tab header.
+                let _ = tab_header;
+                children[*active_idx].active_leaf_offset(origin, gaps, axis)
+            }
+        }
+    }
+
+    /// Captures (tile_ptr, offset) pairs for all leaves (recursive).
+    /// Returns raw pointers to avoid borrow conflicts with subsequent mutations.
+    pub fn leaf_offsets_ptr(
+        &self,
+        origin: Point<f64, Logical>,
+        gaps: f64,
+    ) -> Vec<(*const Tile<W>, Point<f64, Logical>)> {
+        let mut results = Vec::new();
+        self.collect_leaves_with_offsets_ptr(origin, gaps, &mut results);
+        results
+    }
+
+    /// Animates all leaves that have moved from their previous positions (recursive).
+    /// `prev_offsets` is a list of (tile_ptr, prev_position) pairs captured before layout change.
+    pub fn animate_leaves_if_moved(
+        &mut self,
+        origin: Point<f64, Logical>,
+        gaps: f64,
+        prev_offsets: &[(*const Tile<W>, Point<f64, Logical>)],
+    ) {
+        let mut new_offsets: Vec<(*const Tile<W>, Point<f64, Logical>)> = Vec::new();
+        self.collect_leaves_with_offsets_ptr(origin, gaps, &mut new_offsets);
+        for (tile_ptr, new_pos) in new_offsets {
+            if let Some((_, prev_pos)) = prev_offsets.iter().find(|(t, _)| *t == tile_ptr) {
+                if new_pos != *prev_pos {
+                    // SAFETY: tile_ptr was derived from &self, and we're mutating the
+                    // tile's animation state only. The pointer is valid for the lifetime
+                    // of self, and we hold &mut self.
+                    let tile = unsafe { &mut *tile_ptr.cast_mut() };
+                    tile.animate_move_from(*prev_pos - new_pos);
+                }
+            }
+        }
+    }
+
+    fn collect_leaves_with_offsets_ptr(
+        &self,
+        origin: Point<f64, Logical>,
+        gaps: f64,
+        out: &mut Vec<(*const Tile<W>, Point<f64, Logical>)>,
+    ) {
+        match self {
+            TileNode::Leaf(tile) => {
+                out.push((tile as *const _, origin));
+            }
+            TileNode::Split { axis: split_axis, children, data, .. } => {
+                let is_main = *split_axis == SplitAxis::Main;
+                let mut pos = origin;
+                for (i, child) in children.iter().enumerate() {
+                    child.collect_leaves_with_offsets_ptr(pos, gaps, out);
+                    if i < data.len() {
+                        if is_main {
+                            pos.x += data[i].size.w + gaps;
+                        } else {
+                            pos.y += data[i].size.h + gaps;
+                        }
+                    }
+                }
+            }
+            TileNode::Tabbed { children, .. } => {
+                for child in children.iter() {
+                    child.collect_leaves_with_offsets_ptr(origin, gaps, out);
+                }
+            }
+        }
+    }
+
     /// Returns the active leaf (following active_idx down the tree).
     pub fn active_leaf(&self) -> &Tile<W> {
         match self {
@@ -590,6 +701,34 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Returns the path to the Nth leaf (flat index → path).
+    pub fn path_for_leaf_index(&self, idx: usize) -> Option<TilePath> {
+        let mut current = idx;
+        self.path_for_leaf_index_inner(&mut current)
+    }
+
+    fn path_for_leaf_index_inner(&self, idx: &mut usize) -> Option<TilePath> {
+        match self {
+            TileNode::Leaf(_) => {
+                if *idx == 0 {
+                    Some(Vec::new())
+                } else {
+                    *idx -= 1;
+                    None
+                }
+            }
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                for (i, child) in children.iter().enumerate() {
+                    if let Some(mut path) = child.path_for_leaf_index_inner(idx) {
+                        path.insert(0, i);
+                        return Some(path);
+                    }
+                }
+                None
+            }
+        }
+    }
+
     /// Returns the index of the active child (for Split/Tabbed nodes).
     pub fn active_idx(&self) -> usize {
         match self {
@@ -744,14 +883,33 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// Recursively collapses all single-child splits/tabs in this subtree.
+    /// Recursively collapses single-child splits/tabs and removes empty children in this subtree.
     pub fn collapse_all_single_child(&mut self) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Split { children, data, active_idx, .. }
+            | TileNode::Tabbed { children, data, active_idx, .. } => {
+                // First, recurse into children.
                 for child in children.iter_mut() {
                     child.collapse_all_single_child();
                 }
+                // Remove empty children (can happen when a nested split's last child was removed).
+                let mut i = 0;
+                while i < children.len() {
+                    let is_empty = matches!(&children[i], TileNode::Split { children: c, .. } | TileNode::Tabbed { children: c, .. } if c.is_empty());
+                    if is_empty {
+                        children.remove(i);
+                        data.remove(i);
+                        if *active_idx > i {
+                            *active_idx -= 1;
+                        } else if *active_idx == i && !children.is_empty() {
+                            *active_idx = (*active_idx).min(children.len() - 1);
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                // Then collapse self if single child.
                 self.collapse_single_child();
             }
         }
@@ -798,5 +956,179 @@ impl<W: LayoutElement> TileNode<W> {
         }
         max_span = max_span.max(min_span);
         (min_span, max_span)
+    }
+
+    /// Recursively request tile sizes for all leaves in this subtree.
+    ///
+    /// `available` is the total size allocated to this node (in axis-mapped coordinates:
+    /// main = w, cross = h). For a Leaf, this directly requests the tile size. For a Split,
+    /// it distributes the appropriate axis span among children and recurses. For a Tabbed
+    /// node, all children get the same span.
+    ///
+    /// `gaps` is the inter-tile gap. `axis` is the axis map for coordinate conversion.
+    /// `transaction` is the transaction to use; pass `None` for hidden (non-active tabbed) children.
+    pub fn request_sizes(
+        &mut self,
+        available: Size<f64, Logical>,
+        gaps: f64,
+        axis: AxisMap,
+        animate: bool,
+        transaction: Option<&Transaction>,
+    ) {
+        match self {
+            TileNode::Leaf(tile) => {
+                // Clamp to positive values to avoid panics in to_i32_floor.
+                let size = Size::from((available.w.max(1.), available.h.max(1.)));
+                tile.request_tile_size(axis.size_out(size), animate, transaction.cloned());
+            }
+            TileNode::Split { axis: split_axis, children, data, active_idx } => {
+                let count = children.len();
+                if count == 0 {
+                    return;
+                }
+
+                let is_main = *split_axis == SplitAxis::Main;
+
+                // Determine which axis we're distributing along.
+                // For a Main split: distribute along w (main axis), each child gets full h.
+                // For a Cross split: distribute along h (cross axis), each child gets full w.
+                let gap_total = gaps * (count + 1) as f64;
+
+                let (distributable, per_child_other);
+                if is_main {
+                    distributable = (available.w - gap_total).max(1.);
+                    per_child_other = available.h;
+                } else {
+                    distributable = (available.h - gap_total).max(1.);
+                    per_child_other = available.w;
+                }
+
+                // Collect min sizes for clamping.
+                let min_spans: Vec<f64> = children.iter().map(|c| {
+                    let (min_main, _) = c.aggregate_min_max_main_span(axis);
+                    if is_main { min_main } else {
+                        c.min_cross_span_subtree(axis).max(1.)
+                    }
+                }).collect();
+
+                // Separate fixed and auto spans.
+                let mut spans: Vec<f64> = Vec::with_capacity(count);
+                let mut span_left = distributable;
+                let mut total_weight: f64 = 0.;
+
+                assert_eq!(data.len(), count, "data.len ({}) != children.len ({}) in {:?} split", data.len(), count, split_axis);
+
+                for (i, d) in data.iter().enumerate() {
+                    match d.span {
+                        ChildSpan::Auto { weight } => {
+                            spans.push(0.);
+                            total_weight += weight;
+                        }
+                        ChildSpan::Fixed(span) => {
+                            let s = span.max(min_spans[i]);
+                            spans.push(s);
+                            span_left -= s;
+                        }
+                        ChildSpan::Preset(_) => {
+                            // Treat presets as auto for now.
+                            spans.push(0.);
+                            total_weight += 1.;
+                        }
+                    }
+                }
+
+                // Distribute remaining span among auto children.
+                let mut remaining = span_left;
+                let mut remaining_weight = total_weight;
+                for (i, d) in data.iter().enumerate() {
+                    if spans[i] != 0. {
+                        continue;
+                    }
+                    let weight = match d.span {
+                        ChildSpan::Auto { weight } => weight,
+                        ChildSpan::Preset(_) => 1.,
+                        ChildSpan::Fixed(_) => unreachable!(),
+                    };
+                    let factor = if remaining_weight > 0. {
+                        weight / remaining_weight
+                    } else {
+                        1. / count as f64
+                    };
+                    let s = (remaining * factor).max(1.);
+                    spans[i] = s;
+                    remaining -= s;
+                    remaining_weight -= weight;
+                }
+
+                // Now recurse into each child with its allocated span.
+                for (i, child) in children.iter_mut().enumerate() {
+                    let child_span = spans[i];
+                    let child_size = if is_main {
+                        Size::from((child_span, per_child_other))
+                    } else {
+                        Size::from((per_child_other, child_span))
+                    };
+                    // Store the computed size in data for position computation.
+                    data[i].size = child_size;
+
+                    child.request_sizes(child_size, gaps, axis, animate, transaction);
+                }
+
+                // Ensure active_idx is valid.
+                if *active_idx >= count {
+                    *active_idx = 0;
+                }
+            }
+            TileNode::Tabbed { children, data, active_idx, tab_header } => {
+                let count = children.len();
+                if count == 0 {
+                    return;
+                }
+
+                // All children get the same span.
+                let extra = tab_header.extra_size(count, 1.0);
+                let child_cross = (available.h - extra.h).max(1.);
+                let child_size = Size::from((available.w, child_cross));
+
+                for (i, child) in children.iter_mut().enumerate() {
+                    data[i].size = child_size;
+                    let is_active = i == *active_idx;
+                    // In tabbed mode, only the active child participates in the transaction.
+                    let child_txn = if is_active { transaction } else { None };
+                    child.request_sizes(child_size, gaps, axis, animate, child_txn);
+                }
+            }
+        }
+    }
+
+    /// Returns the minimum cross-axis span of this subtree (used for layout clamping).
+    fn min_cross_span_subtree(&self, axis: AxisMap) -> f64 {
+        match self {
+            TileNode::Leaf(tile) => {
+                axis.size_in(tile.min_size_nonfullscreen()).h
+            }
+            TileNode::Split { children, axis: split_axis, .. } => {
+                if *split_axis == SplitAxis::Main {
+                    // Main split: children share the cross span, so min is the max of children.
+                    children.iter()
+                        .map(|c| c.min_cross_span_subtree(axis))
+                        .max_by(|a, b| a.total_cmp(b))
+                        .unwrap_or(1.)
+                } else {
+                    // Cross split: children stack along cross, so min is the sum.
+                    children.iter()
+                        .map(|c| c.min_cross_span_subtree(axis))
+                        .sum::<f64>()
+                        .max(1.)
+                }
+            }
+            TileNode::Tabbed { children, .. } => {
+                // Tabbed: all children share the cross span, so min is the max.
+                children.iter()
+                    .map(|c| c.min_cross_span_subtree(axis))
+                    .max_by(|a, b| a.total_cmp(b))
+                    .unwrap_or(1.)
+            }
+        }
     }
 }
