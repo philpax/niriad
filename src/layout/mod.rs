@@ -4334,7 +4334,7 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplit(column_idx, tile_idx, axis) => {
+                    InsertPosition::InSplit(column_idx, tile_idx, axis, _is_right_half) => {
                         mon.add_tile_to_split(
                             ws_idx,
                             column_idx,

@@ -133,7 +133,8 @@ pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
     /// Drop into a split with the tile at (column_idx, tile_idx) along the given axis.
-    InSplit(usize, usize, SplitAxis),
+    /// `is_right_half` indicates which half of the target tile to drop into.
+    InSplit(usize, usize, SplitAxis, bool),
     Floating,
 }
 

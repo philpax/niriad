@@ -1757,7 +1757,7 @@ fn vertical_main_axis_insert_position_follows_y() {
     let insert_col_idx = |center| match ws.scrolling_insert_position(center) {
         super::monitor::InsertPosition::NewColumn(idx)
         | super::monitor::InsertPosition::InColumn(idx, _)
-        | super::monitor::InsertPosition::InSplit(idx, _, _) => idx,
+        | super::monitor::InsertPosition::InSplit(idx, _, _, _) => idx,
         super::monitor::InsertPosition::Floating => unreachable!(),
     };
 

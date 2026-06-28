@@ -1191,10 +1191,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let main_dist = (closest_col_main - main).abs();
         let cross_dist = (closest_tile_cross - cross).abs();
 
-        // If the pointer is far from both gaps, it's in a tile interior — check for split.
+        // If the pointer is far from both gaps, it's in a tile interior.
+        // Only trigger InSplit (side-by-side) when the pointer is in the main-axis center
+        // of the tile (left/right halves). Near the top/bottom edges, fall through to
+        // InColumn (below/above insertion) for vertical stacking.
         let gap_threshold = self.options.layout.gaps * 2.;
         if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
-            // The pointer is in a tile interior. Find the tile containing the pointer vertically.
+            // Find the tile containing the pointer vertically.
             let offsets: Vec<_> = col.tile_offsets().collect();
             let tile_idx = offsets
                 .iter()
@@ -1207,8 +1210,34 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .map(|(idx, _)| idx)
                 .unwrap_or(closest_tile_idx);
 
-            // Both halves create a Main-axis split (side-by-side).
-            InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main)
+            // Check if we're near the top/bottom edge of this tile — if so, use InColumn
+            // (vertical insertion) instead of InSplit (horizontal split).
+            if let Some(&tile_off) = offsets.get(tile_idx) {
+                let tile_top = tile_off.y;
+                let tile_h = col.data().get(tile_idx).map(|d| d.size.h).unwrap_or(0.);
+                let tile_bottom = tile_top + tile_h;
+                let dist_to_top = (cross - tile_top).abs();
+                let dist_to_bottom = (cross - tile_bottom).abs();
+                let edge_threshold = self.options.layout.gaps * 3.;
+
+                if dist_to_top <= edge_threshold {
+                    // Near top edge — insert above (InColumn).
+                    InsertPosition::InColumn(col_idx, tile_idx)
+                } else if dist_to_bottom <= edge_threshold {
+                    // Near bottom edge — insert below (InColumn).
+                    InsertPosition::InColumn(col_idx, tile_idx + 1)
+                } else {
+                    // Interior — horizontal split (side-by-side).
+                    // Determine which half based on the main-axis position relative to tile center.
+                    let col_main_start = self.column_main_pos(col_idx);
+                    let tile_w = col.data().get(tile_idx).map(|d| d.size.w).unwrap_or(0.);
+                    let tile_center = col_main_start + tile_off.x + tile_w / 2.;
+                    let is_right_half = main > tile_center;
+                    InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, is_right_half)
+                }
+            } else {
+                InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
+            }
         } else if main_dist <= cross_dist {
             InsertPosition::NewColumn(closest_col_idx)
         } else {
@@ -3220,7 +3249,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_main_pos(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
-            InsertPosition::InSplit(column_index, tile_index, _axis) => {
+            InsertPosition::InSplit(column_index, tile_index, _axis, is_right_half) => {
                 if column_index >= self.columns.len() {
                     return None;
                 }
@@ -3239,9 +3268,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .unwrap_or((0., 0.));
                 let col_main = self.column_main_pos(column_index);
 
-                // For a Main-axis split, show a half-width rectangle covering the target half.
+                // Show a half-width rectangle on the appropriate side.
                 let half_w = tile_w / 2.;
-                let loc = Point::from((col_main + tile_off.x, tile_off.y));
+                let loc = if is_right_half {
+                    Point::from((col_main + tile_off.x + half_w, tile_off.y))
+                } else {
+                    Point::from((col_main + tile_off.x, tile_off.y))
+                };
                 let size = Size::from((half_w, tile_h));
                 Rectangle::new(loc, size)
             }
@@ -4867,14 +4900,13 @@ impl<W: LayoutElement> Column<W> {
     fn tiles_and_data_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, &mut SplitChildData)> {
         match &mut self.root {
             TileNode::Leaf(_tile) => {
-                // Shouldn't be called on a leaf, but provide a safe fallback.
                 panic!("tiles_and_data_mut called on a Leaf root");
             }
             TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
-                children.iter_mut().zip(data.iter_mut()).map(|(child, data)| {
+                children.iter_mut().zip(data.iter_mut()).filter_map(|(child, data)| {
                     match child {
-                        TileNode::Leaf(tile) => (tile, data),
-                        _ => panic!("expected a leaf child"),
+                        TileNode::Leaf(tile) => Some((tile, data)),
+                        _ => None,
                     }
                 })
             }
