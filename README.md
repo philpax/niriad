@@ -1,3 +1,11 @@
+# niriad
+
+**niriad** is an experimental, largely-untested, vibe-fork of [niri](https://github.com/niri-wm/niri) that adds a full window *tree* on top of niri's scrollable tiling. In niri, each column is a vertical stack of windows; in niriad a column can also split into side-by-side rows, nest those splits arbitrarily, and group children into tabs — i3/sway-style nesting layered onto niri's infinite horizontal strip. Expect rough edges, and don't rely on it for anything you care about.
+
+niriad builds on [0WD0's vertical-layout branch](https://github.com/0WD0/niri/tree/wd/vertical-layout), which makes the scroll's main axis configurable so the strip can run vertically (handy on portrait monitors). Everything else behaves exactly like upstream niri, whose README follows.
+
+---
+
 <h1 align="center"><img alt="niri" src="https://github.com/user-attachments/assets/07d05cd0-d5dc-4a28-9a35-51bae8f119a0"></h1>
 <p align="center">A scrollable-tiling Wayland compositor.</p>
 <p align="center">
