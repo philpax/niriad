@@ -1381,34 +1381,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        let tile_idx = tile_idx.unwrap_or(target_column.tiles_len());
-        let mut prev_active_tile_idx = target_column.active_tile_idx();
+        let leaf_idx = tile_idx.unwrap_or(target_column.tiles_len());
+        let prev_active_root = target_column.root.active_idx();
+        let prev_active_id = target_column.active_tile().window().id().clone();
 
-        target_column.add_tile_at(tile_idx, tile);
+        let root_idx = target_column.add_tile_at(leaf_idx, tile);
         self.data[col_idx].update(target_column);
 
-        if tile_idx <= prev_active_tile_idx {
-            target_column.set_active_tile_idx(target_column.active_tile_idx() + 1);
-            prev_active_tile_idx += 1;
-        }
-
         if activate {
-            target_column.activate_idx(tile_idx);
+            target_column.set_active_tile_idx(root_idx);
+            target_column.active_tile_mut().ensure_alpha_animates_to_1();
             if self.active_column_idx != col_idx {
                 self.activate_column(col_idx);
             }
+        } else if root_idx <= prev_active_root {
+            // Keep the previously-active row active after the insert shifted it over.
+            target_column.set_active_tile_idx(prev_active_root + 1);
         }
 
         let target_column = &mut self.columns[col_idx];
+        let anim = self.options.animations.window_movement.0;
         if target_column.is_tabbed() {
-            if target_column.active_tile_idx() == tile_idx {
-                // Fade out the previously active tile.
-                let tile = target_column.tile_mut(prev_active_tile_idx);
-                tile.animate_alpha(1., 0., self.options.animations.window_movement.0);
+            if activate {
+                // Fade out the previously active tab.
+                if let Some(i) = target_column.position(&prev_active_id) {
+                    target_column.tile_mut(i).animate_alpha(1., 0., anim);
+                }
             } else {
-                // Fade out when adding into a tabbed column into the background.
-                let tile = target_column.tile_mut(tile_idx);
-                tile.animate_alpha(1., 0., self.options.animations.window_movement.0);
+                // Added a background tab; fade it out (it sits behind the active one).
+                let new_leaf_idx = target_column.root_child_first_leaf_idx(root_idx);
+                target_column.tile_mut(new_leaf_idx).animate_alpha(1., 0., anim);
             }
         }
 
@@ -4607,6 +4609,26 @@ impl<W: LayoutElement> Column<W> {
         self.root.path_for_leaf_index_from_active().unwrap_or(0)
     }
 
+    /// Maps a flat-leaf index to the root child whose subtree contains it (used when inserting a
+    /// new top-level row at a flat position). Returns `child_count` for an out-of-range / past-end
+    /// index.
+    fn leaf_idx_to_root_child(&self, leaf_idx: usize) -> usize {
+        match self.root.path_for_leaf_index(leaf_idx) {
+            Some(path) if !path.is_empty() => path[0],
+            _ => self.root.child_count(),
+        }
+    }
+
+    /// The flat-leaf index of the first leaf under root child `root_child`.
+    fn root_child_first_leaf_idx(&self, root_child: usize) -> usize {
+        match &self.root {
+            TileNode::Leaf(_) => 0,
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                children.iter().take(root_child).map(TileNode::leaf_count).sum()
+            }
+        }
+    }
+
     /// Returns the active tile (immutable).
     fn active_tile(&self) -> &Tile<W> {
         self.root.active_leaf()
@@ -5426,35 +5448,32 @@ impl<W: LayoutElement> Column<W> {
         self.activate_idx(idx);
     }
 
-    fn add_tile_at(&mut self, idx: usize, mut tile: Tile<W>) {
+    /// Inserts `tile` as a new top-level row of the column at flat-leaf position `leaf_idx`.
+    /// Returns the root child index the new leaf ends up at.
+    fn add_tile_at(&mut self, leaf_idx: usize, mut tile: Tile<W>) -> usize {
         tile.update_config(
             self.map_size_out(self.view_size),
             self.scale,
             self.options.clone(),
         );
 
-        // Inserting a tile pushes down all tiles below it, but also in always-centering mode it
-        // will affect the main-axis position of all tiles in the column.
-        let mut prev_offsets = Vec::with_capacity(self.tiles_len() + 1);
-        prev_offsets.extend(self.tile_offsets().take(self.tiles_len()));
+        // `leaf_idx` is a flat-leaf position; insert a new top-level row at the corresponding root
+        // child boundary (correct for nested columns, and never out of bounds).
+        let root_idx = self.leaf_idx_to_root_child(leaf_idx);
+
+        // Inserting a tile pushes other tiles over; capture their positions (by id) to animate.
+        let prev = self.leaf_positions_by_id();
 
         if !self.is_tabbed() {
             self.is_pending_fullscreen = false;
             self.is_pending_maximized = false;
         }
 
-        self.insert_tile(idx, tile);
+        self.insert_tile(root_idx, tile);
         self.update_tile_sizes(true);
+        self.animate_leaves_if_moved(&prev);
 
-        // Animate tiles according to the offset changes.
-        prev_offsets.insert(idx, Point::default());
-        for (i, ((tile, offset), prev)) in zip(self.tiles_mut(), prev_offsets).enumerate() {
-            if i == idx {
-                continue;
-            }
-
-            tile.animate_move_from(prev - offset);
-        }
+        root_idx
     }
 
     fn update_window(&mut self, window: &W::Id) {
