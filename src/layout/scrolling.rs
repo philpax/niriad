@@ -2680,26 +2680,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        // Check if the active column has a Main-axis split root — swap within it first.
-        let col = &mut self.columns[self.active_column_idx];
-        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
-            let active_idx = col.active_tile_idx();
-            let new_idx = match direction {
-                ScrollDirection::Left => active_idx.checked_sub(1),
-                ScrollDirection::Right => {
-                    if active_idx + 1 < col.tiles_len() {
-                        Some(active_idx + 1)
-                    } else {
-                        None
-                    }
-                }
-            };
-            if let Some(new_idx) = new_idx {
-                col.swap_tiles(active_idx, new_idx);
-                col.activate_idx(new_idx);
-                col.update_tile_sizes(true);
-                return;
-            }
+        // Swap within the column's Main-axis splits first (at any nesting depth); only fall
+        // through to inter-column movement at the tree edge.
+        let delta = match direction {
+            ScrollDirection::Left => -1,
+            ScrollDirection::Right => 1,
+        };
+        if self.columns[self.active_column_idx].swap_in_axis(SplitAxis::Main, delta) {
+            return;
         }
 
         // if this is the first (resp. last column), then this operation is equivalent
@@ -6043,6 +6031,46 @@ impl<W: LayoutElement> Column<W> {
         if let Some(path) = target {
             self.root.activate_path(&path);
             self.root.leaf_at_mut(&path).ensure_alpha_animates_to_1();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Swaps the active leaf's subtree with its adjacent sibling along `axis` (the move counterpart
+    /// of [`focus_in_axis`]). Returns false if there is no sibling in that direction within this
+    /// column, so the caller can fall through to inter-column movement.
+    fn swap_in_axis(&mut self, axis: SplitAxis, delta: isize) -> bool {
+        let plan = {
+            let active_path = self.root.active_leaf_path();
+            let mut found = None;
+            for k in (1..=active_path.len()).rev() {
+                let parent_path = &active_path[..k - 1];
+                let child_idx = active_path[k - 1];
+                let parent = self.root.node_at(parent_path);
+                let is_match = match parent {
+                    TileNode::Split { axis: a, .. } => *a == axis,
+                    TileNode::Tabbed { .. } => axis == SplitAxis::Cross,
+                    TileNode::Leaf(_) => false,
+                };
+                if is_match {
+                    let new_child = child_idx as isize + delta;
+                    if new_child >= 0 && (new_child as usize) < parent.child_count() {
+                        found = Some((parent_path.to_vec(), child_idx, new_child as usize));
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
+        if let Some((parent_path, a, b)) = plan {
+            let parent = self.root.node_at_mut(&parent_path);
+            parent.swap_leaves(a, b);
+            // Follow the moved subtree (it is now at index b).
+            parent.set_active_idx(b);
+            self.root.active_leaf_mut().ensure_alpha_animates_to_1();
+            self.update_tile_sizes(true);
             true
         } else {
             false
