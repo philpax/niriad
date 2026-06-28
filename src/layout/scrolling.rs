@@ -2883,11 +2883,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let active_idx = col.active_tile_idx();
+        // Tabs are the root's *children* (each may itself be a split), so operate on child indices,
+        // not flat leaf indices.
+        let active_idx = col.root.active_idx();
         let new_idx = match direction {
             ScrollDirection::Left => active_idx.saturating_sub(1),
             ScrollDirection::Right => {
-                let max = col.tiles_len().saturating_sub(1);
+                let max = col.root.child_count().saturating_sub(1);
                 (active_idx + 1).min(max)
             }
         };
@@ -2896,9 +2898,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        // Swap the tab and its data, then activate the new position.
-        col.swap_tiles(active_idx, new_idx);
-        col.activate_idx(new_idx);
+        // Swap the two tabs (children + data) and follow the moved tab.
+        col.root.swap_leaves(active_idx, new_idx);
+        col.set_active_tile_idx(new_idx);
+        col.active_tile_mut().ensure_alpha_animates_to_1();
         col.update_tile_sizes(true);
     }
 
@@ -4774,18 +4777,15 @@ impl<W: LayoutElement> Column<W> {
             }
         };
 
-        // Set the child's span to the new fixed value.
+        // Set the resized child to the new fixed span, and convert the others to Auto with a
+        // weight proportional to their current span so they keep their relative proportions when
+        // the remaining space is redistributed. (Weights are relative, so the raw span works as
+        // the weight directly.)
         if let TileNode::Split { data, .. } = &mut self.root {
             data[tile_idx].span = ChildSpan::Fixed(new_span);
-        }
-
-        // Convert other children to Auto to preserve their proportions.
-        if let TileNode::Split { data, .. } = &mut self.root {
-            let _total_span: f64 = data.iter().map(|d| d.size.w).sum();
-            let median = data[data.len() / 2].size.w;
             for (i, d) in data.iter_mut().enumerate() {
                 if i != tile_idx {
-                    let weight = if median > 0. { d.size.w / median } else { 1. };
+                    let weight = if d.size.w > 0. { d.size.w } else { 1. };
                     d.span = ChildSpan::Auto { weight };
                 }
             }
