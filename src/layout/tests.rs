@@ -4772,6 +4772,59 @@ fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
     assert_eq!(tile_count(&layout), 2);
 }
 
+fn wide_window(id: usize) -> TestWindowParams {
+    let mut p = TestWindowParams::new(id);
+    // Give a real minimum width so a side-by-side row fills the column (the default test window
+    // shrinks to a few pixels, leaving no testable interior).
+    p.min_max_size = (Size::from((300, 200)), Size::from((0, 0)));
+    p
+}
+
+#[test]
+fn drag_into_row_targets_the_tile_under_the_cursor() {
+    use super::monitor::InsertPosition;
+
+    // A horizontal row of two wide windows: window 1 spans x≈[16,316], window 2 x≈[332,632],
+    // both full height. (See dimensions verified interactively.)
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+
+    // Interior of the left tile → split tile 0; interior of the right tile → split tile 1.
+    // (Previously a row always reported tile 0 regardless of x.)
+    assert!(
+        matches!(ip(166., 360.), InsertPosition::InSplit(0, 0, _, _)),
+        "left tile interior should target tile 0, got {:?}",
+        ip(166., 360.)
+    );
+    assert!(
+        matches!(ip(482., 360.), InsertPosition::InSplit(0, 1, _, _)),
+        "right tile interior should target tile 1, got {:?}",
+        ip(482., 360.)
+    );
+
+    // Top edge over *either* tile inserts above the whole row (leaf 0), not into it.
+    assert!(
+        matches!(ip(482., 30.), InsertPosition::InColumn(0, 0)),
+        "top of the row (over the right tile) should insert above the whole row, got {:?}",
+        ip(482., 30.)
+    );
+    // Bottom edge inserts below the whole row (past the last leaf).
+    assert!(
+        matches!(ip(166., 690.), InsertPosition::InColumn(0, 2)),
+        "bottom of the row should insert below the whole row, got {:?}",
+        ip(166., 690.)
+    );
+}
+
 #[test]
 fn vertical_insert_into_a_row_stacks_above_below_not_beside() {
     // Column 0 is a horizontal row (Main split of windows 1 and 2). Moving window 3 into it

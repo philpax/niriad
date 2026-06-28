@@ -1193,23 +1193,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .unwrap_or_default()
         };
 
+        // Whether the column's top level is a horizontal row (a Main split). For a row, the tiles
+        // sit side by side: the pointer picks a tile by its *main* (x) position, and the top/bottom
+        // edges insert above/below the whole row rather than between specific tiles.
+        let col_is_row = matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. });
+        let col_main_start = self.column_main_pos(col_idx);
+
         let gap_threshold = self.options.layout.gaps * 2.;
         if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
-            // Find the tile containing the pointer vertically.
+            // Find the tile under the pointer. A vertical stack disambiguates by cross (y); a
+            // horizontal row also disambiguates by main (x), so the correct tile is split.
             let offsets: Vec<_> = col.tile_offsets().collect();
             let tile_idx = offsets
                 .iter()
                 .enumerate()
                 .find(|(idx, off)| {
-                    let tile_top = off.y;
-                    let tile_h = leaf_size(*idx).h;
-                    cross >= tile_top && cross <= tile_top + tile_h
+                    let sz = leaf_size(*idx);
+                    let y_ok = cross >= off.y && cross <= off.y + sz.h;
+                    if col_is_row {
+                        let left = col_main_start + off.x;
+                        y_ok && main >= left && main <= left + sz.w
+                    } else {
+                        y_ok
+                    }
                 })
                 .map(|(idx, _)| idx)
                 .unwrap_or(closest_tile_idx);
 
-            // Check if we're near the top/bottom edge of this tile — if so, use InColumn
-            // (vertical insertion) instead of InSplit (horizontal split).
+            // Check if we're near the top/bottom edge — if so, insert a row (InColumn) instead of
+            // splitting side-by-side (InSplit).
             if let Some(&tile_off) = offsets.get(tile_idx) {
                 let tile_top = tile_off.y;
                 let tile_h = leaf_size(tile_idx).h;
@@ -1218,16 +1230,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let dist_to_bottom = (cross - tile_bottom).abs();
                 let edge_threshold = self.options.layout.gaps * 3.;
 
-                if dist_to_top <= edge_threshold {
-                    // Near top edge — insert above (InColumn).
-                    InsertPosition::InColumn(col_idx, tile_idx)
-                } else if dist_to_bottom <= edge_threshold {
-                    // Near bottom edge — insert below (InColumn).
-                    InsertPosition::InColumn(col_idx, tile_idx + 1)
+                // For a row, the top/bottom edges wrap the whole row (above = leaf 0, below = end);
+                // for a vertical stack they insert relative to this tile.
+                let (above_idx, below_idx) = if col_is_row {
+                    (0, col.tiles_len())
                 } else {
-                    // Interior — horizontal split (side-by-side).
-                    // Determine which half based on the main-axis position relative to tile center.
-                    let col_main_start = self.column_main_pos(col_idx);
+                    (tile_idx, tile_idx + 1)
+                };
+
+                if dist_to_top <= edge_threshold {
+                    InsertPosition::InColumn(col_idx, above_idx)
+                } else if dist_to_bottom <= edge_threshold {
+                    InsertPosition::InColumn(col_idx, below_idx)
+                } else {
+                    // Interior — horizontal split (side-by-side) of the tile under the pointer.
                     let tile_w = leaf_size(tile_idx).w;
                     let tile_center = col_main_start + tile_off.x + tile_w / 2.;
                     let is_right_half = main > tile_center;
