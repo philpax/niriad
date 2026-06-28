@@ -2844,14 +2844,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let col = &mut self.columns[self.active_column_idx];
-        col.set_column_display(
-            if col.is_tabbed() { ColumnDisplay::Normal } else { ColumnDisplay::Tabbed },
-        );
-
-        // Toggling display can change the column width (e.g. a Main split, summed across children,
-        // becomes a single-width tabbed stack), so refresh the cached column data.
-        self.data[self.active_column_idx].update(&self.columns[self.active_column_idx]);
+        // Delegate to set_column_display, which refreshes cached data and clears fullscreen/
+        // maximized when leaving tabbed mode with more than one tile (a non-tabbed multi-tile
+        // column can't stay fullscreen).
+        let display = if self.columns[self.active_column_idx].is_tabbed() {
+            ColumnDisplay::Normal
+        } else {
+            ColumnDisplay::Tabbed
+        };
+        self.set_column_display(display);
     }
 
     /// Moves the active tab left or right within its tabbed container.
@@ -4763,7 +4764,31 @@ impl<W: LayoutElement> Column<W> {
             }
             TileNode::Leaf(_) => {}
         }
+        self.collapse_redundant_root_wrapper();
         tile
+    }
+
+    /// If the root is a Split/Tabbed with a single non-leaf child, replace the root with that child
+    /// (repeatedly), so the meaningful split/tabs become the root. Keeps a lone-leaf root wrapper
+    /// (the canonical single-window column) intact.
+    fn collapse_redundant_root_wrapper(&mut self) {
+        loop {
+            let collapse = matches!(
+                &self.root,
+                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. }
+                    if children.len() == 1 && !matches!(children[0], TileNode::Leaf(_))
+            );
+            if !collapse {
+                break;
+            }
+            let child = match &mut self.root {
+                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                    children.remove(0)
+                }
+                TileNode::Leaf(_) => unreachable!(),
+            };
+            self.root = child;
+        }
     }
 
     /// Resizes a child's main-axis span within a Main-axis split root.
@@ -4951,25 +4976,9 @@ impl<W: LayoutElement> Column<W> {
                 .ensure_alpha_animates_to_1();
         }
 
-        // Avoid a redundant single-child wrapper: when the column root is a Split/Tabbed with a
-        // single child that is itself a Split/Tabbed (e.g. the implicit Cross root wrapping a lone
-        // Main split created above), collapse it so the meaningful split becomes the root. This
-        // keeps `toggle-tabbed`, swapping and the render/alpha logic operating on real tabs rather
-        // than a one-tab container that holds a split.
-        let collapse = matches!(
-            &self.root,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. }
-                if children.len() == 1 && !matches!(children[0], TileNode::Leaf(_))
-        );
-        if collapse {
-            let child = match &mut self.root {
-                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
-                    children.remove(0)
-                }
-                TileNode::Leaf(_) => unreachable!(),
-            };
-            self.root = child;
-        }
+        // Avoid a redundant single-child wrapper (e.g. the implicit Cross root wrapping a lone Main
+        // split created above) so toggle-tabbed / swapping / render all operate on real tabs.
+        self.collapse_redundant_root_wrapper();
 
         self.update_tile_sizes(true);
 
@@ -6764,6 +6773,8 @@ impl<W: LayoutElement> Column<W> {
         assert!(self.active_tile_idx() < self.root.child_count());
         // data().len() matches the root's direct child count, not the recursive leaf count.
         assert_eq!(self.root.child_count(), self.data().len());
+        // Recursively validate the whole tree (lengths, active_idx, no empty/redundant nodes).
+        self.root.verify_structure();
 
         if !self.pending_sizing_mode().is_normal() {
             assert!(self.root.child_count() == 1 || self.is_tabbed());

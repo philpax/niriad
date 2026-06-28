@@ -4738,6 +4738,25 @@ fn toggle_tabbed_on_main_split() {
 }
 
 #[test]
+fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
+    // A fullscreen tabbed column (allowed) toggled back to normal must NOT stay fullscreen, since
+    // a non-tabbed multi-tile column can't be fullscreen. check_ops verifies this invariant.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::ToggleTabbed,
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: true },
+        Op::Communicate(2),
+        Op::ToggleTabbed,
+    ]);
+
+    // Two windows remain and the column is back to a normal (non-fullscreen) split.
+    assert_eq!(tile_count(&layout), 2);
+}
+
+#[test]
 fn split_nests_at_target_leaf_not_root() {
     // Repeatedly splitting the active window builds a genuinely nested tree rather than appending
     // at the column root. Final shape: Cross[1, Main[2, Cross[3, 4]]] (window 4 stacked under 3,

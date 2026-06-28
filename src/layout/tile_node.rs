@@ -345,6 +345,42 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Recursively checks the tree's structural invariants (used by tests/verify):
+    /// `data` and `children` stay the same length, `active_idx` is in range, no node is empty, and
+    /// there are no redundant single-child wrappers around a non-leaf (those are always collapsed).
+    pub fn verify_structure(&self) {
+        match self {
+            TileNode::Leaf(_) => {}
+            TileNode::Split { children, data, active_idx, .. }
+            | TileNode::Tabbed { children, data, active_idx, .. } => {
+                assert_eq!(
+                    children.len(),
+                    data.len(),
+                    "children/data length mismatch ({} vs {})",
+                    children.len(),
+                    data.len()
+                );
+                assert!(!children.is_empty(), "a split/tabbed node must have children");
+                assert!(
+                    *active_idx < children.len(),
+                    "active_idx {} out of range (len {})",
+                    active_idx,
+                    children.len()
+                );
+                if children.len() == 1 {
+                    assert!(
+                        matches!(children[0], TileNode::Leaf(_)),
+                        "a single-child split/tabbed node must wrap a leaf (else it should collapse)"
+                    );
+                }
+                for child in children {
+                    assert!(child.leaf_count() >= 1, "a child subtree must be non-empty");
+                    child.verify_structure();
+                }
+            }
+        }
+    }
+
     /// Returns, in leaf (tree) order, whether each leaf is currently visible.
     ///
     /// A leaf is hidden only if some `Tabbed` ancestor on its path shows a different tab. All
