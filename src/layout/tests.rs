@@ -4738,6 +4738,55 @@ fn toggle_tabbed_on_main_split() {
 }
 
 #[test]
+fn split_nests_at_target_leaf_not_root() {
+    // Repeatedly splitting the active window builds a genuinely nested tree rather than appending
+    // at the column root. Final shape: Cross[1, Main[2, Cross[3, 4]]] (window 4 stacked under 3,
+    // that pair beside 2, and all of it under 1).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(4) },
+    ]);
+
+    assert_eq!(tile_count(&layout), 4);
+    assert_eq!(window_order(&layout), vec![1, 2, 3, 4]);
+    assert_eq!(active_window_id(&layout), Some(4));
+
+    // Directional focus confirms the nesting: from window 4, up reaches its Cross sibling (3),
+    // and left crosses the inner Main split to window 2.
+    let up = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(4) },
+        Op::FocusWindowUp,
+    ]);
+    assert_eq!(active_window_id(&up), Some(3), "up -> Cross sibling of window 4");
+
+    let left = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(4) },
+        Op::FocusColumnLeft,
+    ]);
+    assert_eq!(active_window_id(&left), Some(2), "left -> across inner Main split");
+}
+
+#[test]
 fn directional_focus_walks_nested_tree() {
     // Build Main[1, Cross[2, 3]]: window 1 on the left, a vertically-split pair (2 over 3) on the
     // right. Focus should walk the tree like i3/sway: up/down within the inner Cross split, and
