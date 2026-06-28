@@ -4738,6 +4738,22 @@ fn toggle_tabbed_on_main_split() {
 }
 
 #[test]
+fn fullscreen_column_does_not_trip_tile_data_check() {
+    // Fullscreen/maximized layout sizes tiles directly and bypasses the flat per-leaf `data`
+    // bookkeeping, so a fullscreen column's cached `data.size` legitimately differs from the
+    // (fullscreen) tile size. check_ops/verify_invariants must tolerate that.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetFullscreenWindow { window: 1, is_fullscreen: true },
+        Op::Communicate(1),
+        // A tabbed fullscreen column is also valid and must not trip the check.
+        Op::SetColumnDisplay(niri_ipc::ColumnDisplay::Tabbed),
+    ]);
+    assert_eq!(tile_count(&layout), 1);
+}
+
+#[test]
 fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
     // A fullscreen tabbed column (allowed) toggled back to normal must NOT stay fullscreen, since
     // a non-tabbed multi-tile column can't be fullscreen. check_ops verifies this invariant.

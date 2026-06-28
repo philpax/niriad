@@ -6773,10 +6773,12 @@ impl<W: LayoutElement> Column<W> {
             // the *intended* per-child span in `data.size` — which is what positioning needs —
             // rather than the tile's currently-committed size, so the two legitimately differ
             // until the window commits its configure. The flat cross-split path instead derives
-            // `data` from the tiles, so the check is meaningful there.
+            // `data` from the tiles, so the check is meaningful there. It's also only meaningful in
+            // normal sizing mode: fullscreen/maximized layout bypasses the flat path (and `data`),
+            // sizing tiles directly.
             let root_is_main_split =
                 matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
-            if !has_nested && !root_is_main_split {
+            if !has_nested && !root_is_main_split && self.pending_sizing_mode().is_normal() {
                 let mut data2 = *data;
                 data2.update(tile, self.axis());
                 assert_eq!(data, &data2, "tile data must be up to date");
