@@ -11,7 +11,14 @@ use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
-use crate::utils::to_physical_precise_round;
+use crate::utils::{round_logical_in_physical, to_physical_precise_round};
+
+/// Minimum (target) width of a single tab. Tabs never shrink below this; once the
+/// available width can't fit every tab at this width, the bar overflows and scrolls.
+const MIN_TAB_WIDTH: f64 = 100.;
+
+/// Horizontal padding between a tab's edge and its title text.
+const TITLE_PADDING: f64 = 4.;
 
 use super::tab_indicator::TabInfo;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -24,10 +31,13 @@ niri_render_elements! {
 }
 
 /// Cached title texture for a single tab.
+///
+/// The text color is baked into the texture, so it's part of the cache key.
 #[derive(Debug, Default)]
 struct CachedTitle {
     title: RefCell<String>,
     scale: RefCell<f64>,
+    color: RefCell<[f32; 4]>,
     texture: RefCell<Option<Option<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>>>,
 }
 
@@ -37,17 +47,22 @@ impl CachedTitle {
         renderer: &mut GlesRenderer,
         title: &str,
         scale: f64,
+        color: [f32; 4],
         font: &str,
     ) -> Option<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>> {
-        if *self.title.borrow() != title || *self.scale.borrow() != scale {
+        if *self.title.borrow() != title
+            || *self.scale.borrow() != scale
+            || *self.color.borrow() != color
+        {
             *self.texture.borrow_mut() = None;
             *self.title.borrow_mut() = title.to_owned();
             *self.scale.borrow_mut() = scale;
+            *self.color.borrow_mut() = color;
         }
 
         let mut tex = self.texture.borrow_mut();
         tex.get_or_insert_with(|| {
-            generate_title_texture(renderer, title, scale, font).ok()
+            generate_title_texture(renderer, title, scale, color, font).ok()
         })
         .clone()
     }
@@ -58,6 +73,7 @@ fn generate_title_texture(
     renderer: &mut GlesRenderer,
     title: &str,
     scale: f64,
+    color: [f32; 4],
     font_desc: &str,
 ) -> anyhow::Result<TextureBuffer<smithay::backend::renderer::gles::GlesTexture>> {
     let mut font = FontDescription::from_string(font_desc);
@@ -81,7 +97,8 @@ fn generate_title_texture(
 
     let surface = ImageSurface::create(cairo::Format::ARgb32, width, height)?;
     let cr = cairo::Context::new(&surface)?;
-    cr.set_source_rgb(1., 1., 1.);
+    let [r, g, b, a] = color;
+    cr.set_source_rgba(r as f64, g as f64, b as f64, a as f64);
     pangocairo::functions::show_layout(&cr, &layout);
 
     drop(cr);
@@ -111,6 +128,9 @@ fn generate_title_texture(
 pub struct TabBar {
     /// Cached title textures for each tab.
     cached_titles: RefCell<Vec<CachedTitle>>,
+    /// Persistent background buffers for each tab. Kept across frames so their buffer
+    /// Ids stay stable and damage tracking works; only resized/recolored on change.
+    backgrounds: RefCell<Vec<SolidColorBuffer>>,
     /// Cached geometry for each tab (computed during update_render_elements).
     tab_rects: Vec<Rectangle<f64, Logical>>,
     /// Index of the active tab (set during update_render_elements).
@@ -131,6 +151,7 @@ impl TabBar {
     pub fn new(config: niri_config::TabBarConfig) -> Self {
         Self {
             cached_titles: RefCell::new(Vec::new()),
+            backgrounds: RefCell::new(Vec::new()),
             tab_rects: Vec::new(),
             active_idx: 0,
             cached_scale: 0.,
@@ -166,23 +187,22 @@ impl TabBar {
         self.open_anim = Some(Animation::new(clock, 0., 1., 0., config));
     }
 
-    /// Extra size taken up by the tab bar (height + gap).
-    pub fn extra_size(&self, _tab_count: usize, _scale: f64) -> Size<f64, Logical> {
+    /// Extra size taken up by the tab bar (rounded bar height plus a 1px gap).
+    pub fn extra_size(&self, _tab_count: usize, scale: f64) -> Size<f64, Logical> {
         if self.config.off || (self.config.height <= 0.) {
             return Size::from((0., 0.));
         }
-        Size::from((0., self.config.height + 1.))
+        let height = round_logical_in_physical(scale, self.config.height);
+        Size::from((0., height + 1.))
     }
 
     /// Content offset — shifts tab content to make room for the bar.
-    pub fn content_offset(&self, _tab_count: usize, _scale: f64) -> Point<f64, Logical> {
+    pub fn content_offset(&self, tab_count: usize, scale: f64) -> Point<f64, Logical> {
         if self.config.off {
             return Point::from((0., 0.));
         }
         match self.config.position {
-            niri_config::TabBarPosition::Top => {
-                Point::from((0., self.config.height + 1.))
-            }
+            niri_config::TabBarPosition::Top => self.extra_size(tab_count, scale).to_point(),
             niri_config::TabBarPosition::Bottom => Point::from((0., 0.)),
         }
     }
@@ -215,27 +235,37 @@ impl TabBar {
         let count = tab_count;
         self.tab_rects.resize_with(count, Default::default);
 
-        // Distribute tabs evenly across the bar width.
-        let bar_height = self.config.height;
-        let gap = self.config.gaps_between_tabs;
+        let round = |logical: f64| round_logical_in_physical(scale, logical);
+        let extra_size = self.extra_size(count, scale);
+
+        // Distribute tabs across the bar width. Each tab targets at least MIN_TAB_WIDTH;
+        // a few tabs fill the bar, but many tabs overflow and the bar becomes scrollable.
+        let gap = round(self.config.gaps_between_tabs);
         let total_gap = gap * (count as f64 - 1.0).max(0.);
         let available_width = area.size.w;
-        let tab_width = ((available_width - total_gap) / count as f64).max(1.);
+        let ideal_width = (available_width - total_gap) / count as f64;
+        let tab_width = round(ideal_width.max(MIN_TAB_WIDTH));
 
+        // The area origin already includes the bar's content offset (it's shifted past the
+        // reserved band), so the band sits *outside* the area: above it for Top, below it for
+        // Bottom. Draw the bar into that reserved band rather than over the content.
         let bar_y = match self.config.position {
-            niri_config::TabBarPosition::Top => area.loc.y,
-            niri_config::TabBarPosition::Bottom => area.loc.y + area.size.h - bar_height,
+            niri_config::TabBarPosition::Top => area.loc.y - extra_size.h,
+            niri_config::TabBarPosition::Bottom => {
+                area.loc.y + area.size.h + (extra_size.h - round(self.config.height))
+            }
         };
+        let bar_y = round(bar_y);
 
         let progress = self.open_anim.as_ref().map_or(1., |a| a.value().max(0.));
-        let bar_height = bar_height * progress;
+        let bar_height = round(self.config.height * progress);
 
         // Compute tab positions (without scroll offset).
         for (i, (tab, rect)) in tabs.zip(self.tab_rects.iter_mut()).enumerate() {
             if tab.is_active {
                 self.active_idx = i;
             }
-            let x = area.loc.x + i as f64 * (tab_width + gap);
+            let x = round(area.loc.x + i as f64 * (tab_width + gap));
             *rect = Rectangle::new(
                 Point::from((x, bar_y)),
                 Size::from((tab_width, bar_height)),
@@ -280,6 +310,11 @@ impl TabBar {
             return;
         }
 
+        // Keep one persistent buffer per tab so buffer Ids are stable across frames; only
+        // resize/recolor on change, otherwise damage tracking is defeated and we full-repaint.
+        let mut backgrounds = self.backgrounds.borrow_mut();
+        backgrounds.resize_with(self.tab_rects.len(), SolidColorBuffer::default);
+
         for (i, rect) in self.tab_rects.iter().enumerate() {
             let tab_pos = pos + rect.loc;
             let tab_size = rect.size;
@@ -293,9 +328,10 @@ impl TabBar {
                     .unwrap_or(niri_config::Color::new_unpremul(0.2, 0.2, 0.2, 1.))
             };
 
-            let buffer = SolidColorBuffer::new(tab_size, bg_color);
+            let buffer = &mut backgrounds[i];
+            buffer.update(tab_size, bg_color);
             let elem = SolidColorRenderElement::from_buffer(
-                &buffer,
+                buffer,
                 tab_pos,
                 1.0,
                 Kind::Unspecified,
@@ -316,7 +352,7 @@ impl TabBar {
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
         self.render_backgrounds(pos, is_column_active, push);
-        self.render_titles(renderer, pos, scale, titles, push);
+        self.render_titles(renderer, pos, scale, is_column_active, titles, push);
     }
 
     /// Renders cached title textures for each tab.
@@ -326,6 +362,7 @@ impl TabBar {
         renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
+        is_column_active: bool,
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
@@ -354,17 +391,36 @@ impl TabBar {
                 break;
             }
 
-            if let Some(texture) = cached_titles[i].get(renderer, title, scale, &self.config.font) {
+            // Text color: active vs inactive, falling back to the shared text_color.
+            let text_color = if i == self.active_idx && is_column_active {
+                self.config.active_text_color.unwrap_or(self.config.text_color)
+            } else {
+                self.config.inactive_text_color.unwrap_or(self.config.text_color)
+            };
+            let color = text_color.to_array_unpremul();
+
+            if let Some(texture) = cached_titles[i].get(renderer, title, scale, color, &self.config.font)
+            {
                 let text_size = texture.logical_size();
                 let text_pos: Point<f64, Logical> = Point::from((
-                    pos.x + rect.loc.x + 4.,
+                    pos.x + rect.loc.x + TITLE_PADDING,
                     pos.y + rect.loc.y + (rect.size.h - text_size.h) / 2.,
                 ));
+
+                // Clip the title to the tab width (minus padding on both sides) so long
+                // titles don't bleed into the neighbouring tab.
+                let max_width = (rect.size.w - 2. * TITLE_PADDING).max(0.);
+                let src = if text_size.w > max_width {
+                    Some(Rectangle::from_size(Size::from((max_width, text_size.h))))
+                } else {
+                    None
+                };
+
                 let text_elem = TextureRenderElement::from_texture_buffer(
                     texture,
                     text_pos,
                     1.0,
-                    None,
+                    src,
                     None,
                     smithay::backend::renderer::element::Kind::Unspecified,
                 );
