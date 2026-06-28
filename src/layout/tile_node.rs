@@ -1220,7 +1220,13 @@ impl<W: LayoutElement> TileNode<W> {
                 // Determine which axis we're distributing along.
                 // For a Main split: distribute along w (main axis), each child gets full h.
                 // For a Cross split: distribute along h (cross axis), each child gets full w.
-                let gap_total = gaps * (count + 1) as f64;
+                //
+                // Only the gaps *between* children are taken from `available`: the outer gaps are
+                // already accounted for at the column level (the cross `available` is the working
+                // area minus its two edge gaps; the main `available` is the column width, which is
+                // defined as sum-of-children + between-gaps). Positioning (`leaf_layout`) likewise
+                // places only between-children gaps, so the two must agree to reach a steady state.
+                let gap_total = gaps * count.saturating_sub(1) as f64;
 
                 let (distributable, per_child_other);
                 if is_main {
