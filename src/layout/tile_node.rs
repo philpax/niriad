@@ -854,6 +854,83 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Swaps two leaves at the given paths.
+    /// If both paths share the same parent, swaps children+data in-place.
+    /// If they're in different subtrees, swaps the tile objects (preserving tree structure).
+    pub fn swap_leaves_by_path(&mut self, path_a: &[usize], path_b: &[usize]) {
+        if path_a.is_empty() || path_b.is_empty() {
+            return;
+        }
+
+        // If both paths share the same first element and have more elements, recurse.
+        if path_a[0] == path_b[0] && path_a.len() > 1 && path_b.len() > 1 {
+            match self {
+                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                    children[path_a[0]].swap_leaves_by_path(&path_a[1..], &path_b[1..]);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // If both paths have length 1 and share the same parent (this node), swap in-place.
+        if path_a.len() == 1 && path_b.len() == 1 {
+            match self {
+                TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                    children.swap(path_a[0], path_b[0]);
+                    data.swap(path_a[0], path_b[0]);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Different parents: extract tiles and swap them.
+        // This is more complex — we need to swap the Leaf objects at the two paths.
+        // For simplicity, we use a two-step approach: take tile A, take tile B, put A at B's path, put B at A's path.
+        // But taking a tile leaves a hole. Instead, we swap the tile contents.
+        // Since Tile doesn't implement Clone, we use mem::swap on the leaf nodes.
+        // The safest approach: navigate to both leaves and swap their Tile objects.
+        self.swap_leaf_contents(path_a, path_b);
+    }
+
+    /// Swaps the Tile objects inside two Leaf nodes at the given paths.
+    fn swap_leaf_contents(&mut self, path_a: &[usize], path_b: &[usize]) {
+        // Get pointers to both leaves, then swap their tile contents.
+        // We use a two-pass approach: first get the paths to both leaves,
+        // then swap using mem::swap on the tile references.
+        let tile_a_ptr = self.leaf_ptr(path_a);
+        let tile_b_ptr = self.leaf_ptr(path_b);
+        if let (Some(a), Some(b)) = (tile_a_ptr, tile_b_ptr) {
+            // SAFETY: both pointers were derived from &mut self, and we hold &mut self.
+            // We're swapping the Tile objects, not the tree structure.
+            unsafe {
+                std::mem::swap(&mut *a, &mut *b);
+            }
+        }
+    }
+
+    /// Returns a raw mutable pointer to the leaf at the given path.
+    fn leaf_ptr(&mut self, path: &[usize]) -> Option<*mut Tile<W>> {
+        if path.is_empty() {
+            return match self {
+                TileNode::Leaf(tile) => Some(tile as *mut _),
+                _ => None,
+            };
+        }
+        match self {
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                let idx = path[0];
+                if idx < children.len() {
+                    children[idx].leaf_ptr(&path[1..])
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Swaps two leaf children at the given flat indices (for Split/Tabbed roots).
     pub fn swap_leaves(&mut self, a: usize, b: usize) {
         match self {
