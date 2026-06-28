@@ -6546,19 +6546,6 @@ impl<W: LayoutElement> Column<W> {
         panic!("tile_offset: index {tile_idx} out of bounds (leaves: {})", offsets.len())
     }
 
-    fn tile_offsets_in_render_order(
-        &self,
-        data: impl Iterator<Item = SplitChildData>,
-    ) -> impl Iterator<Item = Point<f64, Logical>> {
-        let active_idx = self.active_tile_idx();
-        let active_pos = self.tile_offset(active_idx);
-        let offsets = self
-            .tile_offsets_iter(data)
-            .enumerate()
-            .filter_map(move |(idx, pos)| (idx != active_idx).then_some(pos));
-        iter::once(active_pos).chain(offsets)
-    }
-
     pub fn tiles(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
         let offsets: Vec<_> = self.tile_offsets_iter(self.data().iter().copied()).collect();
         self.tiles_enumerated()
@@ -6576,71 +6563,77 @@ impl<W: LayoutElement> Column<W> {
     fn tiles_in_render_order(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        let offsets: Vec<_> = self
-            .tile_offsets_in_render_order(self.data().iter().copied())
-            .collect();
+        let is_tabbed = self.is_tabbed();
+        let rest_visible = !is_tabbed;
 
-        let active_idx = self.active_tile_idx();
-        let rest_visible = !self.is_tabbed();
+        // Use recursive leaf offsets for nested split support.
+        let all_offsets: Vec<_> = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
 
-        // Walk tiles in render order: active first, then the rest.
-        let active = std::iter::once(active_idx);
-        let before = (0..active_idx).rev();
-        let after = (active_idx + 1)..self.tiles_len();
-        let order: Vec<_> = active.chain(before).chain(after).collect();
+        // Build render order: active leaf first, then the rest.
+        // For nested splits, the "active" leaf is found by following active_idx down the tree.
+        // Find which flat leaf index is the active one.
+        let active_leaf_idx = self.root.path_for_leaf_index_from_active();
+        let active_leaf_idx = active_leaf_idx.unwrap_or(0);
+
+        let mut order: Vec<usize> = Vec::with_capacity(all_offsets.len());
+        if active_leaf_idx < all_offsets.len() {
+            order.push(active_leaf_idx);
+        }
+        for i in 0..all_offsets.len() {
+            if i != active_leaf_idx {
+                order.push(i);
+            }
+        }
 
         order
             .into_iter()
-            .zip(offsets)
-            .map(move |(idx, pos)| {
-                let visible = idx == active_idx || rest_visible;
-                (self.tile(idx), pos, visible)
+            .zip(all_offsets)
+            .map(move |(idx, (_, pos))| {
+                let visible = idx == active_leaf_idx || rest_visible;
+                // Get the tile by flat index (recursive).
+                let tile = self.root.leaves().nth(idx).map(|(t, _)| t).unwrap();
+                (tile, pos, visible)
             })
-    }
-
-    /// Returns a mutable slice of the root's children (panics for Leaf root).
-    fn children_mut(&mut self) -> &mut [TileNode<W>] {
-        match &mut self.root {
-            TileNode::Leaf(_) => panic!("children_mut called on a Leaf root"),
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => children,
-        }
     }
 
     fn tiles_in_render_order_mut(
         &mut self,
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {
-        let offsets: Vec<_> = self
-            .tile_offsets_in_render_order(self.data().iter().copied())
+        // Use recursive leaf offsets for nested split support.
+        let offsets: Vec<_> = self.root.leaf_offsets_ptr(self.tiles_origin(), self.options.layout.gaps);
+
+        // Find the active leaf's flat index.
+        let active_leaf_idx = self.root.path_for_leaf_index_from_active().unwrap_or(0);
+
+        // Build render order: active first, then the rest.
+        let mut order: Vec<usize> = Vec::with_capacity(offsets.len());
+        if active_leaf_idx < offsets.len() {
+            order.push(active_leaf_idx);
+        }
+        for i in 0..offsets.len() {
+            if i != active_leaf_idx {
+                order.push(i);
+            }
+        }
+
+        // Collect leaves in flat order, then reorder to render order.
+        let leaves: Vec<&mut Tile<W>> = self.root.leaves_mut().map(|(t, _)| t).collect();
+        let ordered_offsets: Vec<_> = order.iter().map(|&i| offsets[i].1).collect();
+        // Reorder leaves to match render order using raw pointers.
+        let mut leaf_ptrs: Vec<*mut Tile<W>> = leaves.into_iter().map(|t| t as *mut _).collect();
+        let ordered_leaves: Vec<&mut Tile<W>> = order
+            .iter()
+            .map(|&i| {
+                // SAFETY: leaf_ptrs were derived from &mut self.root, and we hold &mut self.
+                // The pointers don't overlap and are valid for the lifetime of self.
+                unsafe { &mut *leaf_ptrs[i] }
+            })
             .collect();
 
-        let active_idx = self.active_tile_idx();
-
-        // Walk tiles in render order: active first, then the rest in normal order.
-        // We split the children slice to get the active tile separately from the rest.
-        let children = self.children_mut();
-        let (before, rest) = children.split_at_mut(active_idx);
-        let (active_arr, after) = rest.split_at_mut(1);
-
-        // offsets is: [active_offset, 0_offset, ..., (active-1)_offset, (active+1)_offset, ...]
-        // Split offsets to match the children split, collecting by value to avoid lifetime issues.
-        let active_offset = offsets[0];
-        let before_offsets: Vec<_> = offsets[1..active_idx + 1].to_vec();
-        let after_offsets: Vec<_> = offsets[active_idx + 1..].to_vec();
-
-        let active_iter = active_arr.iter_mut().zip(std::iter::once(active_offset));
-        let before_iter = before.iter_mut().zip(before_offsets);
-        let after_iter = after.iter_mut().zip(after_offsets);
-
-        active_iter
-            .chain(before_iter)
-            .chain(after_iter)
-            .map(|(child, offset)| {
-                let tile = match child {
-                    TileNode::Leaf(tile) => tile,
-                    _ => panic!("expected a leaf child"),
-                };
-                (tile, offset)
-            })
+        ordered_offsets
+            .into_iter()
+            .zip(ordered_leaves)
+            .map(|(pos, tile)| (tile, pos))
     }
 
     fn tab_indicator_area(&self) -> Rectangle<f64, Logical> {

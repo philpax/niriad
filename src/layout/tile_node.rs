@@ -699,6 +699,33 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Returns the flat leaf index of the active leaf (following active_idx down the tree).
+    pub fn path_for_leaf_index_from_active(&self) -> Option<usize> {
+        let mut count = 0;
+        self.find_active_leaf_index(&mut count)
+    }
+
+    fn find_active_leaf_index(&self, idx: &mut usize) -> Option<usize> {
+        match self {
+            TileNode::Leaf(_) => {
+                let result = Some(*idx);
+                *idx += 1;
+                result
+            }
+            TileNode::Split { children, active_idx, .. }
+            | TileNode::Tabbed { children, active_idx, .. } => {
+                for (i, child) in children.iter().enumerate() {
+                    if i == *active_idx {
+                        return child.find_active_leaf_index(idx);
+                    } else {
+                        *idx += child.leaf_count();
+                    }
+                }
+                None
+            }
+        }
+    }
+
     /// Returns the path to the Nth leaf (flat index → path).
     pub fn path_for_leaf_index(&self, idx: usize) -> Option<TilePath> {
         let mut current = idx;
