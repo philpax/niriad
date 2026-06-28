@@ -2,7 +2,8 @@ use knuffel::errors::DecodeError;
 use niri_ipc::{ColumnDisplay, SizeChange};
 
 use crate::appearance::{
-    Border, FocusRing, InsertHint, Shadow, TabHeaderConfig, TabIndicator, DEFAULT_BACKGROUND_COLOR,
+    Border, FocusRing, InsertHint, Shadow, TabHeaderConfig, TabHeaderPart, TabIndicator,
+    DEFAULT_BACKGROUND_COLOR,
 };
 use crate::utils::{expect_only_children, Flag, MergeWith};
 use crate::{BorderRule, Color, FloatOrInt, InsertHintPart, ShadowRule, TabIndicatorPart};
@@ -79,6 +80,11 @@ impl MergeWith<LayoutPart> for Layout {
             self.tab_header.indicator = self.tab_indicator;
         }
 
+        // Apply explicit tab-header config (style, bar) on top of the derived indicator.
+        if let Some(x) = &part.tab_header {
+            self.tab_header.merge_with(x);
+        }
+
         merge_clone!(
             (self, part),
             main_axis,
@@ -114,8 +120,10 @@ pub struct LayoutPart {
     pub shadow: Option<ShadowRule>,
     #[knuffel(child)]
     pub tab_indicator: Option<TabIndicatorPart>,
-    // tab_header config is derived from tab_indicator + defaults for now.
-    // A dedicated KDL section can be added later.
+    // tab_header.indicator is derived from tab_indicator; this node configures the
+    // bar style and per-style options on top of that derivation.
+    #[knuffel(child)]
+    pub tab_header: Option<TabHeaderPart>,
     #[knuffel(child)]
     pub insert_hint: Option<InsertHintPart>,
     #[knuffel(child, unwrap(argument))]

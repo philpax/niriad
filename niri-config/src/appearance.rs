@@ -499,7 +499,7 @@ impl Default for TabIndicator {
 }
 
 /// How tabs are displayed in a tabbed container.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum TabStyle {
     /// i3/sway-style horizontal header bar with text labels.
     #[default]
@@ -509,7 +509,7 @@ pub enum TabStyle {
 }
 
 /// Position of the tab header bar.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum TabBarPosition {
     #[default]
     Top,
@@ -558,6 +558,76 @@ pub struct TabHeaderConfig {
     pub style: TabStyle,
     pub indicator: TabIndicator,
     pub bar: TabBarConfig,
+}
+
+/// KDL part for the i3/sway-style tab header bar.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct TabBarPart {
+    #[knuffel(child)]
+    pub off: bool,
+    #[knuffel(child)]
+    pub on: bool,
+    #[knuffel(child, unwrap(argument))]
+    pub height: Option<FloatOrInt<0, 65535>>,
+    #[knuffel(child, unwrap(argument))]
+    pub position: Option<TabBarPosition>,
+    #[knuffel(child, unwrap(argument))]
+    pub font: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub gaps_between_tabs: Option<FloatOrInt<0, 65535>>,
+    #[knuffel(child, unwrap(argument))]
+    pub corner_radius: Option<FloatOrInt<0, 65535>>,
+    #[knuffel(child)]
+    pub text_color: Option<Color>,
+    #[knuffel(child)]
+    pub active_text_color: Option<Color>,
+    #[knuffel(child)]
+    pub inactive_text_color: Option<Color>,
+    #[knuffel(child)]
+    pub active_color: Option<Color>,
+    #[knuffel(child)]
+    pub inactive_color: Option<Color>,
+    #[knuffel(child)]
+    pub urgent_color: Option<Color>,
+}
+
+impl MergeWith<TabBarPart> for TabBarConfig {
+    fn merge_with(&mut self, part: &TabBarPart) {
+        self.off |= part.off;
+        if part.on {
+            self.off = false;
+        }
+
+        merge!((self, part), height, gaps_between_tabs, corner_radius);
+
+        merge_clone!((self, part), position, font, text_color);
+
+        merge_clone_opt!(
+            (self, part),
+            active_text_color,
+            inactive_text_color,
+            active_color,
+            inactive_color,
+            urgent_color,
+        );
+    }
+}
+
+/// KDL part for tab display (style selection + per-style config).
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct TabHeaderPart {
+    #[knuffel(child, unwrap(argument))]
+    pub style: Option<TabStyle>,
+    #[knuffel(child)]
+    pub bar: Option<TabBarPart>,
+}
+
+impl MergeWith<TabHeaderPart> for TabHeaderConfig {
+    fn merge_with(&mut self, part: &TabHeaderPart) {
+        merge_clone!((self, part), style);
+
+        merge!((self, part), bar);
+    }
 }
 
 impl MergeWith<TabIndicatorPart> for TabIndicator {

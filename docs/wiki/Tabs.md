@@ -46,12 +46,12 @@ binds {
 
 ### Tab Reordering
 
-Tabs can be reordered within a tabbed container using the `move-tab` action:
+Tabs can be reordered within a tabbed container using the `move-tab-left` and `move-tab-right` actions:
 
 ```kdl
 binds {
-    Mod+Shift+BracketLeft  { move-tab left; }
-    Mod+Shift+BracketRight { move-tab right; }
+    Mod+Shift+BracketLeft  { move-tab-left; }
+    Mod+Shift+BracketRight { move-tab-right; }
 }
 ```
 

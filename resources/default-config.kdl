@@ -255,6 +255,46 @@ layout {
         color "#0007"
     }
 
+    // Tabbed columns can show their tabs either as Niri's colored indicator
+    // along the column edge, or as an i3/sway-style header bar with text labels.
+    // tab-header {
+    //     // Choose how tabs are displayed:
+    //     // - "indicator": colored gradient bars along a column edge (default),
+    //     //   configured via the separate tab-indicator section.
+    //     // - "bar": horizontal header bar with text labels for each tab.
+    //     style "bar"
+    //
+    //     // Options for the "bar" style.
+    //     bar {
+    //         // Uncomment to hide the bar (off) or force it on (on).
+    //         // off
+    //         // on
+    //
+    //         // Height of the header bar in logical pixels.
+    //         height 24
+    //
+    //         // Where to place the bar relative to the column: "top" or "bottom".
+    //         position "top"
+    //
+    //         // Pango font description used for the tab labels.
+    //         font "sans 10"
+    //
+    //         // Gap between adjacent tabs, and the rounding of each tab, in logical pixels.
+    //         gaps-between-tabs 1
+    //         corner-radius 4
+    //
+    //         // Text color, with optional per-state overrides.
+    //         text-color "#e5e5e5"
+    //         // active-text-color "#ffffff"
+    //         // inactive-text-color "#a0a0a0"
+    //
+    //         // Tab background colors. When unset, they are derived automatically.
+    //         // active-color "#7fc8ff"
+    //         // inactive-color "#505050"
+    //         // urgent-color "#9b0000"
+    //     }
+    // }
+
     // Struts shrink the area occupied by windows, similarly to layer-shell panels.
     // You can think of them as a kind of outer gaps. They are set in logical pixels.
     // Left and right struts will cause the next window to the side to always be visible.
@@ -615,8 +655,8 @@ binds {
     // Toggle tabbed display at any tree level (generalized).
     Mod+Shift+W { toggle-tabbed; }
     // Move the focused tab left/right within its tabbed container.
-    Mod+Shift+BracketLeft { move-tab left; }
-    Mod+Shift+BracketRight { move-tab right; }
+    Mod+Shift+BracketLeft { move-tab-left; }
+    Mod+Shift+BracketRight { move-tab-right; }
 
     // Actions to switch layouts.
     // Note: if you uncomment these, make sure you do NOT have

@@ -8,7 +8,9 @@ The `split-window` action sets a pending split direction on the focused column. 
 
 ```kdl
 // Default keybinding
-Mod+Shift+S { split-window; }
+binds {
+    Mod+Shift+S { split-window; }
+}
 ```
 
 After pressing `Mod+Shift+S`, open a new window (e.g. a terminal). It will appear side-by-side with the focused window, each taking half the column width.
@@ -19,7 +21,9 @@ The `consume-window-into-split` action takes the focused window from an adjacent
 
 ```kdl
 // Default keybinding
-Mod+Shift+Comma { consume-window-into-split; }
+binds {
+    Mod+Shift+Comma { consume-window-into-split; }
+}
 ```
 
 ## Focus Navigation
@@ -43,7 +47,9 @@ Both `split-window` and `consume-window-into-split` accept an optional direction
 
 ```kdl
 // Split along the cross axis
-Mod+Shift+S { split-window "cross"; }
+binds {
+    Mod+Shift+S { split-window "cross"; }
+}
 ```
 
 ## Empty Split Collapse
