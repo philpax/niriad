@@ -5359,20 +5359,27 @@ impl<W: LayoutElement> Column<W> {
             .map(|(idx, _)| idx)
             .unwrap();
 
-        let prev_height = self.data()[tile_idx].size.h;
+        // Find the path to this leaf for correct data access in nested splits.
+        let path = self
+            .root
+            .path_for_leaf_index(tile_idx)
+            .unwrap_or_else(|| panic!("update_window: tile index {tile_idx} out of bounds"));
+
+        // Get the previous height and update the tile's data at the correct tree level.
+        let prev_height = self.root.leaf_data(&path).map(|d| d.size.h).unwrap_or(0.);
 
         self.tile_mut(tile_idx).update_window();
-        // Update data for this child — extract values first to avoid borrow conflicts.
+        // Update data for this leaf at the correct tree level.
         let tile_size = axis.size_in(self.tile(tile_idx).tile_size());
         let resizing_by_start = self
             .tile(tile_idx)
             .window()
             .interactive_resize_data()
             .is_some_and(|data| data.edges.contains(crate::utils::ResizeEdge::LEFT));
-        self.data_mut()[tile_idx].size = tile_size;
-        self.data_mut()[tile_idx].interactively_resizing_by_start_edge = resizing_by_start;
+        self.root.update_leaf_data(&path, tile_size, resizing_by_start);
 
-        let offset = prev_height - self.data()[tile_idx].size.h;
+        let new_height = self.root.leaf_data(&path).map(|d| d.size.h).unwrap_or(0.);
+        let offset = prev_height - new_height;
 
         let is_tabbed = self.is_tabbed();
 

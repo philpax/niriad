@@ -699,6 +699,45 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Returns a reference to the data for the leaf at the given path.
+    pub fn leaf_data(&self, path: &[usize]) -> Option<&SplitChildData> {
+        if path.is_empty() {
+            return None;
+        }
+        match self {
+            TileNode::Leaf(_) => None,
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                let idx = path[0];
+                if path.len() == 1 {
+                    data.get(idx)
+                } else {
+                    children.get(idx).and_then(|c| c.leaf_data(&path[1..]))
+                }
+            }
+        }
+    }
+
+    /// Updates the size and resize state for the leaf at the given path.
+    pub fn update_leaf_data(&mut self, path: &[usize], size: Size<f64, Logical>, resizing_by_start: bool) {
+        if path.is_empty() {
+            return;
+        }
+        match self {
+            TileNode::Leaf(_) => {}
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                let idx = path[0];
+                if path.len() == 1 {
+                    if let Some(d) = data.get_mut(idx) {
+                        d.size = size;
+                        d.interactively_resizing_by_start_edge = resizing_by_start;
+                    }
+                } else if let Some(child) = children.get_mut(idx) {
+                    child.update_leaf_data(&path[1..], size, resizing_by_start);
+                }
+            }
+        }
+    }
+
     /// Returns the flat leaf index of the active leaf (following active_idx down the tree).
     pub fn path_for_leaf_index_from_active(&self) -> Option<usize> {
         let mut count = 0;
