@@ -4896,23 +4896,6 @@ impl<W: LayoutElement> Column<W> {
         self.root.animate_leaves_if_moved(origin, gaps, &prev_offsets);
     }
 
-    /// Returns an iterator over (tile, data) pairs for the root's children (mutable).
-    fn tiles_and_data_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, &mut SplitChildData)> {
-        match &mut self.root {
-            TileNode::Leaf(_tile) => {
-                panic!("tiles_and_data_mut called on a Leaf root");
-            }
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
-                children.iter_mut().zip(data.iter_mut()).filter_map(|(child, data)| {
-                    match child {
-                        TileNode::Leaf(tile) => Some((tile, data)),
-                        _ => None,
-                    }
-                })
-            }
-        }
-    }
-
     /// Returns an iterator over (tile, data) pairs for the root's children (immutable).
     fn tiles_and_data(&self) -> impl Iterator<Item = (&Tile<W>, &SplitChildData)> {
         match &self.root {
@@ -5084,10 +5067,8 @@ impl<W: LayoutElement> Column<W> {
             update_sizes = true;
         }
 
-        for (tile, data) in self.tiles_and_data_mut() {
-            tile.update_config(tile_view_size, scale, options.clone());
-            data.update(tile, axis);
-        }
+        // Update config for all tiles recursively (including nested splits).
+        self.root.update_config_tiles(tile_view_size, scale, options.clone(), axis);
 
         if let Some(tab_header) = self.tab_header_mut() {
             tab_header.update_config(options.layout.tab_header.clone());

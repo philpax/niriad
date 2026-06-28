@@ -1,3 +1,4 @@
+use std::iter::zip;
 use std::rc::Rc;
 
 use niri_ipc::ColumnDisplay;
@@ -645,14 +646,19 @@ impl<W: LayoutElement> TileNode<W> {
         tile_view_size: Size<f64, Logical>,
         scale: f64,
         options: Rc<Options>,
+        axis: AxisMap,
     ) {
         match self {
             TileNode::Leaf(tile) => {
                 tile.update_config(tile_view_size, scale, options);
             }
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
-                for child in children {
-                    child.update_config_tiles(tile_view_size, scale, options.clone());
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                for (child, d) in zip(children, data) {
+                    child.update_config_tiles(tile_view_size, scale, options.clone(), axis);
+                    // Update data for leaf children.
+                    if let TileNode::Leaf(tile) = child {
+                        d.update(tile, axis);
+                    }
                 }
             }
         }
