@@ -118,6 +118,10 @@ pub struct TabBar {
     active_idx: usize,
     /// Whether textures need regeneration (scale changed).
     cached_scale: f64,
+    /// Horizontal scroll offset for overflowing tabs (in logical pixels).
+    scroll_offset: f64,
+    /// Total width of all tabs (including gaps), for computing max_scroll.
+    total_tabs_width: f64,
     /// Open animation.
     open_anim: Option<Animation>,
     /// Config.
@@ -131,6 +135,8 @@ impl TabBar {
             tab_rects: Vec::new(),
             active_idx: 0,
             cached_scale: 0.,
+            scroll_offset: 0.,
+            total_tabs_width: 0.,
             open_anim: None,
             config,
         }
@@ -214,8 +220,8 @@ impl TabBar {
         let bar_height = self.config.height;
         let gap = self.config.gaps_between_tabs;
         let total_gap = gap * (count as f64 - 1.0).max(0.);
-        let available_width = area.size.w - total_gap;
-        let tab_width = (available_width / count as f64).max(1.);
+        let available_width = area.size.w;
+        let tab_width = ((available_width - total_gap) / count as f64).max(1.);
 
         let bar_y = match self.config.position {
             niri_config::TabBarPosition::Top => area.loc.y,
@@ -225,6 +231,7 @@ impl TabBar {
         let progress = self.open_anim.as_ref().map_or(1., |a| a.value().max(0.));
         let bar_height = bar_height * progress;
 
+        // Compute tab positions (without scroll offset).
         for (i, (tab, rect)) in tabs.zip(self.tab_rects.iter_mut()).enumerate() {
             if tab.is_active {
                 self.active_idx = i;
@@ -234,6 +241,32 @@ impl TabBar {
                 Point::from((x, bar_y)),
                 Size::from((tab_width, bar_height)),
             );
+        }
+
+        // Compute total tabs width and max scroll offset.
+        self.total_tabs_width = count as f64 * tab_width + total_gap;
+        let max_scroll = (self.total_tabs_width - available_width).max(0.);
+
+        // Auto-scroll to keep the active tab visible.
+        if count > 0 {
+            let active_rect = &self.tab_rects[self.active_idx];
+            let active_left = active_rect.loc.x - area.loc.x;
+            let active_right = active_left + active_rect.size.w;
+            if active_left < self.scroll_offset {
+                // Active tab is scrolled off the left; scroll to show it.
+                self.scroll_offset = active_left;
+            } else if active_right > self.scroll_offset + available_width {
+                // Active tab is scrolled off the right; scroll to show it.
+                self.scroll_offset = active_right - available_width;
+            }
+        }
+
+        // Clamp scroll offset.
+        self.scroll_offset = self.scroll_offset.clamp(0., max_scroll);
+
+        // Apply scroll offset to all tab rects.
+        for rect in self.tab_rects.iter_mut() {
+            rect.loc.x -= self.scroll_offset;
         }
     }
 
@@ -340,6 +373,20 @@ impl TabBar {
                     text_elem,
                 )));
             }
+        }
+    }
+
+    /// Handle a scroll event over the tab bar.
+    /// `delta` is the scroll amount in logical pixels (positive = scroll right).
+    /// Returns true if the scroll offset changed.
+    pub fn scroll(&mut self, delta: f64, area_width: f64) -> bool {
+        let max_scroll = (self.total_tabs_width - area_width).max(0.);
+        let new_offset = (self.scroll_offset + delta).clamp(0., max_scroll);
+        if new_offset != self.scroll_offset {
+            self.scroll_offset = new_offset;
+            true
+        } else {
+            false
         }
     }
 
