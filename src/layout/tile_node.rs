@@ -745,6 +745,26 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Updates the span for the leaf at the given path.
+    pub fn update_leaf_span(&mut self, path: &[usize], span: ChildSpan) {
+        if path.is_empty() {
+            return;
+        }
+        match self {
+            TileNode::Leaf(_) => {}
+            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+                let idx = path[0];
+                if path.len() == 1 {
+                    if let Some(d) = data.get_mut(idx) {
+                        d.span = span;
+                    }
+                } else if let Some(child) = children.get_mut(idx) {
+                    child.update_leaf_span(&path[1..], span);
+                }
+            }
+        }
+    }
+
     /// Returns the flat leaf index of the active leaf (following active_idx down the tree).
     pub fn path_for_leaf_index_from_active(&self) -> Option<usize> {
         let mut count = 0;

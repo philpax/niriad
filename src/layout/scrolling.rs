@@ -6273,8 +6273,13 @@ impl<W: LayoutElement> Column<W> {
             new_window_cross_span = f64::max(new_window_cross_span, f64::from(min_h));
         }
 
-        self.data_mut()[tile_idx].span =
-            ChildSpan::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN));
+        self.root.update_leaf_data(
+            &path,
+            self.tile(tile_idx).tile_size(),
+            false, // resizing_by_start not relevant here
+        );
+        // Update the span specifically.
+        self.root.update_leaf_span(&path, ChildSpan::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN)));
         self.is_pending_maximized = false;
         self.update_tile_sizes(animate);
     }
@@ -6288,7 +6293,9 @@ impl<W: LayoutElement> Column<W> {
             }
         } else {
             let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
-            self.data_mut()[tile_idx].span = ChildSpan::auto_1();
+            let path = self.root.path_for_leaf_index(tile_idx)
+                .unwrap_or_else(|| panic!("convert_heights_to_auto: tile index {tile_idx} out of bounds"));
+            self.root.update_leaf_span(&path, ChildSpan::auto_1());
         }
 
         self.update_tile_sizes(true);
@@ -6355,7 +6362,9 @@ impl<W: LayoutElement> Column<W> {
                 }
             }
         };
-        self.data_mut()[tile_idx].span = ChildSpan::Preset(preset_idx);
+        let path = self.root.path_for_leaf_index(tile_idx)
+            .unwrap_or_else(|| panic!("toggle_height preset: tile index {tile_idx} out of bounds"));
+        self.root.update_leaf_span(&path, ChildSpan::Preset(preset_idx));
         self.is_pending_maximized = false;
         self.update_tile_sizes(true);
     }
