@@ -4824,6 +4824,51 @@ fn drag_below_a_row_stacks_below_drag_above_stacks_above() {
 }
 
 #[test]
+fn drop_below_a_nested_row_inserts_after_the_whole_row() {
+    use super::monitor::InsertPosition;
+    // Cross[1, 2, Main[3,4]] — a vertical stack whose bottom child is a side-by-side row.
+    // Windows: 1 at y≈16, 2 at y≈251, the row (3 left / 4 right) at y≈486..704.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(3) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(4) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::Communicate(4),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    assert_eq!(window_order(&layout), vec![1, 2, 3, 4]);
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+
+    // Below the row → after the *whole* row (leaf index 4 = past the end), not after the row's
+    // first leaf (3), which would land inside/before the row (the reported "middle").
+    assert!(
+        matches!(ip(166., 690.), InsertPosition::InColumn(0, 4)),
+        "below the row should insert after the whole row, got {:?}",
+        ip(166., 690.)
+    );
+    // Above the row → before the row (leaf index 2), i.e. between window 2 and the row.
+    assert!(
+        matches!(ip(166., 480.), InsertPosition::InColumn(0, 2)),
+        "above the row should insert before the whole row, got {:?}",
+        ip(166., 480.)
+    );
+    // Interior of the row's left tile splits it (window 3 = leaf 2), not above/below.
+    assert!(
+        matches!(ip(166., 590.), InsertPosition::InSplit(0, 2, _, _)),
+        "interior of the row should split a tile, got {:?}",
+        ip(166., 590.)
+    );
+}
+
+#[test]
 fn drag_into_row_targets_the_tile_under_the_cursor() {
     use super::monitor::InsertPosition;
 

@@ -1201,24 +1201,33 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let gap_threshold = self.options.layout.gaps * 2.;
         if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
-            // Find the tile under the pointer. A vertical stack disambiguates by cross (y); a
-            // horizontal row also disambiguates by main (x), so the correct tile is split.
+            // Find the tile under the pointer with a 2D hit-test: a vertical stack disambiguates by
+            // cross (y), a horizontal row by main (x). Fall back to the cross-closest tile if the
+            // pointer isn't inside any tile horizontally.
             let offsets: Vec<_> = col.tile_offsets().collect();
             let tile_idx = offsets
                 .iter()
                 .enumerate()
                 .find(|(idx, off)| {
                     let sz = leaf_size(*idx);
-                    let y_ok = cross >= off.y && cross <= off.y + sz.h;
-                    if col_is_row {
-                        let left = col_main_start + off.x;
-                        y_ok && main >= left && main <= left + sz.w
-                    } else {
-                        y_ok
-                    }
+                    let left = col_main_start + off.x;
+                    cross >= off.y
+                        && cross <= off.y + sz.h
+                        && main >= left
+                        && main <= left + sz.w
                 })
                 .map(|(idx, _)| idx)
                 .unwrap_or(closest_tile_idx);
+
+            // The root child (a single window, or a whole row / tabbed group) the tile belongs to,
+            // and whether that child is a horizontal row.
+            let rc = col
+                .root
+                .path_for_leaf_index(tile_idx)
+                .and_then(|p| p.first().copied())
+                .unwrap_or(0);
+            let tile_in_row = col_is_row
+                || matches!(col.root.node_at(&[rc]), TileNode::Split { axis: SplitAxis::Main, .. });
 
             // Check if we're near the top/bottom edge — if so, insert a row (InColumn) instead of
             // splitting side-by-side (InSplit).
@@ -1228,22 +1237,29 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let tile_bottom = tile_top + tile_h;
                 let dist_to_top = (cross - tile_top).abs();
                 let dist_to_bottom = (cross - tile_bottom).abs();
-                // A row fills the column's full height, so a fixed pixel edge would leave only a
+                // A row fills its band's full height, so a fixed pixel edge would leave only a
                 // sliver for above/below and devote the whole middle to side-by-side splitting.
-                // Use generous top/bottom quarters there; keep a small fixed edge for a vertical
-                // stack, where the inter-tile gaps already handle row insertion.
-                let edge_threshold = if col_is_row {
+                // Use generous top/bottom quarters for a row; keep a small fixed edge for a single
+                // window, where the inter-tile gaps already handle row insertion.
+                let edge_threshold = if tile_in_row {
                     f64::max(self.options.layout.gaps * 3., tile_h * 0.25)
                 } else {
                     self.options.layout.gaps * 3.
                 };
 
-                // For a row, the top/bottom edges wrap the whole row (above = leaf 0, below = end);
-                // for a vertical stack they insert relative to this tile.
+                // Insert above/below the whole root child (the entire row, or the single window) —
+                // never between a row's side-by-side tiles. For a column that is itself one big row,
+                // that means above/below the whole column.
                 let (above_idx, below_idx) = if col_is_row {
                     (0, col.tiles_len())
                 } else {
-                    (tile_idx, tile_idx + 1)
+                    let above = col.root_child_first_leaf_idx(rc);
+                    let below = if rc + 1 < col.root.child_count() {
+                        col.root_child_first_leaf_idx(rc + 1)
+                    } else {
+                        col.tiles_len()
+                    };
+                    (above, below)
                 };
 
                 if dist_to_top <= edge_threshold {
