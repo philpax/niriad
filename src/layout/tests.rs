@@ -4728,3 +4728,30 @@ fn toggle_tabbed_on_main_split() {
     assert_eq!(window_visible(&layout2, 2), Some(true), "both visible after untoggle");
 }
 
+#[test]
+fn tabbed_tab_containing_split_shows_all_its_leaves() {
+    // Build a column whose root, once tabbed, has a tab that is itself a split:
+    //   Main[1, Cross[2, 3]]  -- toggle -->  Tabbed[1, Cross[2, 3]]
+    // The active tab (containing windows 2 and 3) must show BOTH of its windows, while the other
+    // tab (window 1) stays hidden. A naive "only the single active leaf is visible" would wrongly
+    // hide window 2.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ToggleTabbed,
+    ]);
+
+    assert_eq!(tile_count(&layout), 3);
+    assert_eq!(window_visible(&layout, 3), Some(true), "active leaf visible");
+    assert_eq!(
+        window_visible(&layout, 2),
+        Some(true),
+        "the other leaf of the active tab's split must also be visible"
+    );
+    assert_eq!(window_visible(&layout, 1), Some(false), "the other tab is hidden");
+}
+

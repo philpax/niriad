@@ -6453,9 +6453,14 @@ impl<W: LayoutElement> Column<W> {
         let new_origin = self.tiles_origin();
         let origin_delta = prev_origin - new_origin;
 
+        // Determine which leaves are hidden in tabbed mode (everything outside the active tab's
+        // subtree). These are exactly the tiles whose opacity changes on the transition.
+        self.set_display_mode(ColumnDisplay::Tabbed);
+        let hidden_in_tabbed: Vec<bool> =
+            self.root.leaf_visibility().into_iter().map(|v| !v).collect();
+
         // We need to walk the tiles in the normal display mode to get the right offsets.
         self.set_display_mode(ColumnDisplay::Normal);
-        let active_tile_idx = self.active_tile_idx();
         let anim_config = self.options.animations.window_movement.0;
         for (tile, pos) in self.tiles_mut() {
             let mut cross_delta = pos.y - prev_origin.y;
@@ -6469,10 +6474,10 @@ impl<W: LayoutElement> Column<W> {
             tile.animate_move_from(delta);
         }
 
-        // Animate the opacity.
-        for (idx, tile) in self.tiles_enumerated_mut() {
-            let is_active = idx == active_tile_idx;
-            if !is_active {
+        // Animate the opacity: tabs outside the active subtree fade out when entering tabbed mode,
+        // and fade back in when leaving it.
+        for ((_, tile), &hidden) in self.tiles_enumerated_mut().zip(&hidden_in_tabbed) {
+            if hidden {
                 let (from, to) = if display == ColumnDisplay::Tabbed {
                     (1., 0.)
                 } else {
@@ -6605,14 +6610,15 @@ impl<W: LayoutElement> Column<W> {
     fn tiles_in_render_order(
         &self,
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> + '_ {
-        let rest_visible = !self.is_tabbed();
+        // A leaf is visible unless a Tabbed ancestor on its path hides it (only that tab's active
+        // child shows). This correctly reveals *all* leaves of a split that is itself a tab.
+        let visibility = self.root.leaf_visibility();
         let positions = self.leaf_positions();
-        let (active, order) = self.render_order(positions.len());
+        let (_active, order) = self.render_order(positions.len());
         let leaves: Vec<&Tile<W>> = self.root.leaves().map(|(t, _)| t).collect();
 
         order.into_iter().map(move |idx| {
-            let visible = idx == active || rest_visible;
-            (leaves[idx], positions[idx].1, visible)
+            (leaves[idx], positions[idx].1, visibility[idx])
         })
     }
 

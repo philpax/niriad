@@ -345,6 +345,32 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Returns, in leaf (tree) order, whether each leaf is currently visible.
+    ///
+    /// A leaf is hidden only if some `Tabbed` ancestor on its path shows a different tab. All
+    /// children of a `Split` are visible, so a split that is itself a tab reveals all its leaves.
+    pub fn leaf_visibility(&self) -> Vec<bool> {
+        let mut out = Vec::new();
+        self.collect_leaf_visibility(true, &mut out);
+        out
+    }
+
+    fn collect_leaf_visibility(&self, visible: bool, out: &mut Vec<bool>) {
+        match self {
+            TileNode::Leaf(_) => out.push(visible),
+            TileNode::Split { children, .. } => {
+                for child in children {
+                    child.collect_leaf_visibility(visible, out);
+                }
+            }
+            TileNode::Tabbed { children, active_idx, .. } => {
+                for (i, child) in children.iter().enumerate() {
+                    child.collect_leaf_visibility(visible && i == *active_idx, out);
+                }
+            }
+        }
+    }
+
     /// Returns the active leaf (following active_idx down the tree).
     pub fn active_leaf(&self) -> &Tile<W> {
         match self {
