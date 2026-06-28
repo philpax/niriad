@@ -323,7 +323,8 @@ impl<W: LayoutElement> TileNode<W> {
             TileNode::Leaf(tile) => tile,
             TileNode::Split { children, active_idx, .. }
             | TileNode::Tabbed { children, active_idx, .. } => {
-                children[*active_idx].active_leaf()
+                let idx = (*active_idx).min(children.len().saturating_sub(1));
+                children[idx].active_leaf()
             }
         }
     }
@@ -334,7 +335,8 @@ impl<W: LayoutElement> TileNode<W> {
             TileNode::Leaf(tile) => tile,
             TileNode::Split { children, active_idx, .. }
             | TileNode::Tabbed { children, active_idx, .. } => {
-                children[*active_idx].active_leaf_mut()
+                let idx = (*active_idx).min(children.len().saturating_sub(1));
+                children[idx].active_leaf_mut()
             }
         }
     }
@@ -345,8 +347,9 @@ impl<W: LayoutElement> TileNode<W> {
             TileNode::Leaf(_) => Vec::new(),
             TileNode::Split { children, active_idx, .. }
             | TileNode::Tabbed { children, active_idx, .. } => {
-                let mut path = vec![*active_idx];
-                path.extend(children[*active_idx].active_leaf_path());
+                let idx = (*active_idx).min(children.len().saturating_sub(1));
+                let mut path = vec![idx];
+                path.extend(children[idx].active_leaf_path());
                 path
             }
         }
@@ -489,8 +492,8 @@ impl<W: LayoutElement> TileNode<W> {
                         if idx < *active_idx {
                             *active_idx -= 1;
                         } else if idx == *active_idx {
-                            if *active_idx == children.len() {
-                                // Removed the last child; activate the new last.
+                            if *active_idx >= children.len() {
+                                // Removed the last child (or active_idx was stale); activate the new last.
                                 if !children.is_empty() {
                                     *active_idx = children.len() - 1;
                                     children[*active_idx]
@@ -503,6 +506,10 @@ impl<W: LayoutElement> TileNode<W> {
                                     .active_leaf_mut()
                                     .ensure_alpha_animates_to_1();
                             }
+                        }
+                        // Clamp active_idx to valid range in case it was stale.
+                        if !children.is_empty() {
+                            *active_idx = (*active_idx).min(children.len() - 1);
                         }
 
                         // If only one child left and it's a leaf, reset its weight.
