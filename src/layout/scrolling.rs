@@ -3390,10 +3390,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let col = &mut self.columns[self.active_column_idx];
-        col.toggle_width(None, forwards);
-
-        cancel_resize_for_column(&mut self.interactive_resize, col);
+        let idx = self.active_column_idx;
+        self.columns[idx].toggle_width(None, forwards);
+        self.data[idx].update(&self.columns[idx]);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut self.columns[idx]);
     }
 
     pub fn toggle_full_width(&mut self) {
@@ -3401,10 +3401,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let col = &mut self.columns[self.active_column_idx];
-        col.toggle_full_width();
-
-        cancel_resize_for_column(&mut self.interactive_resize, col);
+        let idx = self.active_column_idx;
+        self.columns[idx].toggle_full_width();
+        self.data[idx].update(&self.columns[idx]);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut self.columns[idx]);
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -3432,7 +3432,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             col.set_column_width(change, tile_idx, true);
         }
 
-        cancel_resize_for_column(&mut self.interactive_resize, col);
+        // The column width may have changed; keep the cached column data in sync.
+        self.data[col_idx].update(&self.columns[col_idx]);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut self.columns[col_idx]);
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -3495,10 +3497,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             (self.active_column_idx, None)
         };
 
-        let col = &mut self.columns[col_idx];
-        col.toggle_width(tile_idx, forwards);
-
-        cancel_resize_for_column(&mut self.interactive_resize, col);
+        self.columns[col_idx].toggle_width(tile_idx, forwards);
+        self.data[col_idx].update(&self.columns[col_idx]);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut self.columns[col_idx]);
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
