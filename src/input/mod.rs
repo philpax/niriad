@@ -1748,6 +1748,16 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
+            Action::MoveTabLeft => {
+                self.niri.layout.move_tab(ScrollDirection::Left);
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveTabRight => {
+                self.niri.layout.move_tab(ScrollDirection::Right);
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
             Action::SetColumnDisplay(display) => {
                 self.niri.layout.set_column_display(display);
                 self.maybe_warp_cursor_to_focus();

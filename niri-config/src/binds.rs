@@ -220,6 +220,8 @@ pub enum Action {
     ToggleColumnTabbedDisplay,
     ToggleTabbed,
     MoveTab(#[knuffel(argument, str)] TabDirection),
+    MoveTabLeft,
+    MoveTabRight,
     SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
     CenterColumn,
     CenterWindow,
