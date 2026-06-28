@@ -4446,6 +4446,20 @@ fn tile_count(layout: &Layout<TestWindow>) -> usize {
     layout.active_workspace().unwrap().tiles().count()
 }
 
+/// Helper: whether the window with the given id is currently rendered (visible). Returns None if
+/// the window isn't present.
+fn window_visible(layout: &Layout<TestWindow>, id: usize) -> Option<bool> {
+    let ws = layout.active_workspace().unwrap();
+    ws.tiles_with_render_positions()
+        .find_map(|(tile, _, visible)| (*tile.window().id() == id).then_some(visible))
+}
+
+/// Helper: window ids in tile (tree/leaf) order across the active workspace.
+fn window_order(layout: &Layout<TestWindow>) -> Vec<usize> {
+    let ws = layout.active_workspace().unwrap();
+    ws.tiles().map(|tile| *tile.window().id()).collect()
+}
+
 #[test]
 fn split_window_creates_side_by_side_tiles() {
     // SplitWindow + AddWindow should create a main-axis split with two side-by-side tiles.
@@ -4488,22 +4502,29 @@ fn consume_window_into_split_places_side_by_side() {
 
 #[test]
 fn toggle_tabbed_hides_inactive_tiles() {
-    // ToggleTabbed should create a tabbed container showing only the active tile.
+    // Build a real two-window column (cross split), then tab it. ToggleTabbed should show only the
+    // active tile and hide the rest.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
         Op::AddWindow { params: TestWindowParams::new(2) },
         Op::ToggleTabbed,
+        Op::AdvanceAnimations { msec_delta: 1000 },
     ]);
 
     // Both windows should still be in the layout.
     assert_eq!(tile_count(&layout), 2);
 
-    // In tabbed mode, tiles share the same position (one visible at a time).
-    // The active tile should be visible.
-    let pos1 = window_geo(&layout, 1);
-    let pos2 = window_geo(&layout, 2);
-    assert!(pos1.is_some() || pos2.is_some(), "at least one tab should be visible");
+    // In tabbed mode exactly one tile is visible at a time, and it's the active one (window 2,
+    // the last added). The inactive tab must be hidden.
+    assert_eq!(window_visible(&layout, 2), Some(true), "active tab should be visible");
+    assert_eq!(window_visible(&layout, 1), Some(false), "inactive tab should be hidden");
+
+    // Both tabs occupy the same position (stacked on top of each other).
+    let (pos1, _) = window_geo(&layout, 1).unwrap();
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    assert_eq!(pos1, pos2, "tabbed tiles should share the same position");
 }
 
 #[test]
@@ -4528,18 +4549,34 @@ fn toggle_tabbed_then_untoggle_restores_split() {
 
 #[test]
 fn move_tab_reorders_tabs() {
-    // MoveTab should reorder tabs within a tabbed container without losing windows.
-    let layout = check_ops([
+    // MoveTab should reorder tabs within a tabbed container. The three windows start in order
+    // [1, 2, 3] with window 3 active (last added). Moving the active tab left swaps it with its
+    // predecessor, giving [1, 3, 2].
+    let before = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
         Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
         Op::AddWindow { params: TestWindowParams::new(3) },
         Op::ToggleTabbed,
-        Op::MoveTab(niri_ipc::TabDirection::Right),
+    ]);
+    assert_eq!(window_order(&before), vec![1, 2, 3]);
+
+    let after = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ToggleTabbed,
+        Op::MoveTab(niri_ipc::TabDirection::Left),
     ]);
 
-    // All three windows should still be present.
-    assert_eq!(tile_count(&layout), 3);
+    // No windows lost, and the active tab (3) moved one slot left.
+    assert_eq!(tile_count(&after), 3);
+    assert_eq!(window_order(&after), vec![1, 3, 2], "active tab should move left");
 }
 
 #[test]
@@ -4617,8 +4654,19 @@ fn split_in_fullscreen_column_does_not_violate_invariant() {
         Op::AddWindow { params: TestWindowParams::new(2) },
     ]);
 
-    // Should not panic; verify_invariants is called by check_ops.
-    assert!(tile_count(&layout) >= 1);
+    // The split must have been suppressed: both windows exist, but window 1 (fullscreen) is not
+    // shrunk into a side-by-side split — it lands in its own column, wider than the normally-tiled
+    // window 2. check_ops also verifies the fullscreen invariant.
+    assert_eq!(tile_count(&layout), 2);
+    let (_, size1) = window_geo(&layout, 1).unwrap();
+    let (_, size2) = window_geo(&layout, 2).unwrap();
+    assert!(
+        size1.w > size2.w,
+        "fullscreen window (w={}) should be wider than the separately-tiled window (w={}) — \
+         i.e. no split was created",
+        size1.w,
+        size2.w,
+    );
 }
 
 #[test]
@@ -4631,15 +4679,28 @@ fn consume_into_split_with_three_columns() {
         Op::AddWindow { params: TestWindowParams::new(3) },
         // Three columns, each with one window.
         Op::ConsumeWindowIntoSplit,
-        // Now column 1 has two windows side by side, column 3 has one.
     ]);
 
     assert_eq!(tile_count(&layout), 3);
+
+    // The consume must have created a side-by-side split: some pair of windows now shares a cross
+    // position (same y) at different main positions (different x), while a third stays apart.
+    let geos: Vec<_> = (1..=3)
+        .map(|id| window_geo(&layout, id).unwrap().0)
+        .collect();
+    let has_side_by_side = (0..geos.len()).any(|i| {
+        (0..geos.len()).any(|j| i != j && geos[i].y == geos[j].y && geos[i].x != geos[j].x)
+    });
+    assert!(
+        has_side_by_side,
+        "consume-into-split should leave a side-by-side pair, got positions {geos:?}"
+    );
 }
 
 #[test]
 fn toggle_tabbed_on_main_split() {
-    // Toggling tabbed on a main-axis split should work.
+    // Tabbing a main-axis split turns its two side-by-side windows into tabs: only the active one
+    // is visible. (Visibility is render-order state, independent of in-flight animations.)
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -4649,8 +4710,10 @@ fn toggle_tabbed_on_main_split() {
     ]);
 
     assert_eq!(tile_count(&layout), 2);
+    assert_eq!(window_visible(&layout, 2), Some(true), "active tab visible");
+    assert_eq!(window_visible(&layout, 1), Some(false), "inactive tab hidden");
 
-    // Untoggle should restore.
+    // Untoggling restores the side-by-side split: both windows visible again.
     let layout2 = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -4661,4 +4724,7 @@ fn toggle_tabbed_on_main_split() {
     ]);
 
     assert_eq!(tile_count(&layout2), 2);
+    assert_eq!(window_visible(&layout2, 1), Some(true), "both visible after untoggle");
+    assert_eq!(window_visible(&layout2, 2), Some(true), "both visible after untoggle");
 }
+
