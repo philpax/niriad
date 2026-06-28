@@ -1170,8 +1170,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let (closest_tile_idx, closest_tile_cross) = if col.is_tabbed() {
             // In tabbed mode, there's only one tile visible, and we want to check its top and
             // bottom.
-            let top = col.tile_offsets().nth(col.active_tile_idx()).unwrap().y;
-            let bottom = top + col.data()[col.active_tile_idx()].size.h;
+            let active_off = col.active_tile_offset();
+            let top = active_off.y;
+            let active_path = col.root.active_leaf_path();
+            let bottom = top + col.root.leaf_data(&active_path).map(|d| d.size.h).unwrap_or(0.);
             if (top - cross).abs() <= (bottom - cross).abs() {
                 (col.active_tile_idx(), top)
             } else {
@@ -3184,8 +3186,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let (height, y) = if is_tabbed {
                     // In tabbed mode, there's only one tile visible, and we want to draw the hint
                     // at its top or bottom.
-                    let top = col.tile_offset(col.active_tile_idx()).y;
-                    let bottom = top + col.data()[col.active_tile_idx()].size.h;
+                    let active_off = col.active_tile_offset();
+                    let top = active_off.y;
+                    let active_path = col.root.active_leaf_path();
+                    let bottom = top + col.root.leaf_data(&active_path).map(|d| d.size.h).unwrap_or(0.);
 
                     if tile_index <= col.active_tile_idx() {
                         (150., top)
@@ -3226,8 +3230,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 }
 
                 let tile_off = col.tile_offset(tile_index);
-                let tile_w = col.data()[tile_index].size.w;
-                let tile_h = col.data()[tile_index].size.h;
+                // Use path-based data access for nested split support.
+                let tile_path = col.root.path_for_leaf_index(tile_index);
+                let (tile_w, tile_h) = tile_path
+                    .as_ref()
+                    .and_then(|p| col.root.leaf_data(p))
+                    .map(|d| (d.size.w, d.size.h))
+                    .unwrap_or((0., 0.));
                 let col_main = self.column_main_pos(column_index);
 
                 // For a Main-axis split, show a half-width rectangle covering the target half.
@@ -6177,16 +6186,23 @@ impl<W: LayoutElement> Column<W> {
     fn set_window_height(&mut self, change: SizeChange, tile_idx: Option<usize>, animate: bool) {
         let tile_idx = tile_idx.unwrap_or(self.active_tile_idx());
 
+        // Use path-based data access for nested split support.
+        let path = self
+            .root
+            .path_for_leaf_index(tile_idx)
+            .unwrap_or_else(|| panic!("set_window_height: tile index {tile_idx} out of bounds"));
+
         // Start by converting all heights to automatic, since only one window in the column can be
         // non-auto-height. If the current tile is already non-auto, however, we can skip that
         // step. Which is not only for optimization, but also preserves automatic weights in case
         // one window is resized in such a way that other windows hit their min size, and then
         // back.
-        if matches!(self.data()[tile_idx].span, ChildSpan::Auto { .. }) {
+        let is_auto = self.root.leaf_data(&path).map(|d| matches!(d.span, ChildSpan::Auto { .. })).unwrap_or(false);
+        if is_auto {
             self.convert_heights_to_auto();
         }
 
-        let current_height = self.data()[tile_idx].span;
+        let current_height = self.root.leaf_data(&path).map(|d| d.span).unwrap_or(ChildSpan::Auto { weight: 1. });
         let tile = self.tile(tile_idx);
         let current_window_cross_span = match current_height {
             ChildSpan::Auto { .. } | ChildSpan::Preset(_) => {
@@ -6286,17 +6302,23 @@ impl<W: LayoutElement> Column<W> {
         // step. Which is not only for optimization, but also preserves automatic weights in case
         // one window is resized in such a way that other windows hit their min size, and then
         // back.
-        if matches!(self.data()[tile_idx].span, ChildSpan::Auto { .. }) {
+        // Use path-based data access for nested split support.
+        let path = self
+            .root
+            .path_for_leaf_index(tile_idx)
+            .unwrap_or_else(|| panic!("toggle_height: tile index {tile_idx} out of bounds"));
+
+        if matches!(self.root.leaf_data(&path).map(|d| d.span), Some(ChildSpan::Auto { .. })) {
             self.convert_heights_to_auto();
         }
 
         let len = self.options.layout.preset_window_heights.len();
-        let preset_idx = match self.data()[tile_idx].span {
-            ChildSpan::Preset(idx) if !self.is_pending_maximized => {
+        let preset_idx = match self.root.leaf_data(&path).map(|d| d.span) {
+            Some(ChildSpan::Preset(idx)) if !self.is_pending_maximized => {
                 (idx + if forwards { 1 } else { len - 1 }) % len
             }
             _ => {
-                let current_tile_cross_span = self.data()[tile_idx].size.h;
+                let current_tile_cross_span = self.root.leaf_data(&path).map(|d| d.size.h).unwrap_or(0.);
                 let tile = self.tile(tile_idx);
 
                 let mut it = self
