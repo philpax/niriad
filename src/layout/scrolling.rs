@@ -1228,7 +1228,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let tile_bottom = tile_top + tile_h;
                 let dist_to_top = (cross - tile_top).abs();
                 let dist_to_bottom = (cross - tile_bottom).abs();
-                let edge_threshold = self.options.layout.gaps * 3.;
+                // A row fills the column's full height, so a fixed pixel edge would leave only a
+                // sliver for above/below and devote the whole middle to side-by-side splitting.
+                // Use generous top/bottom quarters there; keep a small fixed edge for a vertical
+                // stack, where the inter-tile gaps already handle row insertion.
+                let edge_threshold = if col_is_row {
+                    f64::max(self.options.layout.gaps * 3., tile_h * 0.25)
+                } else {
+                    self.options.layout.gaps * 3.
+                };
 
                 // For a row, the top/bottom edges wrap the whole row (above = leaf 0, below = end);
                 // for a vertical stack they insert relative to this tile.

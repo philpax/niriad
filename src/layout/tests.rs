@@ -4811,17 +4811,19 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
         ip(482., 360.)
     );
 
-    // Top edge over *either* tile inserts above the whole row (leaf 0), not into it.
+    // The top quarter (over either tile) inserts above the whole row (leaf 0), not into it. The
+    // zone is generous — a row fills the column height, so above/below must be easy to hit.
     assert!(
-        matches!(ip(482., 30.), InsertPosition::InColumn(0, 0)),
-        "top of the row (over the right tile) should insert above the whole row, got {:?}",
-        ip(482., 30.)
+        matches!(ip(482., 100.), InsertPosition::InColumn(0, 0)),
+        "top region of the row should insert above the whole row, got {:?}",
+        ip(482., 100.)
     );
-    // Bottom edge inserts below the whole row (past the last leaf).
+    // The bottom quarter inserts below the whole row (past the last leaf) — well away from the very
+    // edge, confirming the zone is reachable.
     assert!(
-        matches!(ip(166., 690.), InsertPosition::InColumn(0, 2)),
-        "bottom of the row should insert below the whole row, got {:?}",
-        ip(166., 690.)
+        matches!(ip(166., 600.), InsertPosition::InColumn(0, 2)),
+        "bottom region of the row should insert below the whole row, got {:?}",
+        ip(166., 600.)
     );
 }
 
