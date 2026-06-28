@@ -4460,6 +4460,15 @@ fn window_order(layout: &Layout<TestWindow>) -> Vec<usize> {
     ws.tiles().map(|tile| *tile.window().id()).collect()
 }
 
+/// Helper: the id of the currently active (focused) window in the active workspace.
+fn active_window_id(layout: &Layout<TestWindow>) -> Option<usize> {
+    layout
+        .active_workspace()
+        .unwrap()
+        .active_window()
+        .map(|w| *w.id())
+}
+
 #[test]
 fn split_window_creates_side_by_side_tiles() {
     // SplitWindow + AddWindow should create a main-axis split with two side-by-side tiles.
@@ -4726,6 +4735,42 @@ fn toggle_tabbed_on_main_split() {
     assert_eq!(tile_count(&layout2), 2);
     assert_eq!(window_visible(&layout2, 1), Some(true), "both visible after untoggle");
     assert_eq!(window_visible(&layout2, 2), Some(true), "both visible after untoggle");
+}
+
+#[test]
+fn directional_focus_walks_nested_tree() {
+    // Build Main[1, Cross[2, 3]]: window 1 on the left, a vertically-split pair (2 over 3) on the
+    // right. Focus should walk the tree like i3/sway: up/down within the inner Cross split, and
+    // left/right across the outer Main split (descending into the most-recently-focused leaf).
+    let base = [
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+    ];
+
+    // After construction window 3 is active (bottom-right).
+    let layout = check_ops(base.iter().cloned());
+    assert_eq!(active_window_id(&layout), Some(3));
+
+    // Up moves to window 2 within the inner Cross split.
+    let layout = check_ops(base.iter().cloned().chain([Op::FocusWindowUp]));
+    assert_eq!(active_window_id(&layout), Some(2), "up -> sibling in inner cross split");
+
+    // Down from window 2 returns to window 3.
+    let layout = check_ops(base.iter().cloned().chain([Op::FocusWindowUp, Op::FocusWindowDown]));
+    assert_eq!(active_window_id(&layout), Some(3));
+
+    // Left from the right-hand pair crosses the outer Main split to window 1.
+    let layout = check_ops(base.iter().cloned().chain([Op::FocusColumnLeft]));
+    assert_eq!(active_window_id(&layout), Some(1), "left -> across outer main split");
+
+    // Right from window 1 descends back into the right pair's last-focused leaf (window 3).
+    let layout =
+        check_ops(base.iter().cloned().chain([Op::FocusColumnLeft, Op::FocusColumnRight]));
+    assert_eq!(active_window_id(&layout), Some(3), "right -> back into the split");
 }
 
 #[test]

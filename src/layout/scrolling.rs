@@ -2042,14 +2042,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        // Check if the active column has a Main-axis split root — navigate within it first.
-        let col = &mut self.columns[self.active_column_idx];
-        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
-            let active_idx = col.active_tile_idx();
-            if active_idx > 0 {
-                col.activate_idx(active_idx - 1);
-                return true;
-            }
+        // Navigate within the column's Main-axis splits first (at any nesting depth); only fall
+        // through to the previous column when at the left edge of the tree.
+        if self.columns[self.active_column_idx].focus_in_axis(SplitAxis::Main, -1) {
+            return true;
         }
 
         if self.active_column_idx == 0 {
@@ -2064,14 +2060,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        // Check if the active column has a Main-axis split root — navigate within it first.
-        let col = &mut self.columns[self.active_column_idx];
-        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
-            let active_idx = col.active_tile_idx();
-            if active_idx + 1 < col.tiles_len() {
-                col.activate_idx(active_idx + 1);
-                return true;
-            }
+        // Navigate within the column's Main-axis splits first (at any nesting depth); only fall
+        // through to the next column when at the right edge of the tree.
+        if self.columns[self.active_column_idx].focus_in_axis(SplitAxis::Main, 1) {
+            return true;
         }
 
         if self.active_column_idx + 1 >= self.columns.len() {
@@ -5434,16 +5426,15 @@ impl<W: LayoutElement> Column<W> {
             .find_map(|(idx, tile)| (tile.window().id() == window).then_some(idx))
     }
 
+    /// Activates the leaf at flat-leaf index `idx`, setting `active_idx` at every level along its
+    /// path (so it works through nested splits/tabs). Returns whether anything changed.
     fn activate_idx(&mut self, idx: usize) -> bool {
-        if self.active_tile_idx() == idx {
+        let Some(path) = self.root.path_for_leaf_index(idx) else {
             return false;
-        }
-
-        self.set_active_tile_idx(idx);
-
-        self.tile_mut(idx).ensure_alpha_animates_to_1();
-
-        true
+        };
+        let changed = self.root.activate_path(&path);
+        self.root.leaf_at_mut(&path).ensure_alpha_animates_to_1();
+        changed
     }
 
     fn activate_window(&mut self, window: &W::Id) {
@@ -6012,12 +6003,58 @@ impl<W: LayoutElement> Column<W> {
         self.activate_idx(idx);
     }
 
+    /// Moves focus to the adjacent leaf along `axis` (i3/sway-style directional focus).
+    ///
+    /// Walks up from the active leaf to the nearest ancestor that arranges its children along
+    /// `axis` (a `Split` of that axis, or a `Tabbed` node for the cross axis) and that has a
+    /// sibling in the requested direction (`delta` = -1 / +1). Focus then descends into that
+    /// sibling's most-recently-focused leaf. Returns false if no such move exists within this
+    /// column (the caller may then fall through to inter-column navigation).
+    fn focus_in_axis(&mut self, axis: SplitAxis, delta: isize) -> bool {
+        // Resolve the target leaf path using only immutable borrows first.
+        let target = {
+            let active_path = self.root.active_leaf_path();
+            let mut found = None;
+            for k in (1..=active_path.len()).rev() {
+                let parent_path = &active_path[..k - 1];
+                let child_idx = active_path[k - 1];
+                let parent = self.root.node_at(parent_path);
+                let is_match = match parent {
+                    TileNode::Split { axis: a, .. } => *a == axis,
+                    // A tabbed container stacks its tabs along the cross axis, matching niri's
+                    // existing tabbed-column navigation (up/down switches tabs).
+                    TileNode::Tabbed { .. } => axis == SplitAxis::Cross,
+                    TileNode::Leaf(_) => false,
+                };
+                if is_match {
+                    let new_child = child_idx as isize + delta;
+                    if new_child >= 0 && (new_child as usize) < parent.child_count() {
+                        let mut path = parent_path.to_vec();
+                        path.push(new_child as usize);
+                        path.extend(self.root.node_at(&path).active_leaf_path());
+                        found = Some(path);
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
+        if let Some(path) = target {
+            self.root.activate_path(&path);
+            self.root.leaf_at_mut(&path).ensure_alpha_animates_to_1();
+            true
+        } else {
+            false
+        }
+    }
+
     fn focus_up(&mut self) -> bool {
-        self.activate_idx(self.active_tile_idx().saturating_sub(1))
+        self.focus_in_axis(SplitAxis::Cross, -1)
     }
 
     fn focus_down(&mut self) -> bool {
-        self.activate_idx(min(self.active_tile_idx() + 1, self.tiles_len() - 1))
+        self.focus_in_axis(SplitAxis::Cross, 1)
     }
 
     fn focus_top(&mut self) {
@@ -6025,7 +6062,7 @@ impl<W: LayoutElement> Column<W> {
     }
 
     fn focus_bottom(&mut self) {
-        self.activate_idx(self.tiles_len() - 1);
+        self.activate_idx(self.tiles_len().saturating_sub(1));
     }
 
     fn move_active_tile_to_adjacent(&mut self, new_idx: usize) -> bool {
