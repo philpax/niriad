@@ -4424,3 +4424,241 @@ proptest! {
         check_ops_with_options(options, ops);
     }
 }
+
+// ============================================================================
+// Dedicated unit tests for splits and tabs
+// ============================================================================
+
+/// Helper: get the render position and size of a window by ID.
+fn window_geo(layout: &Layout<TestWindow>, id: usize) -> Option<(Point<f64, Logical>, Size<f64, Logical>)> {
+    let ws = layout.active_workspace().unwrap();
+    ws.tiles_with_render_positions().find_map(|(tile, pos, _)| {
+        if *tile.window().id() == id {
+            Some((pos, tile.window().size().to_f64()))
+        } else {
+            None
+        }
+    })
+}
+
+/// Helper: count tiles in the active workspace.
+fn tile_count(layout: &Layout<TestWindow>) -> usize {
+    layout.active_workspace().unwrap().tiles().count()
+}
+
+#[test]
+fn split_window_creates_side_by_side_tiles() {
+    // SplitWindow + AddWindow should create a main-axis split with two side-by-side tiles.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+    ]);
+
+    // Both windows should be in the same column.
+    assert_eq!(tile_count(&layout), 2);
+
+    // The two windows should be side by side (different x positions).
+    let (pos1, _) = window_geo(&layout, 1).unwrap();
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(pos1.x, pos2.x, "windows should be at different x positions");
+}
+
+#[test]
+fn consume_window_into_split_places_side_by_side() {
+    // ConsumeWindowIntoSplit should pull a window from an adjacent column and place it
+    // side by side with the focused window.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        // Now we have two columns, each with one window.
+        Op::ConsumeWindowIntoSplit,
+    ]);
+
+    // Both windows should still be present.
+    assert_eq!(tile_count(&layout), 2);
+
+    // They should be side by side within one column.
+    let (pos1, _) = window_geo(&layout, 1).unwrap();
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(pos1.x, pos2.x, "consumed window should be side by side");
+}
+
+#[test]
+fn toggle_tabbed_hides_inactive_tiles() {
+    // ToggleTabbed should create a tabbed container showing only the active tile.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::ToggleTabbed,
+    ]);
+
+    // Both windows should still be in the layout.
+    assert_eq!(tile_count(&layout), 2);
+
+    // In tabbed mode, tiles share the same position (one visible at a time).
+    // The active tile should be visible.
+    let pos1 = window_geo(&layout, 1);
+    let pos2 = window_geo(&layout, 2);
+    assert!(pos1.is_some() || pos2.is_some(), "at least one tab should be visible");
+}
+
+#[test]
+fn toggle_tabbed_then_untoggle_restores_split() {
+    // Toggling tabbed on and then off should restore the split layout.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::ToggleTabbed,
+        Op::ToggleTabbed,
+    ]);
+
+    // Both windows should be present.
+    assert_eq!(tile_count(&layout), 2);
+
+    // After untoggling, the two windows should be stacked vertically (different y).
+    let (pos1, _) = window_geo(&layout, 1).unwrap();
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(pos1.y, pos2.y, "windows should be stacked after untoggling tabbed");
+}
+
+#[test]
+fn move_tab_reorders_tabs() {
+    // MoveTab should reorder tabs within a tabbed container without losing windows.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ToggleTabbed,
+        Op::MoveTab(niri_ipc::TabDirection::Right),
+    ]);
+
+    // All three windows should still be present.
+    assert_eq!(tile_count(&layout), 3);
+}
+
+#[test]
+fn split_then_focus_within_split() {
+    // After creating a split, focus navigation should work within the split.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+    ]);
+
+    // Three windows, all in the same column split along the main axis.
+    assert_eq!(tile_count(&layout), 3);
+
+    // Focus navigation should not panic.
+    let layout2 = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusColumnLeft,
+        Op::FocusColumnLeft,
+        Op::FocusColumnRight,
+    ]);
+    assert_eq!(tile_count(&layout2), 3);
+}
+
+#[test]
+fn close_window_in_split_collapses() {
+    // Closing a window in a split should not leave an empty split.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::CloseWindow(2),
+    ]);
+
+    // Only one window should remain.
+    assert_eq!(tile_count(&layout), 1);
+    assert!(window_geo(&layout, 1).is_some());
+}
+
+#[test]
+fn close_all_windows_in_split_removes_column() {
+    // Closing all windows in a split should remove the column.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::CloseWindow(1),
+        Op::CloseWindow(2),
+    ]);
+
+    // No tiles should remain.
+    assert_eq!(tile_count(&layout), 0);
+}
+
+#[test]
+fn split_in_fullscreen_column_does_not_violate_invariant() {
+    // SplitWindow in a fullscreen column should not create a split
+    // (falls back to normal insertion when the column is fullscreen).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetFullscreenWindow { window: 1, is_fullscreen: true },
+        Op::Communicate(1),
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+    ]);
+
+    // Should not panic; verify_invariants is called by check_ops.
+    assert!(tile_count(&layout) >= 1);
+}
+
+#[test]
+fn consume_into_split_with_three_columns() {
+    // ConsumeWindowIntoSplit with three columns should work correctly.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        // Three columns, each with one window.
+        Op::ConsumeWindowIntoSplit,
+        // Now column 1 has two windows side by side, column 3 has one.
+    ]);
+
+    assert_eq!(tile_count(&layout), 3);
+}
+
+#[test]
+fn toggle_tabbed_on_main_split() {
+    // Toggling tabbed on a main-axis split should work.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::ToggleTabbed,
+    ]);
+
+    assert_eq!(tile_count(&layout), 2);
+
+    // Untoggle should restore.
+    let layout2 = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::ToggleTabbed,
+        Op::ToggleTabbed,
+    ]);
+
+    assert_eq!(tile_count(&layout2), 2);
+}

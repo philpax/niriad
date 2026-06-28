@@ -6648,6 +6648,11 @@ impl<W: LayoutElement> Column<W> {
         let extra_size = self.extra_size();
         let gaps = self.options.layout.gaps;
 
+        // The cross-axis sum invariant only applies to Cross-axis splits (where tiles
+        // stack along the cross axis). For Main-axis splits, tiles are side-by-side
+        // and each gets the full cross span, so the sum is not constrained.
+        let is_main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+
         let mut found_fixed = false;
         let mut total_height = 0.;
         let mut total_min_height = 0.;
@@ -6705,6 +6710,7 @@ impl<W: LayoutElement> Column<W> {
         }
 
         if !is_tabbed
+            && !is_main_split
             && tile_count > 1
             && self.scale.round() == self.scale
             && working_size.h.round() == working_size.h
