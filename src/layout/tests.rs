@@ -4774,6 +4774,24 @@ fn directional_focus_walks_nested_tree() {
 }
 
 #[test]
+fn move_window_up_reorders_within_nested_cross_split() {
+    // Main[1, Cross[2, 3]] with window 3 active. Moving the window up swaps it with window 2
+    // inside the inner Cross split (not across the outer Main split), giving Cross[3, 2].
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::MoveWindowUp,
+    ]);
+
+    assert_eq!(window_order(&layout), vec![1, 3, 2], "moved up within the inner split");
+    assert_eq!(active_window_id(&layout), Some(3), "focus follows the moved window");
+}
+
+#[test]
 fn directional_swap_moves_subtree_across_nested_split() {
     // Main[1, Cross[2, 3]] with window 3 active. Swapping left moves the active leaf's whole
     // subtree (the Cross[2,3] pair) past window 1 -> Main[Cross[2,3], 1]. Leaf order becomes

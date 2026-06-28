@@ -4775,20 +4775,6 @@ impl<W: LayoutElement> Column<W> {
         self.update_tile_sizes(animate);
     }
 
-    /// Swaps two tiles at the given indices (children and data together).
-    fn swap_tiles(&mut self, a: usize, b: usize) {
-        // Convert flat leaf indices to paths for nested split support.
-        let path_a = self
-            .root
-            .path_for_leaf_index(a)
-            .unwrap_or_else(|| panic!("swap_tiles: index {a} out of bounds"));
-        let path_b = self
-            .root
-            .path_for_leaf_index(b)
-            .unwrap_or_else(|| panic!("swap_tiles: index {b} out of bounds"));
-        self.root.swap_leaves_by_path(&path_a, &path_b);
-    }
-
     /// Adds a tile as a split child of the tile at `target_idx`.
     ///
     /// `place_after` controls which side of the target the new tile lands on (the half the user
@@ -6065,12 +6051,14 @@ impl<W: LayoutElement> Column<W> {
         };
 
         if let Some((parent_path, a, b)) = plan {
+            let prev = self.leaf_positions_by_id();
             let parent = self.root.node_at_mut(&parent_path);
             parent.swap_leaves(a, b);
             // Follow the moved subtree (it is now at index b).
             parent.set_active_idx(b);
             self.root.active_leaf_mut().ensure_alpha_animates_to_1();
             self.update_tile_sizes(true);
+            self.animate_leaves_if_moved(&prev);
             true
         } else {
             false
@@ -6093,38 +6081,12 @@ impl<W: LayoutElement> Column<W> {
         self.activate_idx(self.tiles_len().saturating_sub(1));
     }
 
-    fn move_active_tile_to_adjacent(&mut self, new_idx: usize) -> bool {
-        let old_idx = self.active_tile_idx();
-        if old_idx == new_idx {
-            return false;
-        }
-
-        let active_cross_pos = self.tile_offset(old_idx).y;
-        let adjacent_cross_pos = self.tile_offset(new_idx).y;
-
-        self.swap_tiles(old_idx, new_idx);
-        self.set_active_tile_idx(new_idx);
-
-        // Animate the movement along the cross axis.
-        let new_active_cross_pos = self.tile_offset(new_idx).y;
-        self.tile_mut(new_idx).animate_move_y_from(active_cross_pos - new_active_cross_pos);
-        if new_idx < old_idx {
-            self.tile_mut(new_idx + 1).animate_move_y_from(active_cross_pos - adjacent_cross_pos);
-        } else {
-            self.tile_mut(new_idx - 1).animate_move_y_from(adjacent_cross_pos - active_cross_pos);
-        }
-
-        true
-    }
-
     fn move_up(&mut self) -> bool {
-        let new_idx = self.active_tile_idx().saturating_sub(1);
-        self.move_active_tile_to_adjacent(new_idx)
+        self.swap_in_axis(SplitAxis::Cross, -1)
     }
 
     fn move_down(&mut self) -> bool {
-        let new_idx = min(self.active_tile_idx() + 1, self.tiles_len() - 1);
-        self.move_active_tile_to_adjacent(new_idx)
+        self.swap_in_axis(SplitAxis::Cross, 1)
     }
 
     fn toggle_width(&mut self, tile_idx: Option<usize>, forwards: bool) {
