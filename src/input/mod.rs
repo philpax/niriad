@@ -3295,6 +3295,20 @@ impl State {
 
                 let horizontal = horizontal_amount_v120.unwrap_or(0.);
                 let ticks = self.niri.horizontal_wheel_tracker.accumulate(horizontal);
+
+                // If no scroll binds handle this, try scrolling the tab bar under the cursor.
+                if ticks != 0 && !should_handle_in_overview && !is_mru_open {
+                    let pos = pointer.current_location();
+                    if let Some((output, pos_within)) = self.niri.output_under(pos) {
+                        let output = output.clone();
+                        let delta = -ticks as f64 * 40.; // ~40px per tick
+                        if self.niri.layout.scroll_tab_bar(&output, pos_within, delta) {
+                            // Tab bar consumed the scroll; skip bind handling.
+                            return;
+                        }
+                    }
+                }
+
                 if ticks != 0 {
                     let (bind_left, bind_right) = if let Some(target) = overview_axis_policy
                         .and_then(|policy| policy.overview_wheel_target(true, modifiers))

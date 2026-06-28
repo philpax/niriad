@@ -1838,6 +1838,14 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.window_under(pos)
     }
 
+    /// Scrolls the tab bar under the given pointer position, if any.
+    pub fn scroll_tab_bar(&mut self, pos: Point<f64, Logical>, delta: f64) -> bool {
+        if self.floating_is_active.get() {
+            return false;
+        }
+        self.scrolling.scroll_tab_bar(pos, delta)
+    }
+
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
         self.tiles_with_render_positions()
             .find_map(|(tile, tile_pos, visible)| {

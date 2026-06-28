@@ -2256,6 +2256,20 @@ impl<W: LayoutElement> Layout<W> {
         workspace.swap_window_in_direction(direction);
     }
 
+    /// Scrolls the tab bar under the given pointer position, if any.
+    pub fn scroll_tab_bar(
+        &mut self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+        delta: f64,
+    ) -> bool {
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return false;
+        };
+        let ws = mon.active_workspace();
+        ws.scroll_tab_bar(pos_within_output, delta)
+    }
+
     pub fn toggle_column_tabbed_display(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

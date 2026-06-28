@@ -3778,6 +3778,55 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
     }
 
+    /// Scrolls the tab bar under the given pointer position, if any.
+    /// Returns true if a tab bar was scrolled.
+    pub fn scroll_tab_bar(&mut self, pos: Point<f64, Logical>, delta: f64) -> bool {
+        let pos_in = self.map_point_in(pos);
+        let scale = self.scale;
+        let view_off = main_space_vec(-self.view_main_pos());
+        let column_mains: Vec<f64> = self.column_main_positions(self.data.iter().copied()).collect();
+
+        // First pass: find which column's tab bar is under the pointer.
+        let mut target_col_idx = None;
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            if !col.is_tabbed() || !col.sizing_mode().is_normal() {
+                continue;
+            }
+            let column_main = column_mains[col_idx];
+            let column_offset = main_space_vec(column_main);
+            let column_render_offset = col.render_offset();
+            let column_pos = view_off + column_offset + column_render_offset;
+            let column_pos = column_pos.to_physical_precise_round(scale).to_logical(scale);
+            let area = col.tab_indicator_area();
+            if area.contains(pos_in - column_pos) {
+                target_col_idx = Some(col_idx);
+                break;
+            }
+        }
+
+        // Second pass: scroll the tab bar.
+        if let Some(col_idx) = target_col_idx {
+            let view_size = self.map_size_out(self.view_size);
+            let col = &mut self.columns[col_idx];
+            let area = col.tab_indicator_area();
+            let area_width = area.size.w;
+            let is_active = col_idx == self.active_column_idx;
+            let scrolled = if let Some(TabHeader::Bar(bar)) = col.tab_header_mut() {
+                bar.scroll(delta, area_width)
+            } else {
+                false
+            };
+            if scrolled {
+                col.update_render_elements(
+                    is_active,
+                    Rectangle::new(Point::from((0., 0.)), view_size),
+                );
+            }
+            return scrolled;
+        }
+        false
+    }
+
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
         // This matches self.tiles_with_render_positions().
         let pos_in = self.map_point_in(pos);
