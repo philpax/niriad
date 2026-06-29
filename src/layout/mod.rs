@@ -63,7 +63,7 @@ use crate::layout::scrolling::ScrollDirection;
 use crate::layout::tile_node::SplitAxis;
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
-use crate::render_helpers::offscreen::OffscreenData;
+use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenData};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -104,6 +104,12 @@ const INTERACTIVE_MOVE_START_THRESHOLD: f64 = 256. * 256.;
 
 /// Opacity of interactively moved tiles targeting the scrolling layout.
 const INTERACTIVE_MOVE_ALPHA: f64 = 0.75;
+
+/// Opacity of the translucent ghost that follows the cursor during an in-place (sway) tiling drag.
+///
+/// More translucent than [`INTERACTIVE_MOVE_ALPHA`] because, unlike the detach drag, the real
+/// window keeps rendering at full opacity in its slot — the ghost is a hint layered on top.
+const INTERACTIVE_MOVE_GHOST_ALPHA: f32 = 0.4;
 
 /// Amount of touchpad movement to toggle the overview.
 const OVERVIEW_GESTURE_MOVEMENT: f64 = 300.;
@@ -441,10 +447,16 @@ struct InPlaceMoveData<W: LayoutElement> {
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
     /// Pointer location within the visual window geometry as ratio from geometry size.
     ///
-    // S6.3: consumed by the translucent following ghost once that lands; kept here so the drag
-    // already carries it.
-    #[allow(dead_code)]
+    /// Used by the translucent following ghost ([`Layout::render_interactive_move_for_output`]) so
+    /// the grab point stays under the pointer.
     pub(self) pointer_ratio_within_window: (f64, f64),
+    /// Offscreen buffer backing the translucent following ghost.
+    ///
+    /// The source tile stays in the layout tree (rendered at full opacity in its slot), so we
+    /// cannot tint it directly. Instead the ghost re-renders the tile's elements into this buffer
+    /// and composites the whole result at [`INTERACTIVE_MOVE_GHOST_ALPHA`]. Kept on the drag state
+    /// so its element id (hence damage) is stable across frames.
+    pub(self) ghost_buffer: OffscreenBuffer,
 }
 
 #[derive(Debug)]
@@ -639,6 +651,30 @@ impl<W: LayoutElement> InteractiveMoveData<W> {
         ));
         let pos = self.pointer_pos_within_output
             - (pointer_offset_within_window + window_loc - self.tile.render_offset()).upscale(zoom);
+        // Round to physical pixels.
+        pos.to_physical_precise_round(scale).to_logical(scale)
+    }
+}
+
+impl<W: LayoutElement> InPlaceMoveData<W> {
+    /// Logical position at which to render the translucent following ghost.
+    ///
+    /// Mirror of [`InteractiveMoveData::tile_render_location`], but the source tile is owned by its
+    /// workspace (not by the drag state) so it is passed in. In-place drags only ever target tiled
+    /// windows, so this always applies the main-axis remap (the non-floating branch).
+    fn ghost_render_location(&self, tile: &Tile<W>, zoom: f64) -> Point<f64, Logical> {
+        let scale = Scale::from(self.output.current_scale().fractional_scale());
+
+        let axis = AxisMap::new(tile.options.layout.main_axis);
+        let window_size = axis.size_out(tile.window_size());
+        let window_loc = axis.point_out(tile.window_loc());
+
+        let pointer_offset_within_window = Point::from((
+            window_size.w * self.pointer_ratio_within_window.0,
+            window_size.h * self.pointer_ratio_within_window.1,
+        ));
+        let pos = self.pointer_pos_within_output
+            - (pointer_offset_within_window + window_loc - tile.render_offset()).upscale(zoom);
         // Round to physical pixels.
         pos.to_physical_precise_round(scale).to_logical(scale)
     }
@@ -3027,8 +3063,13 @@ impl<W: LayoutElement> Layout<W> {
             mon.insert_hint = None;
         }
 
-        if !matches!(self.interactive_move, Some(InteractiveMoveState::Moving(_))) {
-            return;
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(_)) => {} // Handled below.
+            Some(InteractiveMoveState::InPlace(_)) => {
+                self.update_insert_hint_in_place(output);
+                return;
+            }
+            _ => return,
         }
         let Some(InteractiveMoveState::Moving(move_)) = self.interactive_move.take() else {
             unreachable!()
@@ -3086,6 +3127,79 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+    }
+
+    /// Drop-indicator hint for the in-place (sway) tiling drag.
+    ///
+    /// Mirrors the `Moving` arm of [`Self::update_insert_hint`], but the source tile is still in the
+    /// layout tree, so we read its corner radius from the workspace and suppress the hint when the
+    /// cursor is over the source's own slot (a `Swap` whose target equals the source slot — the
+    /// same no-op condition that [`Self::interactive_move_end_in_place`] resolves to).
+    fn update_insert_hint_in_place(&mut self, output: Option<&Output>) {
+        // Copy out the bits we need so the `&self.interactive_move` borrow ends before we take a
+        // `&mut` borrow of the monitor below.
+        let (window_id, drag_output, pointer) = match &self.interactive_move {
+            Some(InteractiveMoveState::InPlace(data)) => (
+                data.window_id.clone(),
+                data.output.clone(),
+                data.pointer_pos_within_output,
+            ),
+            _ => return,
+        };
+
+        if output.is_some_and(|out| &drag_output != out) {
+            return;
+        }
+
+        let _span = tracy_client::span!("Layout::update_insert_hint::in_place");
+
+        let Some(mon) = self.monitor_for_output_mut(&drag_output) else {
+            return;
+        };
+
+        let zoom = mon.overview_zoom();
+        let (insert_ws, geo) = mon.insert_position(pointer);
+        match insert_ws {
+            InsertWorkspace::Existing(ws_id) => {
+                let Some(ws) = mon.workspaces.iter().find(|ws| ws.id() == ws_id) else {
+                    return;
+                };
+                let pos_within_workspace = (pointer - geo.loc).downscale(zoom);
+                let position = ws.scrolling_insert_position(pos_within_workspace);
+
+                // Suppress the self-highlight: a centre-drop on the source's own slot is a no-op.
+                if let InsertPosition::Swap(sec, leaf) = position {
+                    if ws.scrolling_position_of(&window_id) == Some((sec, leaf)) {
+                        return;
+                    }
+                }
+
+                // The source tile is still in the tree; read its corner radius from there.
+                let corner_radius = ws
+                    .tiles()
+                    .find(|tile| tile.window().id() == &window_id)
+                    .map(|tile| {
+                        let border_width = tile.effective_border_width().unwrap_or(0.);
+                        tile.window()
+                            .geometry_corner_radius()
+                            .expanded_by(border_width as f32)
+                    })
+                    .unwrap_or_default();
+
+                mon.insert_hint = Some(InsertHint {
+                    workspace: insert_ws,
+                    position,
+                    corner_radius,
+                });
+            }
+            InsertWorkspace::NewAt(_) => {
+                mon.insert_hint = Some(InsertHint {
+                    workspace: insert_ws,
+                    position: InsertPosition::NewSection(0),
+                    corner_radius: CornerRadius::default(),
+                });
+            }
+        }
     }
 
     pub fn ensure_named_workspace(&mut self, ws_config: &WorkspaceConfig) {
@@ -4141,6 +4255,7 @@ impl<W: LayoutElement> Layout<W> {
                         output,
                         pointer_pos_within_output,
                         pointer_ratio_within_window,
+                        ghost_buffer: OffscreenBuffer::default(),
                     }));
                     return true;
                 }
@@ -5272,28 +5387,98 @@ impl<W: LayoutElement> Layout<W> {
             error!("clock moved between updating render elements and rendering");
         }
 
-        let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
-            return;
-        };
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => {
+                if &move_.output != output {
+                    return;
+                }
 
-        if &move_.output != output {
+                let scale = Scale::from(move_.output.current_scale().fractional_scale());
+                let zoom = self.overview_zoom();
+                let pos_in_backdrop = move_.tile_render_location(zoom);
+                let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
+
+                move_
+                    .tile
+                    .render(ctx, pos_in_backdrop, xray_pos, true, &mut |elem| {
+                        push(RescaleRenderElement::from_element(
+                            elem,
+                            pos_in_backdrop.to_physical_precise_round(scale),
+                            zoom,
+                        ));
+                    });
+            }
+            Some(InteractiveMoveState::InPlace(data)) => {
+                self.render_in_place_ghost(ctx, output, data, push);
+            }
+            _ => (),
+        }
+    }
+
+    /// Renders the translucent following ghost for an in-place (sway) tiling drag.
+    ///
+    /// The source tile stays in the layout tree and renders normally in its slot; this draws a
+    /// SECOND, dimmer copy following the cursor. We can't tint the live tile (it's shared with the
+    /// in-slot render), so we re-render its elements into [`InPlaceMoveData::ghost_buffer`] and
+    /// composite the whole offscreen at [`INTERACTIVE_MOVE_GHOST_ALPHA`]. Pushed at the same point
+    /// as the detach `Moving` tile (above the workspaces), so both niri.rs call sites get it.
+    fn render_in_place_ghost<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        output: &Output,
+        data: &InPlaceMoveData<W>,
+        push: &mut dyn FnMut(RescaleRenderElement<TileRenderElement<R>>),
+    ) {
+        // The source stays on its original output; only render the ghost there (cross-output
+        // in-place is deferred, see S6.4).
+        if &data.output != output {
             return;
         }
 
-        let scale = Scale::from(move_.output.current_scale().fractional_scale());
-        let zoom = self.overview_zoom();
-        let pos_in_backdrop = move_.tile_render_location(zoom);
-        let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
+        let Some(mon) = self.monitor_for_output(output) else {
+            return;
+        };
+        let Some(tile) = mon
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.tiles().find(|tile| tile.window().id() == &data.window_id))
+        else {
+            return;
+        };
 
-        move_
-            .tile
-            .render(ctx, pos_in_backdrop, xray_pos, true, &mut |elem| {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let zoom = self.overview_zoom();
+        let ghost_loc = data.ghost_render_location(tile, zoom);
+
+        // Collect the tile's render elements at the origin, then composite them through the
+        // offscreen so the constant ghost alpha applies uniformly (mirrors Tile::render's
+        // alpha-animation branch, but driven externally with a fixed alpha).
+        let mut gles = ctx.as_gles();
+        let mut elements = Vec::new();
+        tile.render(
+            gles.r(),
+            Point::from((0., 0.)),
+            XrayPos::default(),
+            true,
+            &mut |elem| elements.push(elem),
+        );
+
+        match data.ghost_buffer.render(gles.renderer, scale, &elements) {
+            Ok((elem, _sync, _offscreen_data)) => {
+                let offset = elem.offset();
+                let elem = elem
+                    .with_alpha(INTERACTIVE_MOVE_GHOST_ALPHA)
+                    .with_offset(ghost_loc + offset);
                 push(RescaleRenderElement::from_element(
-                    elem,
-                    pos_in_backdrop.to_physical_precise_round(scale),
+                    elem.into(),
+                    ghost_loc.to_physical_precise_round(scale),
                     zoom,
                 ));
-            });
+            }
+            Err(err) => {
+                warn!("error rendering in-place drag ghost to offscreen: {err:?}");
+            }
+        }
     }
 
     pub fn refresh(&mut self, is_active: bool) {

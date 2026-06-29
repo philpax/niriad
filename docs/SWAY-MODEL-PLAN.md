@@ -174,8 +174,16 @@ Stages (each builds/tests/reviews/commits):
     (the update arm only tracks the pointer), so in-place is behaviour-correct but visually blind —
     hence default `detach`. Minor: a cross-section swap teleports the two principals (no animation);
     `detach_and_apply` drops `workspace_config` (masked by re-config-on-insert).
-- **S6.3 — indicator + translucent ghost** (the rendering that makes in-place usable), then flip the
-  default to `in-place`. Visual verification required (can't be unit-tested).
+- **S6.3 — implemented; visual verification pending.** Drop indicator: `update_insert_hint` now
+  handles the `InPlace` state (`update_insert_hint_in_place`) — same target resolution as the detach
+  path, suppressing the self-hover highlight; the generic paint path is reused unchanged. Ghost:
+  `render_in_place_ghost` (called from `render_interactive_move_for_output`, so both `niri.rs`
+  push-points are covered) renders the live source tile a second time at the cursor
+  (`InPlaceMoveData::ghost_render_location`) composited through a persistent `OffscreenBuffer` with a
+  constant `INTERACTIVE_MOVE_GHOST_ALPHA = 0.4` (dimmer than the 0.75 detach drag), the real window
+  staying opaque in its slot. A render smoke test covers no-panic; the *pixels* can't be unit-tested,
+  so this needs a human visual check (ghost tracks the grab point, alpha/layering, positioning under
+  overview zoom, damage trails) before the default flips to `in-place`.
 - **S6.4 — cross-output / cross-workspace** in-place (cross-tree move + swap) and the float-toggle
   handoff to the existing `Moving` flow.
 - **S6.5 — exact region map under in-place** (titlebar→tab at the cursor index, edge→split,

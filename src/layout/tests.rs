@@ -5700,6 +5700,59 @@ fn nested_tabbed_render_and_hit_do_not_panic() {
 }
 
 #[test]
+fn in_place_drag_render_does_not_panic() {
+    // In-place (sway) tiling-drag feedback: with the drag active, update_render_elements must run
+    // the drop-indicator path (update_insert_hint_in_place) without panicking, for a swap-target
+    // hover (centre of another tile), a split/move hover (near a window edge), and the suppressed
+    // self-hover (back over the source's own slot).
+    //
+    // NOTE: this only exercises the indicator path. The translucent following ghost in
+    // render_interactive_move_for_output needs a real GlesRenderer (offscreen compositing), which
+    // the headless test harness lacks, so it can't be driven here — it is guarded by construction
+    // (offscreen buffer + constant alpha) and must be verified visually in a nested session.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let output = layout.outputs().next().unwrap().clone();
+
+    // Begin dragging window 1 and cross the detach threshold (>256px) to enter the in-place state,
+    // hovering window 2's centre: a Swap target.
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: 166., py: 360. },
+            Op::InteractiveMoveUpdate { window: 1, dx: 316., dy: 0., output_idx: 1, px: 482., py: 360. },
+        ],
+    );
+    layout.update_render_elements(Some(&output));
+
+    // Hover near the right edge of the row — a split/move InsertPosition rather than a Swap.
+    check_ops_on_layout(
+        &mut layout,
+        [Op::InteractiveMoveUpdate { window: 1, dx: 900., dy: 0., output_idx: 1, px: 1100., py: 360. }],
+    );
+    layout.update_render_elements(Some(&output));
+
+    // Back over the source's own slot: the self-hover case, where the hint is suppressed.
+    check_ops_on_layout(
+        &mut layout,
+        [Op::InteractiveMoveUpdate { window: 1, dx: 0., dy: 0., output_idx: 1, px: 166., py: 360. }],
+    );
+    layout.update_render_elements(Some(&output));
+}
+
+#[test]
 fn tabbed_row_reserves_space_for_its_header() {
     // Tabbing a nested row must push its content down to leave a band for the row's own tab header,
     // rather than drawing the content under the header. Compare the row tile's y with the row
