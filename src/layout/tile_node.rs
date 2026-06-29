@@ -1181,6 +1181,34 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Swaps just the `Tile` payloads of the two leaves at the given paths, leaving the tree
+    /// structure (and each slot's split data) untouched. Used to exchange two windows that don't
+    /// share a parent (`swap_leaves` only works on siblings), so each window adopts the other's
+    /// slot geometry. No-op if the paths are equal or either doesn't point to a leaf.
+    pub fn swap_leaf_contents(&mut self, a: &[usize], b: &[usize]) {
+        if a == b {
+            return;
+        }
+        // Both paths must point to leaves; bail without mutating otherwise.
+        if !matches!(self.node_at(a), TileNode::Leaf(_))
+            || !matches!(self.node_at(b), TileNode::Leaf(_))
+        {
+            return;
+        }
+
+        // Lift `a`'s tile out behind a throwaway placeholder, move `b`'s tile into `a`'s slot, then
+        // drop `a`'s tile into `b`'s slot. Three disjoint single-`&mut` steps — no aliasing, no
+        // unsafe (the placeholder is overwritten before it can be observed).
+        let placeholder = TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None);
+        let TileNode::Leaf(ta) = std::mem::replace(self.node_at_mut(a), placeholder) else {
+            unreachable!("checked to be a leaf above")
+        };
+        let TileNode::Leaf(tb) = std::mem::replace(self.node_at_mut(b), TileNode::Leaf(ta)) else {
+            unreachable!("checked to be a leaf above")
+        };
+        *self.node_at_mut(a) = TileNode::Leaf(tb);
+    }
+
     /// If this Split/Tabbed node has exactly one child, replace `self` with that child.
     /// This collapses single-child splits (i3 behavior: empty splits collapse).
     /// Returns `true` if a collapse occurred.

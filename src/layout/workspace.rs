@@ -1220,6 +1220,16 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.swap_window_in_direction(direction);
     }
 
+    /// The (section index, flat leaf index) of `id` in the tiling (scrolling) layout, if present.
+    pub(super) fn scrolling_position_of(&self, id: &W::Id) -> Option<(usize, usize)> {
+        self.scrolling.position_of(id)
+    }
+
+    /// Swaps the two tiling slots `a` and `b` (sway's centre-drop). See `ScrollingSpace::swap_tiles`.
+    pub(super) fn swap_tiles(&mut self, a: (usize, usize), b: (usize, usize)) {
+        self.scrolling.swap_tiles(a, b);
+    }
+
     pub fn toggle_section_tabbed_display(&mut self) {
         if self.floating_is_active.get() {
             return;

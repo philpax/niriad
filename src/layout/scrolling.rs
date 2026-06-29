@@ -1236,13 +1236,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // cross (y), a horizontal row by main (x). Fall back to the cross-closest tile if the
             // pointer isn't inside any tile horizontally.
             let offsets: Vec<_> = col.tile_offsets().collect();
+            // The hidden tabs of a tabbing container share the visible tab's rect, so require the
+            // hit leaf to be *visible* — otherwise a centre-drop would target (and swap with) a
+            // hidden tab instead of the one the user sees.
+            let visibility = col.root.leaf_visibility();
             let tile_idx = offsets
                 .iter()
                 .enumerate()
                 .find(|(idx, off)| {
                     let sz = leaf_size(*idx);
                     let left = col_main_start + off.x;
-                    cross >= off.y
+                    visibility.get(*idx).copied().unwrap_or(true)
+                        && cross >= off.y
                         && cross <= off.y + sz.h
                         && main >= left
                         && main <= left + sz.w
@@ -2978,6 +2983,63 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .ensure_alpha_animates_to_1();
 
         self.activate_section(target_section_idx);
+    }
+
+    /// The (section index, flat leaf index) slot of `id`, if it lives in this scrolling layout.
+    pub fn position_of(&self, id: &W::Id) -> Option<(usize, usize)> {
+        for (sec_idx, section) in self.sections.iter().enumerate() {
+            if let Some(leaf_idx) = section
+                .root
+                .leaves()
+                .position(|(tile, _)| tile.window().id() == id)
+            {
+                return Some((sec_idx, leaf_idx));
+            }
+        }
+        None
+    }
+
+    /// Swaps the two tiles addressed by `(section_idx, flat_leaf_idx)` — sway's centre-drop. The
+    /// two windows exchange slots; window count and the tree shape are unchanged (no new tab/split).
+    /// Same parent uses the cheap `swap_leaves` (children + data move together); otherwise the leaf
+    /// `Tile` payloads are swapped in place so each window adopts the other's slot.
+    pub fn swap_tiles(&mut self, a: (usize, usize), b: (usize, usize)) {
+        if a == b {
+            return;
+        }
+
+        let (a_sec, a_leaf) = a;
+        let (b_sec, b_leaf) = b;
+        if a_sec >= self.sections.len() || b_sec >= self.sections.len() {
+            return;
+        }
+
+        if a_sec == b_sec {
+            self.sections[a_sec].swap_leaves_by_flat_idx(a_leaf, b_leaf);
+            return;
+        }
+
+        // Cross-section: swap the two leaf tiles' contents and resize each to fit its new slot.
+        let (lo_sec, hi_sec) = (a_sec.min(b_sec), a_sec.max(b_sec));
+        let (lo_leaf, hi_leaf) = if a_sec < b_sec {
+            (a_leaf, b_leaf)
+        } else {
+            (b_leaf, a_leaf)
+        };
+        let (left, right) = self.sections.split_at_mut(hi_sec);
+        let sec_lo = &mut left[lo_sec];
+        let sec_hi = &mut right[0];
+        if lo_leaf >= sec_lo.tiles_len() || hi_leaf >= sec_hi.tiles_len() {
+            return;
+        }
+
+        let prev_lo = sec_lo.leaf_positions_by_id();
+        let prev_hi = sec_hi.leaf_positions_by_id();
+        std::mem::swap(sec_lo.tile_mut(lo_leaf), sec_hi.tile_mut(hi_leaf));
+        sec_lo.update_tile_sizes(true);
+        sec_hi.update_tile_sizes(true);
+        sec_lo.animate_leaves_if_moved(&prev_lo);
+        sec_hi.animate_leaves_if_moved(&prev_hi);
     }
 
     pub fn toggle_section_tabbed_display(&mut self) {
@@ -6702,6 +6764,32 @@ impl<W: LayoutElement> Section<W> {
     /// Swaps the active leaf's subtree with its adjacent sibling along `axis` (the move counterpart
     /// of [`focus_in_axis`]). Returns false if there is no sibling in that direction within this
     /// section, so the caller can fall through to inter-section movement.
+    /// Swaps the two leaves at the given flat indices within this section by exchanging their tile
+    /// payloads, leaving every slot (split structure, `data` sizes, `active_idx`) fixed — so the two
+    /// windows trade places but each adopts the other's slot geometry. This matches sway's swap
+    /// (containers stay put, occupants exchange) and is uniform whether or not the two leaves share
+    /// a parent. No-op for equal/OOB indices.
+    fn swap_leaves_by_flat_idx(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        let count = self.root.leaf_count();
+        if a >= count || b >= count {
+            return;
+        }
+        let (Some(pa), Some(pb)) = (
+            self.root.path_for_leaf_index(a),
+            self.root.path_for_leaf_index(b),
+        ) else {
+            return;
+        };
+
+        let prev = self.leaf_positions_by_id();
+        self.root.swap_leaf_contents(&pa, &pb);
+        self.update_tile_sizes(true);
+        self.animate_leaves_if_moved(&prev);
+    }
+
     fn swap_in_axis(&mut self, axis: SplitAxis, delta: isize) -> bool {
         let plan = {
             let active_path = self.root.active_leaf_path();

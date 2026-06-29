@@ -160,10 +160,23 @@ Design (since the float trigger is an explicit toggle, the in-place phase needs 
 
 Stages (each builds/tests/reviews/commits):
 - **S6.1 — done.** Family-aware `toggle-tabbed` (vstack→Stacked, hstack→Tabbed), as a warm-up.
-- **S6.2 — in-place phase, same workspace.** Prolong `Starting` for sway-mode tiling drags: live-tree
-  hit-test (excluding the source), indicator + ghost, no auto-detach. Apply move + true swap on
-  release. New `InsertPosition::Swap`.
-- **S6.3 — cross-output / cross-workspace** in-place (cross-tree move + swap).
-- **S6.4 — float-toggle handoff** to the existing `Moving` flow.
+- **S6.2 — done (behaviour; rendering deferred to S6.3).** New `InteractiveMoveState::InPlace`: past
+  the threshold a sway-mode tiling drag keeps the source in the tree (no detach); on release a
+  same-workspace centre-drop performs a true swap (`swap_tiles` → content-swap, slots fixed,
+  occupants exchange — matching sway), a centre-drop on self is a no-op, and everything else
+  (non-swap move, or a drop on another workspace/output) detaches and runs the shared apply, landing
+  identically to detach mode. The shared hit-test now prefers the *visible* leaf so a centre-drop on
+  a nested tabbed container targets the shown tab. Built by a worktree subagent, then reviewed: fixed
+  a two-`&mut` raw-pointer UB (→ safe `mem::replace`), the hidden-tab targeting bug, and the
+  same-vs-cross-parent swap-size inconsistency. Opt-in via `tiling-drag "in-place"`; default stays
+  `detach` until the indicator/ghost land. Fuzzer now randomises `tiling_drag`.
+  - *Deferred:* the drop indicator + translucent ghost are NOT rendered during an in-place drag yet
+    (the update arm only tracks the pointer), so in-place is behaviour-correct but visually blind —
+    hence default `detach`. Minor: a cross-section swap teleports the two principals (no animation);
+    `detach_and_apply` drops `workspace_config` (masked by re-config-on-insert).
+- **S6.3 — indicator + translucent ghost** (the rendering that makes in-place usable), then flip the
+  default to `in-place`. Visual verification required (can't be unit-tested).
+- **S6.4 — cross-output / cross-workspace** in-place (cross-tree move + swap) and the float-toggle
+  handoff to the existing `Moving` flow.
 - **S6.5 — exact region map under in-place** (titlebar→tab at the cursor index, edge→split,
   body→edge-split, centre→swap), refining S4's approximation now that hit-testing is exact.

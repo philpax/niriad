@@ -4398,6 +4398,10 @@ prop_compose! {
         center_focused_section in prop::option::of(arbitrary_center_focused_section()),
         always_center_single_section in prop::option::of(any::<bool>().prop_map(Flag)),
         empty_workspace_above_first in prop::option::of(any::<bool>().prop_map(Flag)),
+        tiling_drag in prop::option::of(prop::sample::select(vec![
+            niri_config::TilingDrag::Detach,
+            niri_config::TilingDrag::InPlace,
+        ])),
     ) -> niri_config::LayoutPart {
         niri_config::LayoutPart {
             gaps,
@@ -4409,6 +4413,7 @@ prop_compose! {
             border,
             shadow,
             tab_indicator,
+            tiling_drag,
             ..Default::default()
         }
     }
@@ -5394,6 +5399,276 @@ fn in_place_drag_mode_swaps_at_centre() {
         "in-place centre should be a swap target, got {:?}",
         ip(166., 360.)
     );
+}
+
+/// Builds a Main row `[1, 2]` (section 0) under the in-place tiling-drag mode, settled. Window 1
+/// occupies x≈[16,316] (centre ≈166), window 2 x≈[332,632] (centre ≈482), both full height.
+fn in_place_row() -> Layout<TestWindow> {
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    )
+}
+
+#[test]
+fn in_place_centre_drop_swaps_windows() {
+    // Required test 1: a centre-drop onto another window SWAPS the two, with no new tab and no
+    // change in window count.
+    let mut layout = in_place_row();
+
+    let p1_before = window_geo(&layout, 1).unwrap().0;
+    let p2_before = window_geo(&layout, 2).unwrap().0;
+    assert!(p1_before.x < p2_before.x, "window 1 starts left of window 2");
+
+    // Drag window 1 onto window 2's centre.
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: 166., py: 360. },
+            Op::InteractiveMoveUpdate { window: 1, dx: 316., dy: 0., output_idx: 1, px: 482., py: 360. },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    assert_eq!(tile_count(&layout), 2, "no window added or removed by the swap");
+    assert_eq!(
+        window_order(&layout),
+        vec![2, 1],
+        "the two windows exchanged slots (no tab created)"
+    );
+    let p1_after = window_geo(&layout, 1).unwrap().0;
+    let p2_after = window_geo(&layout, 2).unwrap().0;
+    assert_eq!(p1_after, p2_before, "window 1 took window 2's slot");
+    assert_eq!(p2_after, p1_before, "window 2 took window 1's slot");
+}
+
+#[test]
+fn in_place_centre_drop_on_self_is_noop() {
+    // Required test 3: a centre-drop on the SOURCE itself is a no-op. Cross the detach threshold,
+    // then bring the cursor back over window 1's own centre and release.
+    let mut layout = in_place_row();
+
+    let order_before = window_order(&layout);
+    let p1_before = window_geo(&layout, 1).unwrap();
+    let p2_before = window_geo(&layout, 2).unwrap();
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: 166., py: 360. },
+            // Past the threshold (>256px) — switches to in-place; source stays in the tree.
+            Op::InteractiveMoveUpdate { window: 1, dx: 300., dy: 0., output_idx: 1, px: 466., py: 360. },
+            // Back over window 1's own centre.
+            Op::InteractiveMoveUpdate { window: 1, dx: -300., dy: 0., output_idx: 1, px: 166., py: 360. },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    assert_eq!(tile_count(&layout), 2, "no window added or removed");
+    assert_eq!(window_order(&layout), order_before, "layout order unchanged");
+    assert_eq!(window_geo(&layout, 1).unwrap(), p1_before, "window 1 unchanged");
+    assert_eq!(window_geo(&layout, 2).unwrap(), p2_before, "window 2 unchanged");
+}
+
+/// Runs the same drag of window 1 onto `(to_x, to_y)` under the given tiling-drag mode and returns
+/// the resulting (window order, per-window geometry) so the two modes can be compared.
+fn drag_window1_to(
+    mode: niri_config::TilingDrag,
+    to_x: f64,
+    to_y: f64,
+) -> (Vec<usize>, Vec<(Point<f64, Logical>, Size<f64, Logical>)>) {
+    let mut options = Options::default();
+    options.layout.tiling_drag = mode;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: 166., py: 360. },
+            Op::InteractiveMoveUpdate { window: 1, dx: to_x - 166., dy: to_y - 360., output_idx: 1, px: to_x, py: to_y },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let order = window_order(&layout);
+    let geos = order
+        .iter()
+        .map(|id| window_geo(&layout, *id).unwrap())
+        .collect();
+    (order, geos)
+}
+
+#[test]
+fn in_place_edge_drop_moves_like_detach() {
+    // Required test 2: an edge-drop still MOVES/splits exactly like the detach mode. Drop into the
+    // right third of window 2 (a side region → place beside).
+    let in_place = drag_window1_to(niri_config::TilingDrag::InPlace, 580., 360.);
+    let detach = drag_window1_to(niri_config::TilingDrag::Detach, 580., 360.);
+    assert_eq!(
+        in_place, detach,
+        "an edge drop must land identically in in-place and detach modes"
+    );
+
+    // And it really did place window 1 beside (to the right of) window 2.
+    let (_order, geos) = &in_place;
+    assert_eq!(geos.len(), 2, "window count unchanged");
+    let p1 = window_geo_from(&in_place, 1);
+    let p2 = window_geo_from(&in_place, 2);
+    assert!(p1.0.x > p2.0.x, "window 1 ended up to the right of window 2");
+}
+
+#[test]
+fn in_place_same_workspace_move_keeps_count_and_lands_right() {
+    // Required test 4: a same-workspace move leaves the window count unchanged and lands where
+    // expected. Drop window 1 far to the right (past window 2) → its own new section on the right.
+    let in_place = drag_window1_to(niri_config::TilingDrag::InPlace, 1000., 360.);
+    let detach = drag_window1_to(niri_config::TilingDrag::Detach, 1000., 360.);
+    assert_eq!(
+        in_place, detach,
+        "a same-workspace move must match the detach mode"
+    );
+
+    let (order, geos) = &in_place;
+    assert_eq!(geos.len(), 2, "no window added or removed");
+    assert!(
+        order.contains(&1) && order.contains(&2),
+        "both windows still present, got {order:?}"
+    );
+    let p1 = window_geo_from(&in_place, 1);
+    let p2 = window_geo_from(&in_place, 2);
+    assert!(p1.0.x > p2.0.x, "window 1 moved to the right of window 2");
+}
+
+#[test]
+fn in_place_centre_drop_targets_the_visible_tab() {
+    use super::monitor::InsertPosition;
+
+    // `SplitH[ 1, Stacked[2, 3] ]` with window 3 the visible tab. The hidden tab (2) shares 3's
+    // rect, so a centre-drop over the stacked body must target the *visible* leaf (3 = flat idx 2),
+    // not the first leaf sharing the rect (2). Regression for the hit-test picking a hidden tab.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(3) },
+            Op::ToggleTabbed, // SplitV[2,3] -> Stacked[2,3] (family-aware); window 3 stays visible.
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let ws = layout.active_workspace().unwrap();
+    let (cpos, csize) = window_geo(&layout, 3).unwrap();
+    let centre = Point::from((cpos.x + csize.w / 2., cpos.y + csize.h / 2.));
+    let got = ws.scrolling_insert_position(centre);
+    assert!(
+        matches!(got, InsertPosition::Swap(0, 2)),
+        "centre over the visible tab (window 3 = leaf 2) must target it, not the hidden tab; got {got:?}"
+    );
+}
+
+#[test]
+fn in_place_swap_keeps_slots_fixed_exchanges_occupants() {
+    // Row [1, 2] with unequal widths (1 wide on the left, 2 narrow on the right). An in-place
+    // centre-swap exchanges the windows but leaves the *slots* fixed — so the wide left slot now
+    // holds window 2 and the narrow right slot holds window 1 (sway: containers stay, occupants
+    // move). Guards against the swap carrying each window's width with it.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SetWindowWidth { id: Some(1), change: SizeChange::SetFixed(800) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let (p1, s1) = window_geo(&layout, 1).unwrap();
+    let (p2, s2) = window_geo(&layout, 2).unwrap();
+    assert!(p1.x < p2.x && s1.w > s2.w, "window 1 starts wide on the left");
+
+    let (c1x, c1y) = (p1.x + s1.w / 2., p1.y + s1.h / 2.);
+    let (c2x, c2y) = (p2.x + s2.w / 2., p2.y + s2.h / 2.);
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: c1x, py: c1y },
+            Op::InteractiveMoveUpdate {
+                window: 1,
+                dx: c2x - c1x,
+                dy: 0.,
+                output_idx: 1,
+                px: c2x,
+                py: c2y,
+            },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    assert_eq!(window_order(&layout), vec![2, 1], "occupants exchanged");
+    let (q1, t1) = window_geo(&layout, 1).unwrap();
+    let (q2, t2) = window_geo(&layout, 2).unwrap();
+    assert!(q2.x < q1.x, "window 2 now holds the left slot");
+    assert!(
+        t2.w > t1.w,
+        "the wide left slot stayed put and now holds window 2 (slots fixed, not occupant-carried): \
+         w2={}, w1={}",
+        t2.w,
+        t1.w
+    );
+}
+
+/// Looks up a window's geometry in a `(order, geos)` pair returned by `drag_window1_to`.
+fn window_geo_from(
+    result: &(Vec<usize>, Vec<(Point<f64, Logical>, Size<f64, Logical>)>),
+    id: usize,
+) -> (Point<f64, Logical>, Size<f64, Logical>) {
+    let (order, geos) = result;
+    let idx = order.iter().position(|w| *w == id).unwrap();
+    geos[idx]
 }
 
 #[test]
