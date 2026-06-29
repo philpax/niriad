@@ -1277,10 +1277,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     let tile_w = leaf_size(tile_idx).w;
                     let left = col_main_start + tile_off.x;
                     let rel_x = (main - left) / tile_w.max(1.);
+
+                    // If the tile sits in a vertical (Cross) stack, its siblings share its left and
+                    // right edges, so a left/right drop means "beside the whole stack", not beside
+                    // this one tile. Wrapping just the tile would leave a misaligned partial-width
+                    // cell; placing beside the stack matches what you see.
+                    let parent_is_stack = col
+                        .root
+                        .path_for_leaf_index(tile_idx)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| {
+                            matches!(
+                                col.root.node_at(&p[..p.len() - 1]),
+                                TileNode::Split { axis: SplitAxis::Cross, .. }
+                            )
+                        })
+                        .unwrap_or(false);
+
                     if rel_x < 1. / 3. {
-                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
+                        if parent_is_stack {
+                            InsertPosition::InSplitStack(col_idx, tile_idx, false)
+                        } else {
+                            InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
+                        }
                     } else if rel_x > 2. / 3. {
-                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, true)
+                        if parent_is_stack {
+                            InsertPosition::InSplitStack(col_idx, tile_idx, true)
+                        } else {
+                            InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, true)
+                        }
                     } else {
                         // Centre third → stack this tile vertically; below if past its centre.
                         let place_below = cross > tile_top + tile_h / 2.;
@@ -1322,6 +1347,45 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             && self.active_column_idx != col_idx {
                 self.activate_column(col_idx);
             }
+
+        // Move columns to account for width changes.
+        let offset = self.column_main_pos(col_idx + 1) - prev_next_x;
+        if offset != 0. {
+            if self.active_column_idx <= col_idx {
+                for col in &mut self.columns[col_idx + 1..] {
+                    col.animate_move_from(-offset);
+                }
+            } else {
+                for col in &mut self.columns[..=col_idx] {
+                    col.animate_move_from(offset);
+                }
+            }
+        }
+    }
+
+    /// Drops a tile beside the whole vertical stack containing the leaf at (col_idx, tile_idx).
+    pub fn add_tile_beside_stack(
+        &mut self,
+        col_idx: usize,
+        tile_idx: usize,
+        place_after: bool,
+        tile: Tile<W>,
+        activate: bool,
+    ) {
+        // Don't create a split in a fullscreen/maximized column.
+        if !self.columns[col_idx].pending_sizing_mode().is_normal() {
+            self.add_tile_to_column(col_idx, None, tile, activate);
+            return;
+        }
+
+        let prev_next_x = self.column_main_pos(col_idx + 1);
+
+        let target_column = &mut self.columns[col_idx];
+        target_column.add_tile_beside_stack(tile_idx, tile, place_after, activate);
+
+        if activate && self.active_column_idx != col_idx {
+            self.activate_column(col_idx);
+        }
 
         // Move columns to account for width changes.
         let offset = self.column_main_pos(col_idx + 1) - prev_next_x;
@@ -3378,6 +3442,54 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     }
                 }
             }
+            InsertPosition::InSplitStack(column_index, tile_index, place_after) => {
+                if column_index >= self.columns.len() {
+                    return None;
+                }
+                let col = &self.columns[column_index];
+                if tile_index >= col.tiles_len() {
+                    return None;
+                }
+                let Some(path) = col
+                    .root
+                    .path_for_leaf_index(tile_index)
+                    .filter(|p| !p.is_empty())
+                else {
+                    return None;
+                };
+                let stack_path = &path[..path.len() - 1];
+                let col_main = self.column_main_pos(column_index);
+
+                // Bounding box over every leaf in the stack — the hint spans the whole stack, since
+                // that's what the new window lands beside.
+                let (mut x0, mut y0, mut x1, mut y1) =
+                    (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                for idx in 0..col.tiles_len() {
+                    let p = col.root.path_for_leaf_index(idx).unwrap_or_default();
+                    if !p.starts_with(stack_path) {
+                        continue;
+                    }
+                    let off = col.tile_offset(idx);
+                    let sz = col.root.leaf_data(&p).map(|d| d.size).unwrap_or_default();
+                    let lx = col_main + off.x;
+                    x0 = x0.min(lx);
+                    y0 = y0.min(off.y);
+                    x1 = x1.max(lx + sz.w);
+                    y1 = y1.max(off.y + sz.h);
+                }
+                if x0 > x1 || y0 > y1 {
+                    return None;
+                }
+
+                // Half-width rectangle on the side the new window will land.
+                let half_w = (x1 - x0) / 2.;
+                let loc = if place_after {
+                    Point::from((x0 + half_w, y0))
+                } else {
+                    Point::from((x0, y0))
+                };
+                Rectangle::new(loc, Size::from((half_w, y1 - y0)))
+            }
             InsertPosition::Floating => return None,
         };
 
@@ -5024,6 +5136,123 @@ impl<W: LayoutElement> Column<W> {
 
         // Animate existing tiles according to their position changes.
         self.animate_leaves_if_moved(&prev);
+    }
+
+    /// Drops a new tile beside the whole vertical (Cross) stack that contains the leaf at
+    /// `leaf_idx`, on the right if `place_after`. Stacked tiles share their side edges, so a
+    /// left/right drag targets the entire stack: the new window is wrapped around the stack (or
+    /// inserted as a sibling of the stack if the stack already lives in a horizontal row), rather
+    /// than nested next to a single tile (which would leave a misaligned partial-width cell).
+    fn add_tile_beside_stack(
+        &mut self,
+        leaf_idx: usize,
+        mut tile: Tile<W>,
+        place_after: bool,
+        activate: bool,
+    ) {
+        // The stack is the leaf's parent. With no parent (single-tile root) there's no stack to be
+        // beside, so fall back to a plain side-by-side split of the leaf.
+        let stack_path = match self.root.path_for_leaf_index(leaf_idx) {
+            Some(p) if !p.is_empty() => p[..p.len() - 1].to_vec(),
+            _ => {
+                self.add_tile_to_split(leaf_idx, tile, SplitAxis::Main, place_after, activate);
+                return;
+            }
+        };
+
+        tile.update_config(
+            self.map_size_out(self.view_size),
+            self.scale,
+            self.options.clone(),
+        );
+        let prev = self.leaf_positions_by_id();
+
+        let mut new_data = SplitChildData::new_auto();
+        new_data.update(&tile, self.axis());
+
+        let placeholder = || TileNode::Split {
+            axis: SplitAxis::Cross,
+            children: Vec::new(),
+            active_idx: 0,
+            data: Vec::new(),
+        };
+
+        // Wraps `stack` and the new tile into a fresh Main split, ordered by `place_after`.
+        let wrap = |stack: TileNode<W>, new_tile: Tile<W>, new_data: SplitChildData| {
+            let stack_data = SplitChildData::new_auto();
+            if place_after {
+                (
+                    vec![stack, TileNode::Leaf(new_tile)],
+                    vec![stack_data, new_data],
+                    1usize,
+                )
+            } else {
+                (
+                    vec![TileNode::Leaf(new_tile), stack],
+                    vec![new_data, stack_data],
+                    0usize,
+                )
+            }
+        };
+
+        let new_leaf_path: TilePath = if stack_path.is_empty() {
+            // The stack is the column root: wrap the whole root in a Main split.
+            let stack = std::mem::replace(&mut self.root, placeholder());
+            let (children, data, new_idx) = wrap(stack, tile, new_data);
+            let active_idx = if activate { new_idx } else { 1 - new_idx };
+            self.root = TileNode::Split {
+                axis: SplitAxis::Main,
+                active_idx,
+                children,
+                data,
+            };
+            vec![new_idx]
+        } else {
+            let stack_idx = *stack_path.last().unwrap();
+            let grand_path = stack_path[..stack_path.len() - 1].to_vec();
+            let grand_is_row = matches!(
+                self.root.node_at(&grand_path),
+                TileNode::Split { axis: SplitAxis::Main, .. }
+            );
+
+            let (TileNode::Split { children, data, active_idx, .. }
+            | TileNode::Tabbed { children, data, active_idx, .. }) =
+                self.root.node_at_mut(&grand_path)
+            else {
+                unreachable!("grandparent path points to a leaf")
+            };
+
+            if grand_is_row {
+                // The stack already sits in a horizontal row: insert the new tile as a sibling
+                // next to it.
+                let insert_idx = if place_after { stack_idx + 1 } else { stack_idx };
+                children.insert(insert_idx, TileNode::Leaf(tile));
+                data.insert(insert_idx, new_data);
+                if !activate && *active_idx >= insert_idx {
+                    *active_idx += 1;
+                }
+                let mut p = grand_path.clone();
+                p.push(insert_idx);
+                p
+            } else {
+                // Wrap just the stack node in a Main split in place.
+                let stack = std::mem::replace(&mut children[stack_idx], placeholder());
+                let (sub_children, sub_data, new_idx) = wrap(stack, tile, new_data);
+                let internal_active = if activate { new_idx } else { 1 - new_idx };
+                children[stack_idx] = TileNode::Split {
+                    axis: SplitAxis::Main,
+                    active_idx: internal_active,
+                    children: sub_children,
+                    data: sub_data,
+                };
+                let mut p = grand_path.clone();
+                p.push(stack_idx);
+                p.push(new_idx);
+                p
+            }
+        };
+
+        self.finish_add_tile_to_split(new_leaf_path, activate, prev);
     }
 
     /// Captures on-screen leaf positions keyed by window id (stable across tree reordering).

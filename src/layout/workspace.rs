@@ -737,6 +737,23 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    pub fn add_tile_beside_stack(
+        &mut self,
+        col_idx: usize,
+        tile_idx: usize,
+        place_after: bool,
+        tile: Tile<W>,
+        activate: bool,
+    ) {
+        self.enter_output_for_window(tile.window());
+        self.scrolling
+            .add_tile_beside_stack(col_idx, tile_idx, place_after, tile, activate);
+
+        if activate {
+            self.floating_is_active = FloatingActive::No;
+        }
+    }
+
     pub fn add_column(&mut self, column: Column<W>, activate: bool) {
         for (tile, _) in column.tiles() {
             self.enter_output_for_window(tile.window());

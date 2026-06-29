@@ -1757,7 +1757,8 @@ fn vertical_main_axis_insert_position_follows_y() {
     let insert_col_idx = |center| match ws.scrolling_insert_position(center) {
         super::monitor::InsertPosition::NewColumn(idx)
         | super::monitor::InsertPosition::InColumn(idx, _)
-        | super::monitor::InsertPosition::InSplit(idx, _, _, _) => idx,
+        | super::monitor::InsertPosition::InSplit(idx, _, _, _)
+        | super::monitor::InsertPosition::InSplitStack(idx, _, _) => idx,
         super::monitor::InsertPosition::Floating => unreachable!(),
     };
 
@@ -5048,6 +5049,98 @@ fn drag_into_tile_centre_creates_a_vertical_stack() {
         "window 1 and the dropped window are stacked vertically"
     );
     assert_ne!(p2.x, p1.x, "window 2 stays beside the new stack");
+}
+
+#[test]
+fn drag_beside_a_nested_stack_targets_the_whole_stack() {
+    use super::monitor::InsertPosition;
+
+    // Main[1, Cross[2, 3]] — window 1 on the left, a vertical stack [2 over 3] on the right. A
+    // left/right drop on either stacked tile should target the WHOLE stack (its tiles share their
+    // side edges), reported as InSplitStack — not a leaf-level InSplit that would wrap one tile.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(3) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let ws = layout.active_workspace().unwrap();
+
+    // A point in the right third of window 2 (top tile of the stack).
+    let (p2, s2) = window_geo(&layout, 2).unwrap();
+    let x = p2.x + s2.w * 0.8;
+    let y = p2.y + s2.h * 0.5;
+    match ws.scrolling_insert_position(Point::from((x, y))) {
+        InsertPosition::InSplitStack(0, _, true) => {}
+        other => panic!("expected InSplitStack to the right of the stack, got {other:?}"),
+    }
+}
+
+#[test]
+fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
+    // End-to-end: Main[1, Cross[2,3]] in column 0, window 4 alone in column 1. Dragging 4 onto the
+    // right third of the stack yields Main[1, Cross[2,3], 4]: windows 2 and 3 stay stacked (shared
+    // x), and window 4 sits to their right, spanning the full column height.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(3) },
+        Op::AddWindow { params: wide_window(4) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::Communicate(4),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    let (p2, s2) = window_geo(&layout, 2).unwrap();
+    let drop_x = p2.x + s2.w * 0.8;
+    let drop_y = p2.y + s2.h * 0.5;
+    let (p4, _) = window_geo(&layout, 4).unwrap();
+    let start: Point<f64, Logical> = Point::from((p4.x + 20., p4.y + 20.));
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 4, output_idx: 1, px: start.x, py: start.y },
+            Op::InteractiveMoveUpdate {
+                window: 4,
+                dx: drop_x - start.x,
+                dy: drop_y - start.y,
+                output_idx: 1,
+                px: drop_x,
+                py: drop_y,
+            },
+            Op::InteractiveMoveEnd { window: 4 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::Communicate(4),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    assert_eq!(tile_count(&layout), 4);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, s2) = window_geo(&layout, 2).unwrap();
+    let (p3, _) = window_geo(&layout, 3).unwrap();
+    let (p4, s4) = window_geo(&layout, 4).unwrap();
+    assert_eq!(p2.x, p3.x, "the stack stays a vertical stack (shared x)");
+    assert!(p4.x > p2.x, "window 4 sits to the right of the stack (p4={p4:?}, p2={p2:?})");
+    assert!(p1.x < p2.x, "window 1 stays to the left of the stack");
+    assert!(
+        s4.h > s2.h + 1.,
+        "window 4 spans the full column height, taller than a stacked tile (s4={s4:?}, s2={s2:?})"
+    );
 }
 
 #[test]

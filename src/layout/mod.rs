@@ -4346,6 +4346,17 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
+                    InsertPosition::InSplitStack(column_idx, tile_idx, place_after) => {
+                        mon.add_tile_beside_stack(
+                            ws_idx,
+                            column_idx,
+                            tile_idx,
+                            place_after,
+                            move_.tile,
+                            true,
+                            allow_to_activate_workspace,
+                        );
+                    }
                     InsertPosition::Floating => {
                         let tile_render_loc = move_.tile_render_location(zoom);
 
