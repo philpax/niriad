@@ -4443,6 +4443,16 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
+                    InsertPosition::InsertTab(section_idx, tile_idx) => {
+                        mon.add_tile_as_tab(
+                            ws_idx,
+                            section_idx,
+                            tile_idx,
+                            move_.tile,
+                            true,
+                            allow_to_activate_workspace,
+                        );
+                    }
                     InsertPosition::Floating => {
                         let tile_render_loc = move_.tile_render_location(zoom);
 

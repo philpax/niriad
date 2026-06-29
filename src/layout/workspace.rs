@@ -754,6 +754,21 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    pub fn add_tile_as_tab(
+        &mut self,
+        col_idx: usize,
+        tile_idx: usize,
+        tile: Tile<W>,
+        activate: bool,
+    ) {
+        self.enter_output_for_window(tile.window());
+        self.scrolling.add_tile_as_tab(col_idx, tile_idx, tile, activate);
+
+        if activate {
+            self.floating_is_active = FloatingActive::No;
+        }
+    }
+
     pub fn add_section(&mut self, section: Section<W>, activate: bool) {
         for (tile, _) in section.tiles() {
             self.enter_output_for_window(tile.window());

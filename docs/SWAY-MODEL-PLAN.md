@@ -108,9 +108,17 @@ green (build + tests + clippy + fuzzer).
 - **S5 — done.** Spatial `focus/move-left|right|up|down` resolving screen directions per monitor
   orientation; sway config binds hjkl/arrows to them. Reviewed — 8-way mapping correct both
   orientations.
-- **S4 — pending.** sway three-region drag (titlebar→tab / edge-band→split / body→split-or-swap).
-  niriad already has a working thirds + beside-stack drag; making it fully sway-faithful is the
-  remaining refinement.
+- **S4 — done.** sway-style drag region map: the tile interior splits toward the closest of its four
+  edges (left/right side-by-side, top/bottom stacked, with beside-the-whole-stack escalation), and
+  the centre groups the dragged window with the target into a `Tabbed` container; dropping on a
+  tabbed section's body adds a tab. New `InsertPosition::InsertTab` + `add_tile_as_tab` (wrap a fresh
+  `Tabbed[target, dragged]`, or join an existing tab/stack group). Adversarially reviewed — clean on
+  same-family-nesting and active_idx; fixed a tabbed-body target-index bug and a wrap-path leaf-path
+  bug it (and self-review) surfaced.
+  - *Adaptation:* sway *swaps* the two windows on a centre-drop, but niri detaches the dragged tile
+    during a move (it's no longer in the layout), so there's nothing to swap in place — centre→tab
+    is the natural insertion-model fit. Literal swap would need keeping the source in place during
+    the drag.
 
 ### Known limitations / follow-ups
 - Spatial focus/move stops at a screen edge rather than crossing to the adjacent output (sway

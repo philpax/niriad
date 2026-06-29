@@ -140,6 +140,11 @@ pub(super) enum InsertPosition {
     /// either side of any of them places the new window next to the entire stack rather than
     /// next to one tile. `place_after` is true for the right side. Produced only by drag.
     InSplitStack(usize, usize, bool),
+    /// Group the dragged window into a tabbed container with the tile at (section_idx, tile_idx) —
+    /// sway's "drop on the centre" behaviour, adapted to niri's detach-during-drag model (which
+    /// can't swap): if the target is already in a tabbing container the window joins it as a new
+    /// tab, otherwise the target is wrapped in a fresh tabbed container. Produced only by drag.
+    InsertTab(usize, usize),
     Floating,
 }
 
@@ -700,6 +705,27 @@ impl<W: LayoutElement> Monitor<W> {
             workspace.original_output = OutputId::new(&self.output);
         }
 
+        if allow_to_activate_workspace && activate {
+            self.activate_workspace(workspace_idx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_tile_as_tab(
+        &mut self,
+        workspace_idx: usize,
+        section_idx: usize,
+        tile_idx: usize,
+        tile: Tile<W>,
+        activate: bool,
+        allow_to_activate_workspace: bool,
+    ) {
+        let workspace = &mut self.workspaces[workspace_idx];
+        workspace.add_tile_as_tab(section_idx, tile_idx, tile, activate);
+
+        if workspace.name().is_none() {
+            workspace.original_output = OutputId::new(&self.output);
+        }
         if allow_to_activate_workspace && activate {
             self.activate_workspace(workspace_idx);
         }

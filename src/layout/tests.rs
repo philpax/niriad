@@ -1770,7 +1770,8 @@ fn vertical_main_axis_insert_position_follows_y() {
         super::monitor::InsertPosition::NewSection(idx)
         | super::monitor::InsertPosition::InSection(idx, _)
         | super::monitor::InsertPosition::InSplit(idx, _, _, _)
-        | super::monitor::InsertPosition::InSplitStack(idx, _, _) => idx,
+        | super::monitor::InsertPosition::InSplitStack(idx, _, _)
+        | super::monitor::InsertPosition::InsertTab(idx, _) => idx,
         super::monitor::InsertPosition::Floating => unreachable!(),
     };
 
@@ -5143,6 +5144,30 @@ fn drag_window3_onto_row(px: f64, py: f64) -> [Point<f64, Logical>; 3] {
 }
 
 #[test]
+fn drag_onto_a_tabbed_section_body_adds_a_tab() {
+    use super::monitor::InsertPosition;
+    // Tabbed[1,2]; a drop in its body reports InsertTab into the section (sway: drop on the tabs/
+    // content → new tab), which add_tile_as_tab applies by joining the existing tab group.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SetLayout(super::tile_node::Layout::Tabbed),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+    assert!(
+        matches!(ip(166., 360.), InsertPosition::InsertTab(0, _)),
+        "drop on a tabbed section body should add a tab, got {:?}",
+        ip(166., 360.)
+    );
+}
+
+#[test]
 fn drag_below_a_row_stacks_below_drag_above_stacks_above() {
     // Dropping in the bottom region of the row puts window 3 below it (greater y), keeping 1 and 2
     // as the top row (shared, smaller y).
@@ -5193,10 +5218,11 @@ fn drop_below_a_nested_row_inserts_after_the_whole_row() {
         "above the row should insert before the whole row, got {:?}",
         ip(166., 480.)
     );
-    // Interior of the row's left tile splits it (window 3 = leaf 2), not above/below.
+    // Centre of the row's left tile targets that tile (window 3 = leaf 2) — grouping into tabs —
+    // rather than inserting above/below the whole row.
     assert!(
-        matches!(ip(166., 590.), InsertPosition::InSplit(0, 2, _, _)),
-        "interior of the row should split a tile, got {:?}",
+        matches!(ip(166., 590.), InsertPosition::InsertTab(0, 2)),
+        "centre of the row should target a tile, got {:?}",
         ip(166., 590.)
     );
 }
@@ -5219,16 +5245,17 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
-    // Interior of the left tile → split tile 0; interior of the right tile → split tile 1.
-    // (Previously a row always reported tile 0 regardless of x.)
+    // Centre of the left tile → target tile 0; centre of the right tile → target tile 1.
+    // (Previously a row always reported tile 0 regardless of x.) The centre region groups into
+    // tabs, but the point is that the *targeted tile index* follows the cursor's x.
     assert!(
-        matches!(ip(166., 360.), InsertPosition::InSplit(0, 0, _, _)),
-        "left tile interior should target tile 0, got {:?}",
+        matches!(ip(166., 360.), InsertPosition::InsertTab(0, 0)),
+        "left tile centre should target tile 0, got {:?}",
         ip(166., 360.)
     );
     assert!(
-        matches!(ip(482., 360.), InsertPosition::InSplit(0, 1, _, _)),
-        "right tile interior should target tile 1, got {:?}",
+        matches!(ip(482., 360.), InsertPosition::InsertTab(0, 1)),
+        "right tile centre should target tile 1, got {:?}",
         ip(482., 360.)
     );
 
@@ -5249,12 +5276,12 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
 }
 
 #[test]
-fn drag_into_tile_centre_stacks_it_vertically() {
+fn drag_into_tile_regions_split_at_edges_and_tab_at_centre() {
     use super::monitor::InsertPosition;
 
-    // A horizontal row [1 | 2]. The interior of a tile is split into thirds across x: the left and
-    // right thirds place the new window side-by-side (Main); the centre third stacks the tile
-    // top/bottom (Cross), converting that single window into a section.
+    // A horizontal row [1 | 2]. The tile interior is a sway-style region map: the left/right
+    // edge-ward regions place the window side-by-side (Main); the centre groups the two windows
+    // into tabs (sway centre-drop, adapted to niri's detach-during-drag model).
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5267,47 +5294,39 @@ fn drag_into_tile_centre_stacks_it_vertically() {
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
-    // Left tile spans x≈[16,316]; thirds at [16,116] [116,216] [216,316], centres 66/166/266.
+    // Left tile spans x≈[16,316], full section height; centre (166, ~mid) groups into tabs.
     assert!(
-        matches!(
-            ip(166., 360.),
-            InsertPosition::InSplit(0, 0, SplitAxis::Cross, _)
-        ),
-        "centre third should stack the tile (Cross), got {:?}",
+        matches!(ip(166., 360.), InsertPosition::InsertTab(0, 0)),
+        "centre should group into tabs, got {:?}",
         ip(166., 360.)
     );
     assert!(
         matches!(
-            ip(66., 360.),
+            ip(60., 360.),
             InsertPosition::InSplit(0, 0, SplitAxis::Main, false)
         ),
-        "left third should place beside on the left (Main), got {:?}",
-        ip(66., 360.)
+        "left edge should place beside on the left (Main), got {:?}",
+        ip(60., 360.)
     );
     assert!(
         matches!(
-            ip(266., 360.),
+            ip(270., 360.),
             InsertPosition::InSplit(0, 0, SplitAxis::Main, true)
         ),
-        "right third should place beside on the right (Main), got {:?}",
-        ip(266., 360.)
+        "right edge should place beside on the right (Main), got {:?}",
+        ip(270., 360.)
     );
 }
 
 #[test]
-fn drag_into_tile_centre_creates_a_vertical_stack() {
-    // End-to-end: drop window 3 into the centre of the left tile of row [1 | 2]. Window 1 becomes
-    // a vertical stack with window 3 (shared x, different y), and window 2 stays beside them.
+fn drag_into_tile_centre_tabs_the_windows() {
+    // End-to-end: drop window 3 into the centre of the left tile of row [1 | 2]. Windows 1 and 3
+    // are grouped into a tabbed container (shared position, one shown at a time); window 2 stays
+    // beside them.
     let [p1, p2, p3] = drag_window3_onto_row(166., 360.);
-    assert_eq!(
-        p1.x, p3.x,
-        "window 1 and the dropped window share a section (stacked)"
-    );
-    assert_ne!(
-        p1.y, p3.y,
-        "window 1 and the dropped window are stacked vertically"
-    );
-    assert_ne!(p2.x, p1.x, "window 2 stays beside the new stack");
+    assert_eq!(p1.x, p3.x, "tabbed windows 1 and 3 share a position (x)");
+    assert_eq!(p1.y, p3.y, "tabbed windows 1 and 3 share a position (y)");
+    assert_ne!(p2.x, p1.x, "window 2 stays beside the tabbed pair");
 }
 
 #[test]
