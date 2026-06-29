@@ -264,6 +264,26 @@ struct MoveAnimation {
     from: f64,
 }
 
+/// Render data for one *nested* (non-root) tabbed container within a column. Lets the renderer,
+/// hit-tester, and element updater treat a tabbed node deep in the tree (e.g. a tabbed row) like a
+/// mini tabbed column.
+struct NestedTabbed {
+    /// Path from the column root to the tabbed node.
+    path: TilePath,
+    /// Content rectangle (column-local); the header draws in the band just above it.
+    content_area: Rectangle<f64, Logical>,
+    /// Number of tabs (the node's direct children).
+    tab_count: usize,
+    /// The active tab index.
+    active_idx: usize,
+    /// Whether the node is currently shown (not hidden by an ancestor tab).
+    visible: bool,
+    /// Whether the node lies on the column's active path (used for the active highlight).
+    active_on_path: bool,
+    /// Flat leaf index of each tab's representative leaf (its subtree's active leaf).
+    rep_leaf_idx: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ViewSnap {
     view_main_pos: f64,
@@ -3450,13 +3470,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 if tile_index >= col.tiles_len() {
                     return None;
                 }
-                let Some(path) = col
+                let path = col
                     .root
                     .path_for_leaf_index(tile_index)
-                    .filter(|p| !p.is_empty())
-                else {
-                    return None;
-                };
+                    .filter(|p| !p.is_empty())?;
                 let stack_path = &path[..path.len() - 1];
                 let col_main = self.column_main_pos(column_index);
 
@@ -3904,12 +3921,24 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let column_render_offset = col.render_offset();
 
             // Draw the tab indicator on top.
-            if let Some(tab_indicator) = col.tab_header() {
+            let header_pos = {
                 let pos = view_off + column_offset + column_render_offset;
                 let pos = self.map_point_out(pos);
-                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                pos.to_physical_precise_round(scale).to_logical(scale)
+            };
+            if let Some(tab_indicator) = col.tab_header() {
                 tab_indicator
-                    .render(ctx.renderer, pos, &mut |elem| push(elem.into()));
+                    .render(ctx.renderer, header_pos, &mut |elem| push(elem.into()));
+            }
+            // Nested tabbed headers, Indicator style (Bar style is drawn in the second pass below).
+            for unit in col.collect_nested_tabbed() {
+                if !unit.visible {
+                    continue;
+                }
+                let header = col.root.node_at(&unit.path).tab_header();
+                if let Some(header @ TabHeader::Indicator(_)) = header {
+                    header.render(ctx.renderer, header_pos, &mut |elem| push(elem.into()));
+                }
             }
 
             for (tile, tile_off, visible) in col.tiles_in_render_order() {
@@ -3953,52 +3982,78 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let column_mains: Vec<f64> = self.column_main_positions().collect();
         let active_column_idx = self.active_column_idx;
 
-        // Collect render data for each tabbed column with a Bar-style header.
-        /// Per-column data for TabBar rendering.
+        // Collect render data for each Bar-style header: the column root header, plus any nested
+        // tabbed nodes (a tabbed row, etc.). `path` is empty for the column root.
+        /// Per-header data for TabBar rendering.
         struct BarRenderData {
             col_idx: usize,
+            path: TilePath,
             pos: Point<f64, Logical>,
             titles: Vec<String>,
-            is_column_active: bool,
+            is_active: bool,
         }
         let mut bar_render_data: Vec<BarRenderData> = Vec::new();
         for (col_idx, col) in self.columns.iter().enumerate() {
-            if !col.is_tabbed() {
-                continue;
-            }
-
-            let is_bar = matches!(col.tab_header(), Some(TabHeader::Bar(_)));
-            if !is_bar {
-                continue;
-            }
-
             let column_main = column_mains[col_idx];
             let column_offset = main_space_vec(column_main);
             let column_render_offset = col.render_offset();
             let pos = view_off + column_offset + column_render_offset;
             let pos = self.map_point_out(pos);
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-
-            let titles: Vec<String> = col
-                .tiles_enumerated()
-                .map(|(_, tile)| tile.window().title().unwrap_or_default())
-                .collect();
             let is_column_active = col_idx == active_column_idx;
 
-            bar_render_data.push(BarRenderData { col_idx, pos, titles, is_column_active });
+            // The column root header.
+            if col.is_tabbed() && matches!(col.tab_header(), Some(TabHeader::Bar(_))) {
+                let titles: Vec<String> = col
+                    .tiles_enumerated()
+                    .map(|(_, tile)| tile.window().title().unwrap_or_default())
+                    .collect();
+                bar_render_data.push(BarRenderData {
+                    col_idx,
+                    path: Vec::new(),
+                    pos,
+                    titles,
+                    is_active: is_column_active,
+                });
+            }
+
+            // Nested tabbed Bar headers.
+            for unit in col.collect_nested_tabbed() {
+                if !unit.visible {
+                    continue;
+                }
+                if !matches!(
+                    col.root.node_at(&unit.path).tab_header(),
+                    Some(TabHeader::Bar(_))
+                ) {
+                    continue;
+                }
+                let titles: Vec<String> = unit
+                    .rep_leaf_idx
+                    .iter()
+                    .map(|&idx| col.tile(idx).window().title().unwrap_or_default())
+                    .collect();
+                bar_render_data.push(BarRenderData {
+                    col_idx,
+                    path: unit.path,
+                    pos,
+                    titles,
+                    is_active: is_column_active && unit.active_on_path,
+                });
+            }
         }
 
         // Now render each Bar-style tab header.
         for data in bar_render_data {
             let title_refs: Vec<&str> = data.titles.iter().map(|s| s.as_str()).collect();
             let col = &self.columns[data.col_idx];
-            if let Some(TabHeader::Bar(bar)) = col.tab_header() {
+            if let Some(TabHeader::Bar(bar)) = col.root.node_at(&data.path).tab_header() {
                 let gles_ctx = ctx.as_gles();
                 bar.render(
                     gles_ctx.renderer,
                     data.pos,
                     self.scale,
-                    data.is_column_active,
+                    data.is_active,
                     &title_refs,
                     &mut |elem| push(elem.into()),
                 );
@@ -4081,6 +4136,31 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         is_tab_indicator: true,
                     };
                     return Some((col.tile(idx).window(), hit));
+                }
+            }
+
+            // Hit nested tabbed headers (a tabbed row, etc.). The returned index is the tab index;
+            // map it to that tab's representative leaf so activating it switches to that tab.
+            if col.sizing_mode().is_normal() {
+                let column_pos = (view_off + column_offset + column_render_offset)
+                    .to_physical_precise_round(scale)
+                    .to_logical(scale);
+                for unit in col.collect_nested_tabbed() {
+                    if !unit.visible {
+                        continue;
+                    }
+                    let Some(header) = col.root.node_at(&unit.path).tab_header() else {
+                        continue;
+                    };
+                    if let Some(idx) =
+                        header.hit(unit.content_area, unit.tab_count, scale, pos_in - column_pos)
+                    {
+                        let leaf = unit.rep_leaf_idx.get(idx).copied().unwrap_or(0);
+                        let hit = HitType::Activate {
+                            is_tab_indicator: true,
+                        };
+                        return Some((col.tile(leaf).window(), hit));
+                    }
                 }
             }
 
@@ -4796,7 +4876,8 @@ impl<W: LayoutElement> Column<W> {
     /// Returns the render offset of the active leaf (recursive).
     fn active_tile_offset(&self) -> Point<f64, Logical> {
         let origin = self.tiles_origin();
-        self.root.active_leaf_offset(origin, self.options.layout.gaps, self.axis())
+        self.root
+            .active_leaf_offset(origin, self.options.layout.gaps, self.scale, self.axis(), true)
     }
 
     /// Returns the last leaf (mutable).
@@ -5554,6 +5635,46 @@ impl<W: LayoutElement> Column<W> {
                     tiles_len,
                     tabs.into_iter(),
                     is_active,
+                    scale,
+                );
+            }
+        }
+
+        // Nested tabbed containers (generalized tabs deeper in the tree).
+        let scale = self.scale;
+        let sizing_normal = self.sizing_mode().is_normal();
+        for unit in self.collect_nested_tabbed() {
+            let Some(config) = self
+                .root
+                .node_at(&unit.path)
+                .tab_header()
+                .map(|h| h.config())
+            else {
+                continue;
+            };
+            let tabs: Vec<TabInfo> = unit
+                .rep_leaf_idx
+                .iter()
+                .enumerate()
+                .map(|(i, &lidx)| {
+                    let tile = self.tile(lidx);
+                    let is_tab_active = i == unit.active_idx;
+                    let is_urgent = tile.window().is_urgent();
+                    TabInfo::from_tile(tile, unit.content_area.loc, is_tab_active, is_urgent, &config)
+                })
+                .collect();
+            let enabled = unit.visible && sizing_normal;
+            let header_active = is_active && unit.active_on_path;
+            let content_area = unit.content_area;
+            let tab_count = unit.tab_count;
+            if let Some(header) = self.root.node_at_mut(&unit.path).tab_header_mut() {
+                header.update_render_elements(
+                    enabled,
+                    content_area,
+                    view_rect,
+                    tab_count,
+                    tabs.into_iter(),
+                    header_active,
                     scale,
                 );
             }
@@ -6920,7 +7041,7 @@ impl<W: LayoutElement> Column<W> {
     /// animation goes through this so they can never disagree.
     fn leaf_positions(&self) -> Vec<(*const Tile<W>, Point<f64, Logical>)> {
         let origin = self.tiles_origin();
-        let raw = self.root.leaf_layout(origin, self.options.layout.gaps);
+        let raw = self.root.leaf_layout(origin, self.options.layout.gaps, self.scale);
 
         // Centering / start-edge shift only applies to leaves that share the column's main-axis
         // origin (no Main-split ancestor); the max main span is taken over just those leaves.
@@ -7030,6 +7151,84 @@ impl<W: LayoutElement> Column<W> {
             let tile = unsafe { &mut *ptr };
             (tile, positions[idx])
         })
+    }
+
+    /// Collects render data for every *nested* (non-root) tabbed container in this column. The
+    /// root column header is handled by the existing dedicated path; this generalizes headers to
+    /// tabbed nodes deeper in the tree (e.g. a tabbed row). Returns an empty vec for the common
+    /// case of no nested tabs, doing only a cheap tree walk.
+    fn collect_nested_tabbed(&self) -> Vec<NestedTabbed> {
+        let mut paths = Vec::new();
+        let mut prefix = Vec::new();
+        self.root.collect_tabbed_paths(&mut prefix, &mut paths);
+        paths.retain(|p| !p.is_empty());
+        if paths.is_empty() {
+            return Vec::new();
+        }
+
+        let visibility = self.root.leaf_visibility();
+        let positions = self.leaf_positions();
+        let leaf_paths: Vec<TilePath> = self.root.leaves().map(|(_, p)| p).collect();
+        let active_path = self.root.active_path();
+
+        let flat_of = |target: &[usize]| -> usize {
+            leaf_paths.iter().position(|p| p.as_slice() == target).unwrap_or(0)
+        };
+
+        let mut out = Vec::new();
+        for path in paths {
+            let node = self.root.node_at(&path);
+            let tab_count = node.child_count();
+            let active_idx = node.active_idx();
+
+            // Content area = bounding box of every leaf under the node (column-local). All tabs are
+            // sized to the same content rectangle, so this is exactly that rectangle; the header
+            // draws in the band just above it.
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for (idx, lp) in leaf_paths.iter().enumerate() {
+                if !lp.starts_with(&path) {
+                    continue;
+                }
+                let pos = positions[idx].1;
+                let sz = self.root.leaf_data(lp).map(|d| d.size).unwrap_or_default();
+                x0 = x0.min(pos.x);
+                y0 = y0.min(pos.y);
+                x1 = x1.max(pos.x + sz.w);
+                y1 = y1.max(pos.y + sz.h);
+            }
+            if x0 > x1 || y0 > y1 {
+                continue;
+            }
+            let content_area =
+                Rectangle::new(Point::from((x0, y0)), Size::from((x1 - x0, y1 - y0)));
+
+            // Representative leaf (flat index) of each tab = the active leaf of that child subtree.
+            let mut rep_leaf_idx = Vec::with_capacity(tab_count);
+            for i in 0..tab_count {
+                let mut child_path = path.clone();
+                child_path.push(i);
+                let child = self.root.node_at(&child_path);
+                child_path.extend(child.active_path());
+                rep_leaf_idx.push(flat_of(&child_path));
+            }
+
+            // The node is visible if its own active leaf is visible (not hidden by an ancestor tab).
+            let mut node_active = path.clone();
+            node_active.extend(node.active_path());
+            let visible = visibility.get(flat_of(&node_active)).copied().unwrap_or(true);
+            let active_on_path = active_path.starts_with(&path);
+
+            out.push(NestedTabbed {
+                path,
+                content_area,
+                tab_count,
+                active_idx,
+                visible,
+                active_on_path,
+                rep_leaf_idx,
+            });
+        }
+        out
     }
 
     fn tab_indicator_area(&self) -> Rectangle<f64, Logical> {

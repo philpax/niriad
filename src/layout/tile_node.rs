@@ -245,7 +245,9 @@ impl<W: LayoutElement> TileNode<W> {
         &self,
         origin: Point<f64, Logical>,
         gaps: f64,
+        scale: f64,
         axis: AxisMap,
+        is_root: bool,
     ) -> Point<f64, Logical> {
         match self {
             TileNode::Leaf(_) => origin,
@@ -263,12 +265,18 @@ impl<W: LayoutElement> TileNode<W> {
                         offset.y += d.size.h + gaps;
                     }
                 }
-                children[*active_idx].active_leaf_offset(offset, gaps, axis)
+                children[*active_idx].active_leaf_offset(offset, gaps, scale, axis, false)
             }
             TileNode::Tabbed { children, active_idx, tab_header, .. } => {
-                // All children are at the same position (tabbed), offset by tab header.
-                let _ = tab_header;
-                children[*active_idx].active_leaf_offset(origin, gaps, axis)
+                // All children share the same position (tabbed). A nested tabbed container also
+                // reserves a header band, so its content is pushed past it (the root column's
+                // header offset is applied separately by `tiles_origin`).
+                let content_origin = if is_root {
+                    origin
+                } else {
+                    origin + tab_header.content_offset(children.len(), scale)
+                };
+                children[*active_idx].active_leaf_offset(content_origin, gaps, scale, axis, false)
             }
         }
     }
@@ -281,9 +289,9 @@ impl<W: LayoutElement> TileNode<W> {
     /// root without crossing a Main split, so it shares the column's main-axis origin and is
     /// eligible for main-axis centering. Centering itself is applied by the caller (the column),
     /// which knows the relevant options.
-    pub fn leaf_layout(&self, origin: Point<f64, Logical>, gaps: f64) -> Vec<LeafLayout<W>> {
+    pub fn leaf_layout(&self, origin: Point<f64, Logical>, gaps: f64, scale: f64) -> Vec<LeafLayout<W>> {
         let mut out = Vec::new();
-        self.collect_leaf_layout(origin, gaps, true, &mut out);
+        self.collect_leaf_layout(origin, gaps, scale, true, true, &mut out);
         out
     }
 
@@ -291,7 +299,9 @@ impl<W: LayoutElement> TileNode<W> {
         &self,
         origin: Point<f64, Logical>,
         gaps: f64,
+        scale: f64,
         aligned: bool,
+        is_root: bool,
         out: &mut Vec<LeafLayout<W>>,
     ) {
         match self {
@@ -322,7 +332,7 @@ impl<W: LayoutElement> TileNode<W> {
                                 .is_some_and(|d| d.interactively_resizing_by_start_edge),
                             aligned: child_aligned,
                         }),
-                        _ => child.collect_leaf_layout(pos, gaps, child_aligned, out),
+                        _ => child.collect_leaf_layout(pos, gaps, scale, child_aligned, false, out),
                     }
                     if i < data.len() {
                         if is_main {
@@ -333,19 +343,27 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 }
             }
-            TileNode::Tabbed { children, data, .. } => {
+            TileNode::Tabbed { children, data, tab_header, .. } => {
+                // A nested tabbed container reserves a band for its own header (the root column's
+                // header offset is applied separately, by `tiles_origin`). Push the children's
+                // content down past that band so it doesn't render under the header.
+                let content_origin = if is_root {
+                    origin
+                } else {
+                    origin + tab_header.content_offset(children.len(), scale)
+                };
                 for (i, child) in children.iter().enumerate() {
                     match child {
                         TileNode::Leaf(tile) => out.push(LeafLayout {
                             tile: tile as *const _,
-                            pos: origin,
+                            pos: content_origin,
                             main_size: data.get(i).map_or(0., |d| d.size.w),
                             resizing_by_start: data
                                 .get(i)
                                 .is_some_and(|d| d.interactively_resizing_by_start_edge),
                             aligned,
                         }),
-                        _ => child.collect_leaf_layout(origin, gaps, aligned, out),
+                        _ => child.collect_leaf_layout(content_origin, gaps, scale, aligned, false, out),
                     }
                 }
             }
@@ -862,6 +880,24 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 } else if let Some(child) = children.get_mut(idx) {
                     child.update_leaf_span(&path[1..], span);
+                }
+            }
+        }
+    }
+
+    /// Collects the paths of every `Tabbed` node in the subtree (including this node if it is one),
+    /// in pre-order. `prefix` is the path of `self`.
+    pub fn collect_tabbed_paths(&self, prefix: &mut TilePath, out: &mut Vec<TilePath>) {
+        if matches!(self, TileNode::Tabbed { .. }) {
+            out.push(prefix.clone());
+        }
+        match self {
+            TileNode::Leaf(_) => {}
+            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                for (i, child) in children.iter().enumerate() {
+                    prefix.push(i);
+                    child.collect_tabbed_paths(prefix, out);
+                    prefix.pop();
                 }
             }
         }

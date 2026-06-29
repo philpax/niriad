@@ -5052,6 +5052,76 @@ fn drag_into_tile_centre_creates_a_vertical_stack() {
 }
 
 #[test]
+fn nested_tabbed_render_and_hit_do_not_panic() {
+    // Exercise the nested tab-header render-element update and hit-testing over a tabbed row, to
+    // guard the per-node geometry collection against panics (the property test doesn't render).
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::ToggleTabbed,
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let output = layout.outputs().next().unwrap().clone();
+    layout.update_render_elements(Some(&output));
+
+    // Sweep the whole output; clicking a nested tab maps to that tab's representative window.
+    for x in (0..1280).step_by(32) {
+        for y in (0..720).step_by(32) {
+            let _ = layout.window_under(&output, Point::from((x as f64, y as f64)));
+        }
+    }
+}
+
+#[test]
+fn tabbed_row_reserves_space_for_its_header() {
+    // Tabbing a nested row must push its content down to leave a band for the row's own tab header,
+    // rather than drawing the content under the header. Compare the row tile's y with the row
+    // tabbed vs. not: tabbing should move it strictly downward by the header band.
+    let untabbed = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let tabbed = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::ToggleTabbed,
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    let (untabbed_row, _) = window_geo(&untabbed, 2).unwrap();
+    let (tabbed_row, _) = window_geo(&tabbed, 2).unwrap();
+    assert!(
+        tabbed_row.y > untabbed_row.y + 10.,
+        "tabbing the row should push its content down for the header band \
+         (untabbed y={}, tabbed y={})",
+        untabbed_row.y,
+        tabbed_row.y
+    );
+}
+
+#[test]
 fn drag_beside_a_nested_stack_targets_the_whole_stack() {
     use super::monitor::InsertPosition;
 
