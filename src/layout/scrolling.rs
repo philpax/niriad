@@ -4973,31 +4973,10 @@ impl<W: LayoutElement> Column<W> {
             .root
             .remove_leaf(&path)
             .unwrap_or_else(|| panic!("failed to remove leaf at path {path:?}"));
-        // Collapse single-child/empty nested splits (not the root itself).
-        // The root should always remain a Split/Tabbed to preserve the column structure.
-        match &mut self.root {
-            TileNode::Internal { children, data, active_idx, .. } => {
-                for child in children.iter_mut() {
-                    child.collapse_all_single_child();
-                }
-                // Remove any empty children left after collapse.
-                let mut i = 0;
-                while i < children.len() {
-                    let is_empty = matches!(&children[i], TileNode::Internal { children: c, .. } if c.is_empty());
-                    if is_empty {
-                        children.remove(i);
-                        data.remove(i);
-                    } else {
-                        i += 1;
-                    }
-                }
-                // Clamp active_idx to valid range.
-                if !children.is_empty() {
-                    *active_idx = (*active_idx).min(children.len() - 1);
-                }
-            }
-            TileNode::Leaf(_) => {}
-        }
+        // Canonicalize the tree (reap empties, flatten single-child nodes, merge same-family
+        // splits), then drop a redundant single-child root wrapper (keeping a lone-leaf root, the
+        // single-window column).
+        self.root.simplify();
         self.collapse_redundant_root_wrapper();
         tile
     }
@@ -5203,8 +5182,9 @@ impl<W: LayoutElement> Column<W> {
                 .ensure_alpha_animates_to_1();
         }
 
-        // Avoid a redundant single-child wrapper (e.g. the implicit Cross root wrapping a lone Main
-        // split created above) so toggle-tabbed / swapping / render all operate on real tabs.
+        // Canonicalize (merge same-family splits, flatten single-child nodes) then drop a redundant
+        // single-child root wrapper, so toggle-tabbed / swapping / render all operate on real tabs.
+        self.root.simplify();
         self.collapse_redundant_root_wrapper();
 
         self.update_tile_sizes(true);

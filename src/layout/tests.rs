@@ -4538,6 +4538,53 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn simplify_merges_same_family_splits_only() {
+    use std::rc::Rc;
+
+    use super::tile_node::{Layout as L, SplitChildData, TileNode as TN};
+
+    let leaf = |id: usize| -> TN<TestWindow> {
+        let win = TestWindow::new(TestWindowParams::new(id));
+        let tile = super::tile::Tile::new(
+            win,
+            Size::from((1280., 720.)),
+            1.0,
+            Clock::with_time(Duration::ZERO),
+            Rc::new(Options::default()),
+        );
+        TN::Leaf(tile)
+    };
+    let node = |layout: L, children: Vec<TN<TestWindow>>| -> TN<TestWindow> {
+        let n = children.len();
+        TN::internal(layout, children, 0, vec![SplitChildData::new_auto(); n], None)
+    };
+    let ids = |n: &TN<TestWindow>| -> Vec<usize> {
+        n.leaves().map(|(t, _)| *t.window().id()).collect()
+    };
+
+    // V[ 1, V[2,3], 4 ] is a column directly containing a column → flatten to V[1,2,3,4].
+    let mut root = node(L::SplitV, vec![leaf(1), node(L::SplitV, vec![leaf(2), leaf(3)]), leaf(4)]);
+    root.simplify();
+    assert_eq!(root.child_count(), 4, "same-family column should merge");
+    assert_eq!(ids(&root), vec![1, 2, 3, 4], "order preserved");
+    root.verify_structure();
+
+    // V[ H[5,6], 7 ] is cross-family → the row stays nested.
+    let mut cross = node(L::SplitV, vec![node(L::SplitH, vec![leaf(5), leaf(6)]), leaf(7)]);
+    cross.simplify();
+    assert_eq!(cross.child_count(), 2, "cross-family nesting is preserved");
+    cross.verify_structure();
+
+    // A single-child split nested in a same-family split collapses then merges: V[ V[8] ] → 8 lifted
+    // so the parent becomes a plain V[8,...]; here V[1-child] flattens to the leaf.
+    let mut chain = node(L::SplitV, vec![node(L::SplitV, vec![leaf(8)]), leaf(9)]);
+    chain.simplify();
+    assert_eq!(ids(&chain), vec![8, 9]);
+    assert_eq!(chain.child_count(), 2);
+    chain.verify_structure();
+}
+
+#[test]
 fn born_tabbed_column_untabs_to_a_vertical_column() {
     // A column born tabbed (via a default-column-display rule) must, when un-tabbed, collapse to a
     // vertical column (windows stacked, different y) — not a horizontal row. Regression for the

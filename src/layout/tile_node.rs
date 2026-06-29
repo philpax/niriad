@@ -464,7 +464,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn verify_structure(&self) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Internal { children, data, active_idx, .. } => {
+            TileNode::Internal { layout, children, data, active_idx, .. } => {
                 assert_eq!(
                     children.len(),
                     data.len(),
@@ -484,6 +484,18 @@ impl<W: LayoutElement> TileNode<W> {
                         matches!(children[0], TileNode::Leaf(_)),
                         "a single-child split/tabbed node must wrap a leaf (else it should collapse)"
                     );
+                }
+                // No plain-split child of the same family as a plain-split parent (it must have been
+                // merged: a column never directly contains a column, a row never a row).
+                if layout.is_split() {
+                    for child in children.iter() {
+                        if let TileNode::Internal { layout: cl, .. } = child {
+                            assert!(
+                                !(cl.is_split() && cl.same_family(*layout)),
+                                "same-family split nesting not merged: {layout:?} contains {cl:?}"
+                            );
+                        }
+                    }
                 }
                 for child in children {
                     assert!(child.leaf_count() >= 1, "a child subtree must be non-empty");
@@ -1201,6 +1213,96 @@ impl<W: LayoutElement> TileNode<W> {
                 }
                 // Then collapse self if single child.
                 self.collapse_single_child();
+            }
+        }
+    }
+
+    /// Canonicalizes this subtree (bottom-up), enforcing tree-shape invariants inspired by sway plus our
+    /// same-family merge:
+    ///
+    /// - empty internal children are reaped;
+    /// - a single-child internal child is flattened into its only child;
+    /// - a plain-split child of the *same family* as a plain-split parent is spliced in, so
+    ///   `V[a, V[b,c], d] => V[a,b,c,d]` and `H[H[..]] => H[..]` (a column never directly contains a
+    ///   column, a row never directly contains a row).
+    ///
+    /// Tabbing layouts (Tabbed/Stacked) are never merged — a tab group wrapping a tab group, or a
+    /// tab group wrapping a split, is meaningful structure. `self` is **not** collapsed when it ends
+    /// up single-child; that is the caller's concern (the column root keeps a lone-leaf wrapper).
+    pub fn simplify(&mut self) {
+        // Recurse first so children are already canonical.
+        if let TileNode::Internal { children, .. } = self {
+            for c in children.iter_mut() {
+                c.simplify();
+            }
+        } else {
+            return;
+        }
+
+        loop {
+            let TileNode::Internal { layout, children, data, active_idx, .. } = self else {
+                return;
+            };
+            let self_layout = *layout;
+            let mut changed = false;
+            let mut i = 0;
+            while i < children.len() {
+                // Reap an empty internal child.
+                if matches!(&children[i], TileNode::Internal { children: c, .. } if c.is_empty()) {
+                    children.remove(i);
+                    data.remove(i);
+                    if *active_idx > i {
+                        *active_idx -= 1;
+                    }
+                    changed = true;
+                    continue;
+                }
+
+                // Flatten a single-child internal child into its only grandchild (the slot keeps its
+                // span data and active flag).
+                if matches!(&children[i], TileNode::Internal { children: c, .. } if c.len() == 1) {
+                    let TileNode::Internal { children: mut gc, .. } = children.remove(i) else {
+                        unreachable!()
+                    };
+                    children.insert(i, gc.remove(0));
+                    changed = true;
+                    continue;
+                }
+
+                // Merge a same-family plain-split child into this plain split.
+                let mergeable = self_layout.is_split()
+                    && matches!(&children[i], TileNode::Internal { layout: cl, .. }
+                        if cl.is_split() && cl.same_family(self_layout));
+                if mergeable {
+                    let was_active = *active_idx == i;
+                    let TileNode::Internal { children: gc, data: gd, active_idx: ga, .. } =
+                        children.remove(i)
+                    else {
+                        unreachable!()
+                    };
+                    data.remove(i);
+                    let n = gc.len();
+                    for (j, (g, gd1)) in gc.into_iter().zip(gd).enumerate() {
+                        children.insert(i + j, g);
+                        data.insert(i + j, gd1);
+                    }
+                    if was_active {
+                        *active_idx = i + ga;
+                    } else if *active_idx > i {
+                        *active_idx += n.saturating_sub(1);
+                    }
+                    changed = true;
+                    continue;
+                }
+
+                i += 1;
+            }
+
+            if !children.is_empty() {
+                *active_idx = (*active_idx).min(children.len() - 1);
+            }
+            if !changed {
+                break;
             }
         }
     }
