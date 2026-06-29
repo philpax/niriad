@@ -1,7 +1,7 @@
 use std::iter::zip;
 use std::rc::Rc;
 
-use niri_ipc::ColumnDisplay;
+use niri_ipc::SectionDisplay;
 use ordered_float::NotNan;
 use smithay::utils::{Logical, Point, Size};
 
@@ -1056,10 +1056,10 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Returns the display mode (Normal for Leaf/split, Tabbed for a tabbing layout).
-    pub fn display_mode(&self) -> ColumnDisplay {
+    pub fn display_mode(&self) -> SectionDisplay {
         match self {
-            TileNode::Internal { layout, .. } if layout.is_tabbing() => ColumnDisplay::Tabbed,
-            _ => ColumnDisplay::Normal,
+            TileNode::Internal { layout, .. } if layout.is_tabbing() => SectionDisplay::Tabbed,
+            _ => SectionDisplay::Normal,
         }
     }
 
@@ -1118,7 +1118,7 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Sets the display mode to tabbed or normal.
-    pub fn set_display(&mut self, display: ColumnDisplay, tab_header_config: niri_config::TabHeaderConfig) {
+    pub fn set_display(&mut self, display: SectionDisplay, tab_header_config: niri_config::TabHeaderConfig) {
         if self.display_mode() == display {
             return;
         }
@@ -1449,7 +1449,7 @@ impl<W: LayoutElement> TileNode<W> {
                 // Iteratively distribute the remaining span among auto children, honoring each
                 // child's minimum. If a child's weighted share is below its minimum, pin it to the
                 // minimum and re-run, since the other children now have less to share. This mirrors
-                // the flat-column algorithm in `update_tile_sizes` so nested splits reach the same
+                // the flat-section algorithm in `update_tile_sizes` so nested splits reach the same
                 // steady state. Spans are rounded to integer logical pixels (Wayland requirement),
                 // which also guarantees the committed tile size matches the cached span exactly.
                 let mut auto_left = count - resolved.iter().filter(|r| **r).count();

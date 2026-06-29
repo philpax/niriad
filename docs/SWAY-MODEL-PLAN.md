@@ -104,7 +104,7 @@ green (build + tests + clippy + fuzzer).
 - **S1 — done.** `Stacked` layout (N title rows) + `set-column-layout`. Reviewed; fixed a root
   leaf-count-vs-child-count geometry desync and a config-reload flag drop it found.
 - **S3 — done.** `set-column-layout splith|splitv|tabbed|stacked` and `toggle-split-layout` actions,
-  wired across the crates; sway-themed config (`resources/sway-config.kdl`). Reviewed clean.
+  wired across the crates; sway-themed config (`resources/config-niriad.kdl`). Reviewed clean.
 - **S5 — done.** Spatial `focus/move-left|right|up|down` resolving screen directions per monitor
   orientation; sway config binds hjkl/arrows to them. Reviewed — 8-way mapping correct both
   orientations.

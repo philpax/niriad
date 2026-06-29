@@ -6,7 +6,7 @@ use niri_config::{
     BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize,
     ResolvedPopupsRules, ShadowRule, TabIndicatorRule,
 };
-use niri_ipc::ColumnDisplay;
+use niri_ipc::SectionDisplay;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Size};
 use smithay::wayland::compositor::with_states;
@@ -47,7 +47,7 @@ pub struct ResolvedWindowRules {
     pub default_height: Option<Option<PresetSize>>,
 
     /// Default section display for this window.
-    pub default_column_display: Option<ColumnDisplay>,
+    pub default_section_display: Option<SectionDisplay>,
 
     /// Default floating position for this window.
     pub default_floating_position: Option<FloatingPosition>,
@@ -149,10 +149,10 @@ impl<'a> WindowRef<'a> {
         }
     }
 
-    pub fn is_active_in_column(self) -> bool {
+    pub fn is_active_in_section(self) -> bool {
         match self {
             WindowRef::Unmapped(_) => true,
-            WindowRef::Mapped(mapped) => mapped.is_active_in_column(),
+            WindowRef::Mapped(mapped) => mapped.is_active_in_section(),
         }
     }
 
@@ -213,7 +213,7 @@ impl ResolvedWindowRules {
                     continue;
                 }
 
-                if let Some(x) = rule.default_column_width {
+                if let Some(x) = rule.default_section_width {
                     resolved.default_width = Some(x.0);
                 }
 
@@ -221,8 +221,8 @@ impl ResolvedWindowRules {
                     resolved.default_height = Some(x.0);
                 }
 
-                if let Some(x) = rule.default_column_display {
-                    resolved.default_column_display = Some(x);
+                if let Some(x) = rule.default_section_display {
+                    resolved.default_section_display = Some(x);
                 }
 
                 if let Some(x) = rule.default_floating_position {
@@ -427,8 +427,8 @@ fn window_matches(window: WindowRef, role: &XdgToplevelSurfaceRoleAttributes, m:
         }
     }
 
-    if let Some(is_active_in_column) = m.is_active_in_column {
-        if window.is_active_in_column() != is_active_in_column {
+    if let Some(is_active_in_section) = m.is_active_in_section {
+        if window.is_active_in_section() != is_active_in_section {
             return false;
         }
     }

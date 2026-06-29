@@ -1883,24 +1883,24 @@ fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
 
     for bind in &config.binds.0 {
         let action = match &bind.action {
-            Action::FocusColumnRight
-            | Action::FocusColumnRightOrFirst
-            | Action::FocusColumnOrMonitorRight
-            | Action::FocusWindowDownOrColumnRight => Action::MruAdvance {
+            Action::FocusSectionRight
+            | Action::FocusSectionRightOrFirst
+            | Action::FocusSectionOrMonitorRight
+            | Action::FocusWindowDownOrSectionRight => Action::MruAdvance {
                 direction: MruDirection::Forward,
                 scope: None,
                 filter: None,
             },
-            Action::FocusColumnLeft
-            | Action::FocusColumnLeftOrLast
-            | Action::FocusColumnOrMonitorLeft
-            | Action::FocusWindowUpOrColumnLeft => Action::MruAdvance {
+            Action::FocusSectionLeft
+            | Action::FocusSectionLeftOrLast
+            | Action::FocusSectionOrMonitorLeft
+            | Action::FocusWindowUpOrSectionLeft => Action::MruAdvance {
                 direction: MruDirection::Backward,
                 scope: None,
                 filter: None,
             },
-            Action::FocusColumnFirst => Action::MruFirst,
-            Action::FocusColumnLast => Action::MruLast,
+            Action::FocusSectionFirst => Action::MruFirst,
+            Action::FocusSectionLast => Action::MruLast,
             Action::CloseWindow => Action::MruCloseCurrentWindow,
             x @ Action::Screenshot(_, _) => x.clone(),
             _ => continue,

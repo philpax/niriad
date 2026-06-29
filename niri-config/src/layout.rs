@@ -1,5 +1,5 @@
 use knuffel::errors::DecodeError;
-use niri_ipc::{ColumnDisplay, SizeChange};
+use niri_ipc::{SectionDisplay, SizeChange};
 
 use crate::appearance::{
     Border, FocusRing, InsertHint, Shadow, TabHeaderConfig, TabHeaderPart, TabIndicator,
@@ -17,13 +17,13 @@ pub struct Layout {
     pub tab_header: TabHeaderConfig,
     pub insert_hint: InsertHint,
     pub main_axis: MainAxis,
-    pub preset_column_widths: Vec<PresetSize>,
-    pub default_column_width: Option<PresetSize>,
+    pub preset_section_widths: Vec<PresetSize>,
+    pub default_section_width: Option<PresetSize>,
     pub preset_window_heights: Vec<PresetSize>,
-    pub center_focused_column: CenterFocusedColumn,
-    pub always_center_single_column: bool,
+    pub center_focused_section: CenterFocusedSection,
+    pub always_center_single_section: bool,
     pub empty_workspace_above_first: bool,
-    pub default_column_display: ColumnDisplay,
+    pub default_section_display: SectionDisplay,
     pub gaps: f64,
     pub struts: Struts,
     pub background_color: Color,
@@ -39,16 +39,16 @@ impl Default for Layout {
             tab_header: TabHeaderConfig::default(),
             insert_hint: InsertHint::default(),
             main_axis: MainAxis::Horizontal,
-            preset_column_widths: vec![
+            preset_section_widths: vec![
                 PresetSize::Proportion(1. / 3.),
                 PresetSize::Proportion(0.5),
                 PresetSize::Proportion(2. / 3.),
             ],
-            default_column_width: Some(PresetSize::Proportion(0.5)),
-            center_focused_column: CenterFocusedColumn::Never,
-            always_center_single_column: false,
+            default_section_width: Some(PresetSize::Proportion(0.5)),
+            center_focused_section: CenterFocusedSection::Never,
+            always_center_single_section: false,
             empty_workspace_above_first: false,
-            default_column_display: ColumnDisplay::Normal,
+            default_section_display: SectionDisplay::Normal,
             gaps: 16.,
             struts: Struts::default(),
             preset_window_heights: vec![
@@ -70,7 +70,7 @@ impl MergeWith<LayoutPart> for Layout {
             shadow,
             tab_indicator,
             insert_hint,
-            always_center_single_column,
+            always_center_single_section,
             empty_workspace_above_first,
             gaps,
         );
@@ -88,20 +88,20 @@ impl MergeWith<LayoutPart> for Layout {
         merge_clone!(
             (self, part),
             main_axis,
-            preset_column_widths,
+            preset_section_widths,
             preset_window_heights,
-            center_focused_column,
-            default_column_display,
+            center_focused_section,
+            default_section_display,
             struts,
             background_color,
         );
 
-        if let Some(x) = part.default_column_width {
-            self.default_column_width = x.0;
+        if let Some(x) = part.default_section_width {
+            self.default_section_width = x.0;
         }
 
-        if self.preset_column_widths.is_empty() {
-            self.preset_column_widths = Layout::default().preset_column_widths;
+        if self.preset_section_widths.is_empty() {
+            self.preset_section_widths = Layout::default().preset_section_widths;
         }
 
         if self.preset_window_heights.is_empty() {
@@ -129,19 +129,19 @@ pub struct LayoutPart {
     #[knuffel(child, unwrap(argument))]
     pub main_axis: Option<MainAxis>,
     #[knuffel(child, unwrap(children))]
-    pub preset_column_widths: Option<Vec<PresetSize>>,
+    pub preset_section_widths: Option<Vec<PresetSize>>,
     #[knuffel(child)]
-    pub default_column_width: Option<DefaultPresetSize>,
+    pub default_section_width: Option<DefaultPresetSize>,
     #[knuffel(child, unwrap(children))]
     pub preset_window_heights: Option<Vec<PresetSize>>,
     #[knuffel(child, unwrap(argument))]
-    pub center_focused_column: Option<CenterFocusedColumn>,
+    pub center_focused_section: Option<CenterFocusedSection>,
     #[knuffel(child)]
-    pub always_center_single_column: Option<Flag>,
+    pub always_center_single_section: Option<Flag>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
-    pub default_column_display: Option<ColumnDisplay>,
+    pub default_section_display: Option<SectionDisplay>,
     #[knuffel(child, unwrap(argument))]
     pub gaps: Option<FloatOrInt<0, 65535>>,
     #[knuffel(child)]
@@ -181,14 +181,14 @@ pub struct Struts {
 }
 
 #[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum CenterFocusedColumn {
-    /// Focusing a column will not center the column.
+pub enum CenterFocusedSection {
+    /// Focusing a section will not center the section.
     #[default]
     Never,
-    /// The focused column will always be centered.
+    /// The focused section will always be centered.
     Always,
-    /// Focusing a column will center it if it doesn't fit on the screen together with the
-    /// previously focused column.
+    /// Focusing a section will center it if it doesn't fit on the screen together with the
+    /// previously focused section.
     OnOverflow,
 }
 

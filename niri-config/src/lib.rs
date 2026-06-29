@@ -403,11 +403,12 @@ where
                             let relative_path = path.strip_prefix(root_base).ok().unwrap_or(&path);
                             let filename = relative_path.to_str().unwrap_or(filename);
 
+                            let text = rewrite_section_aliases(&text);
                             let part = knuffel::parse_with_context::<
                                 ConfigPart,
                                 knuffel::span::Span,
                                 _,
-                            >(filename, &text, |ctx| {
+                            >(filename, text.as_ref(), |ctx| {
                                 ctx.set(BasePath(base));
                                 ctx.set(RootBase(root_base.clone()));
                                 ctx.set(Recursion(recursion));
@@ -459,6 +460,53 @@ where
     }
 }
 
+/// Rewrites deprecated `column`-named KDL nodes to their canonical `section` equivalents, so configs
+/// written for upstream niri (or older niriad) keep loading. niriad renamed the orientation-bound
+/// "column" concept to the orientation-neutral "section"; this is the backward-compatibility shim.
+///
+/// It operates on KDL node **names** only (via a document walk), so string arguments — e.g.
+/// `spawn "...column..."` or a window title — are never rewritten. If the text doesn't parse as
+/// KDL, it's returned unchanged so knuffel reports the real syntax error.
+fn rewrite_section_aliases(text: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    // Cheap fast path: the vast majority of configs (and all canonical ones) contain no aliases.
+    if !text.contains("column") {
+        return Cow::Borrowed(text);
+    }
+
+    let Ok(mut doc) = text.parse::<kdl::KdlDocument>() else {
+        return Cow::Borrowed(text);
+    };
+    rewrite_section_aliases_doc(&mut doc);
+    Cow::Owned(doc.to_string())
+}
+
+fn rewrite_section_aliases_doc(doc: &mut kdl::KdlDocument) {
+    for node in doc.nodes_mut() {
+        let name = node.name().value();
+        if name.contains("column") {
+            let renamed = name.replace("column", "section");
+            node.set_name(kdl::KdlIdentifier::from(renamed));
+        }
+        // Also rewrite property *names* (e.g. `match is-active-in-column=true`). Argument and
+        // property *values* are left untouched.
+        for entry in node.entries_mut() {
+            let renamed = match entry.name() {
+                Some(prop) if prop.value().contains("column") => {
+                    prop.value().replace("column", "section")
+                }
+                _ => continue,
+            };
+            let value = entry.value().clone();
+            *entry = kdl::KdlEntry::new_prop(kdl::KdlIdentifier::from(renamed), value);
+        }
+        if let Some(children) = node.children_mut() {
+            rewrite_section_aliases_doc(children);
+        }
+    }
+}
+
 impl Config {
     pub fn load_default() -> Self {
         let res = Config::parse(
@@ -504,9 +552,10 @@ impl Config {
         let include_errors = Rc::new(RefCell::new(IncludeErrors(Vec::new())));
         let include_stack = HashSet::from([path.to_path_buf()]);
 
+        let text = rewrite_section_aliases(text);
         let part = knuffel::parse_with_context::<ConfigPart, knuffel::span::Span, _>(
             filename,
-            text,
+            text.as_ref(),
             |ctx| {
                 ctx.set(BasePath(base.clone()));
                 ctx.set(RootBase(base));
@@ -787,7 +836,7 @@ mod tests {
                     position "top"
                 }
 
-                preset-column-widths {
+                preset-section-widths {
                     proportion 0.25
                     proportion 0.5
                     fixed 960
@@ -801,7 +850,7 @@ mod tests {
                     fixed 1280
                 }
 
-                default-column-width { proportion 0.25; }
+                default-section-width { proportion 0.25; }
 
                 gaps 8
 
@@ -811,10 +860,10 @@ mod tests {
                     top 3
                 }
 
-                center-focused-column "on-overflow"
+                center-focused-section "on-overflow"
                 main-axis "vertical"
 
-                default-column-display "tabbed"
+                default-section-display "tabbed"
 
                 insert-hint {
                     color "rgb(255, 200, 127)"
@@ -890,7 +939,7 @@ mod tests {
                 open-floating false
                 open-focused true
                 default-window-height { fixed 500; }
-                default-column-display "tabbed"
+                default-section-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
 
                 focus-ring {
@@ -922,8 +971,8 @@ mod tests {
                 Mod+Shift+O { focus-monitor "eDP-1"; }
                 Mod+Ctrl+Shift+L { move-window-to-monitor-right; }
                 Mod+Ctrl+Alt+O { move-window-to-monitor "eDP-1"; }
-                Mod+Ctrl+Alt+P { move-column-to-monitor "DP-1"; }
-                Mod+Comma { consume-window-into-column; }
+                Mod+Ctrl+Alt+P { move-section-to-monitor "DP-1"; }
+                Mod+Comma { consume-window-into-section; }
                 Mod+1 { focus-workspace 1; }
                 Mod+Shift+1 { focus-workspace "workspace-1"; }
                 Mod+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }
@@ -1375,7 +1424,7 @@ mod tests {
                 tab_indicator: TabIndicator {
                     off: false,
                     hide_when_single_tab: false,
-                    place_within_column: false,
+                    place_within_section: false,
                     gap: 5.0,
                     width: 10.0,
                     length: TabIndicatorLength {
@@ -1398,7 +1447,7 @@ mod tests {
                     indicator: TabIndicator {
                         off: false,
                         hide_when_single_tab: false,
-                        place_within_column: false,
+                        place_within_section: false,
                         gap: 5.0,
                         width: 10.0,
                         length: TabIndicatorLength {
@@ -1468,7 +1517,7 @@ mod tests {
                     ),
                 },
                 main_axis: Vertical,
-                preset_column_widths: [
+                preset_section_widths: [
                     Proportion(
                         0.25,
                     ),
@@ -1482,7 +1531,7 @@ mod tests {
                         1280,
                     ),
                 ],
-                default_column_width: Some(
+                default_section_width: Some(
                     Proportion(
                         0.25,
                     ),
@@ -1501,10 +1550,10 @@ mod tests {
                         1280,
                     ),
                 ],
-                center_focused_column: OnOverflow,
-                always_center_single_column: false,
+                center_focused_section: OnOverflow,
+                always_center_single_section: false,
                 empty_workspace_above_first: false,
-                default_column_display: Tabbed,
+                default_section_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {
                     left: FloatOrInt(
@@ -1777,7 +1826,7 @@ mod tests {
                             title: None,
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
+                            is_active_in_section: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -1796,7 +1845,7 @@ mod tests {
                             ),
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
+                            is_active_in_section: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -1811,14 +1860,14 @@ mod tests {
                             is_focused: Some(
                                 false,
                             ),
-                            is_active_in_column: None,
+                            is_active_in_section: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
                         },
                     ],
-                    default_column_width: None,
+                    default_section_width: None,
                     default_window_height: Some(
                         DefaultPresetSize(
                             Some(
@@ -1911,7 +1960,7 @@ mod tests {
                     baba_is_float: None,
                     block_out_from: None,
                     variable_refresh_rate: None,
-                    default_column_display: Some(
+                    default_section_display: Some(
                         Tabbed,
                     ),
                     default_floating_position: Some(
@@ -2149,7 +2198,7 @@ mod tests {
                                 CTRL | ALT | COMPOSITOR,
                             ),
                         },
-                        action: MoveColumnToMonitor(
+                        action: MoveSectionToMonitor(
                             "DP-1",
                         ),
                         repeat: true,
@@ -2167,7 +2216,7 @@ mod tests {
                                 COMPOSITOR,
                             ),
                         },
-                        action: ConsumeWindowIntoColumn,
+                        action: ConsumeWindowIntoSection,
                         repeat: true,
                         cooldown: None,
                         allow_when_locked: false,

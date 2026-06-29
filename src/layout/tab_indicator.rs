@@ -487,7 +487,7 @@ impl TabIndicator {
     /// Extra size occupied by the tab indicator.
     pub fn extra_size(&self, tab_count: usize, scale: f64) -> Size<f64, Logical> {
         if self.config.off
-            || !self.config.place_within_column
+            || !self.config.place_within_section
             || (self.config.hide_when_single_tab && tab_count == 1)
         {
             return Size::from((0., 0.));

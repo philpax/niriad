@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedColumn, PresetSize, Struts};
-use niri_ipc::{ColumnDisplay, SizeChange, WindowLayout};
+use niri_config::{CenterFocusedSection, PresetSize, Struts};
+use niri_ipc::{SectionDisplay, SizeChange, WindowLayout};
 use ordered_float::NotNan;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
@@ -46,7 +46,7 @@ fn cross_space_vec(cross: f64) -> Point<f64, Logical> {
 /// A scrollable-tiling space for windows.
 #[derive(Debug)]
 pub struct ScrollingSpace<W: LayoutElement> {
-    /// Columns of windows on this space.
+    /// Sections of windows on this space.
     sections: Vec<Section<W>>,
 
     /// Index of the currently active section, if any.
@@ -268,7 +268,7 @@ struct MoveAnimation {
 struct NestedTabbed {
     /// Path from the section root to the tabbed node.
     path: TilePath,
-    /// Content rectangle (column-local); the header draws in the band just above it.
+    /// Content rectangle (section-local); the header draws in the band just above it.
     content_area: Rectangle<f64, Logical>,
     /// Number of tabs (the node's direct children).
     tab_count: usize,
@@ -497,9 +497,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let border_config = self.options.layout.border.merged_with(&rules.border);
 
         let display_mode = rules
-            .default_column_display
-            .unwrap_or(self.options.layout.default_column_display);
-        let will_tab = display_mode == ColumnDisplay::Tabbed;
+            .default_section_display
+            .unwrap_or(self.options.layout.default_section_display);
+        let will_tab = display_mode == SectionDisplay::Tabbed;
         let extra_size = if will_tab {
             TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
         } else {
@@ -524,9 +524,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let border = self.options.layout.border.merged_with(&rules.border);
 
         let display_mode = rules
-            .default_column_display
-            .unwrap_or(self.options.layout.default_column_display);
-        let will_tab = display_mode == ColumnDisplay::Tabbed;
+            .default_section_display
+            .unwrap_or(self.options.layout.default_section_display);
+        let will_tab = display_mode == SectionDisplay::Tabbed;
         let extra = if will_tab {
             TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
         } else {
@@ -576,8 +576,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn is_centering_focused_section(&self) -> bool {
-        self.options.layout.center_focused_column == CenterFocusedColumn::Always
-            || (self.options.layout.always_center_single_column && self.sections.len() <= 1)
+        self.options.layout.center_focused_section == CenterFocusedSection::Always
+            || (self.options.layout.always_center_single_section && self.sections.len() <= 1)
     }
 
     fn compute_new_view_offset_fit(
@@ -633,7 +633,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.working_area
         };
 
-        // Columns wider than the view are aligned to the start edge (the fit code can deal with
+        // Sections wider than the view are aligned to the start edge (the fit code can deal with
         // that).
         if work_area.size.w <= section_span {
             return self.compute_new_view_offset_fit(
@@ -685,11 +685,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return self.compute_new_view_offset_for_section_centered(target_view_main, idx);
         }
 
-        match self.options.layout.center_focused_column {
-            CenterFocusedColumn::Always => {
+        match self.options.layout.center_focused_section {
+            CenterFocusedSection::Always => {
                 self.compute_new_view_offset_for_section_centered(target_view_main, idx)
             }
-            CenterFocusedColumn::OnOverflow => {
+            CenterFocusedSection::OnOverflow => {
                 let Some(prev_idx) = prev_idx else {
                     return self.compute_new_view_offset_for_section_fit(target_view_main, idx);
                 };
@@ -729,7 +729,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     self.compute_new_view_offset_for_section_centered(target_view_main, idx)
                 }
             }
-            CenterFocusedColumn::Never => {
+            CenterFocusedSection::Never => {
                 self.compute_new_view_offset_for_section_fit(target_view_main, idx)
             }
         }
@@ -758,8 +758,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         next_section_span: Option<f64>,
     ) -> (f64, f64) {
         let center_on_overflow = matches!(
-            self.options.layout.center_focused_column,
-            CenterFocusedColumn::OnOverflow
+            self.options.layout.center_focused_section,
+            CenterFocusedSection::OnOverflow
         );
 
         let view_main_span = self.view_size.w;
@@ -1135,7 +1135,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub(super) fn insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
         if self.sections.is_empty() {
-            return InsertPosition::NewColumn(0);
+            return InsertPosition::NewSection(0);
         }
 
         let pos = self.map_point_in(pos);
@@ -1147,7 +1147,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Insert position is before the first section.
         if main < 0. {
-            return InsertPosition::NewColumn(0);
+            return InsertPosition::NewSection(0);
         }
 
         // Find the closest gap between sections.
@@ -1167,7 +1167,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Insert position is past the last section.
         if col_idx == self.sections.len() {
-            return InsertPosition::NewColumn(closest_col_idx);
+            return InsertPosition::NewSection(closest_col_idx);
         }
 
         // Find the closest gap between tiles.
@@ -1200,7 +1200,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // If the pointer is far from both gaps, it's in a tile interior.
         // Only trigger InSplit (side-by-side) when the pointer is in the main-axis center
         // of the tile (left/right halves). Near the top/bottom edges, fall through to
-        // InColumn (below/above insertion) for vertical stacking.
+        // InSection (below/above insertion) for vertical stacking.
         // Per-leaf tile size by flat-leaf index, resolved through the tree path so it stays
         // correct for nested splits (where the leaf index is not a root child index).
         let leaf_size = |idx: usize| -> Size<f64, Logical> {
@@ -1247,7 +1247,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let tile_in_row = col_is_row
                 || matches!(col.root.node_at(&[rc]), TileNode::Internal { layout: Layout::SplitH, .. });
 
-            // Check if we're near the top/bottom edge — if so, insert a row (InColumn) instead of
+            // Check if we're near the top/bottom edge — if so, insert a row (InSection) instead of
             // splitting side-by-side (InSplit).
             if let Some(&tile_off) = offsets.get(tile_idx) {
                 let tile_top = tile_off.y;
@@ -1281,9 +1281,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 };
 
                 if dist_to_top <= edge_threshold {
-                    InsertPosition::InColumn(col_idx, above_idx)
+                    InsertPosition::InSection(col_idx, above_idx)
                 } else if dist_to_bottom <= edge_threshold {
-                    InsertPosition::InColumn(col_idx, below_idx)
+                    InsertPosition::InSection(col_idx, below_idx)
                 } else {
                     // Interior of the tile. Divide it into thirds across the main (x) axis: the
                     // left and right thirds split the tile side-by-side (a Main split), while the
@@ -1334,9 +1334,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
             }
         } else if main_dist <= cross_dist {
-            InsertPosition::NewColumn(closest_col_idx)
+            InsertPosition::NewSection(closest_col_idx)
         } else {
-            InsertPosition::InColumn(col_idx, closest_tile_idx)
+            InsertPosition::InSection(col_idx, closest_tile_idx)
         }
     }
 
@@ -2787,7 +2787,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Swap within the section's Main-axis splits first (at any nesting depth); only fall
-        // through to inter-column movement at the tree edge.
+        // through to inter-section movement at the tree edge.
         let delta = match direction {
             ScrollDirection::Left => -1,
             ScrollDirection::Right => 1,
@@ -2934,8 +2934,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let col = &mut self.sections[self.active_section_idx];
         let display = match col.display_mode() {
-            ColumnDisplay::Normal => ColumnDisplay::Tabbed,
-            ColumnDisplay::Tabbed => ColumnDisplay::Normal,
+            SectionDisplay::Normal => SectionDisplay::Tabbed,
+            SectionDisplay::Tabbed => SectionDisplay::Normal,
         };
 
         self.set_section_display(display);
@@ -2958,13 +2958,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let parent_len = path.len().saturating_sub(1);
 
         if parent_len == 0 {
-            // The active window's container is the section root. Use the column-level toggle, which
+            // The active window's container is the section root. Use the section-level toggle, which
             // has the nicer cross-axis fade animation and clears fullscreen/maximized when leaving
             // tabbed mode with more than one tile.
             let display = if col.is_tabbed() {
-                ColumnDisplay::Normal
+                SectionDisplay::Normal
             } else {
-                ColumnDisplay::Tabbed
+                SectionDisplay::Tabbed
             };
             self.set_section_display(display);
             return;
@@ -2980,7 +2980,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let became_tabbed = !node.is_tabbed();
         node.toggle_tabbed(tab_header_config);
 
-        // Fade the new tab header in, mirroring the column-level transition.
+        // Fade the new tab header in, mirroring the section-level transition.
         if became_tabbed {
             let clock = col.clock.clone();
             let anim = col.options.animations.window_movement.0;
@@ -3092,7 +3092,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.update_tile_sizes(true);
     }
 
-    pub fn set_section_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: SectionDisplay) {
         if self.sections.is_empty() {
             return;
         }
@@ -3402,7 +3402,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         position: InsertPosition,
     ) -> Option<Rectangle<f64, Logical>> {
         let mut hint_area = match position {
-            InsertPosition::NewColumn(section_index) => {
+            InsertPosition::NewSection(section_index) => {
                 if section_index == 0 || section_index == self.sections.len() {
                     let size = Size::from((
                         300.,
@@ -3433,7 +3433,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     Rectangle::new(loc, size)
                 }
             }
-            InsertPosition::InColumn(section_index, tile_index) => {
+            InsertPosition::InSection(section_index, tile_index) => {
                 if section_index > self.sections.len() {
                     error!("insert hint section index is out of range");
                     return None;
@@ -3472,7 +3472,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     }
                 };
 
-                // Adjust for place-within-column tab indicator.
+                // Adjust for place-within-section tab indicator.
                 let origin_x = col.tiles_origin().x;
                 let extra_w = if is_tabbed && col.sizing_mode().is_normal() {
                     col.tab_header().unwrap().extra_size(col.tiles_len(), col.scale).w
@@ -3905,7 +3905,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         col.set_fullscreen(is_fullscreen);
 
-        // With place_within_column, the tab indicator changes the section size immediately.
+        // With place_within_section, the tab indicator changes the section size immediately.
 
         true
     }
@@ -3935,7 +3935,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         col.set_maximized(maximize);
 
-        // With place_within_column, the tab indicator changes the section size immediately.
+        // With place_within_section, the tab indicator changes the section size immediately.
 
         true
     }
@@ -4040,7 +4040,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Second pass: render TabBar (i3/sway-style header bar) for Bar-style tab headers.
-        // We collect the immutable per-column data first, then do a mutable pass to render,
+        // We collect the immutable per-section data first, then do a mutable pass to render,
         // because TabBar::render needs &mut self (for texture caching) while we also need
         // immutable access to section positions and titles.
         let view_off = main_space_vec(-self.view_main_pos());
@@ -4882,7 +4882,7 @@ impl<W: LayoutElement> Section<W> {
     // --- Tree accessors ---
 
     /// Returns the display mode (Normal or Tabbed).
-    fn display_mode(&self) -> ColumnDisplay {
+    fn display_mode(&self) -> SectionDisplay {
         self.root.display_mode()
     }
 
@@ -5013,7 +5013,7 @@ impl<W: LayoutElement> Section<W> {
     }
 
     /// Sets the display mode (Normal/Tabbed), toggling the root node type.
-    fn set_display_mode(&mut self, display: ColumnDisplay) {
+    fn set_display_mode(&mut self, display: SectionDisplay) {
         self.root
             .set_display(display, self.options.layout.tab_header.clone());
     }
@@ -5414,22 +5414,22 @@ impl<W: LayoutElement> Section<W> {
         let display_mode = tile
             .window()
             .rules()
-            .default_column_display
-            .unwrap_or(options.layout.default_column_display);
+            .default_section_display
+            .unwrap_or(options.layout.default_section_display);
 
         // Try to match width to a preset width. Consider the following case: a terminal (foot)
-        // sizes itself to the terminal grid. We open it with default-column-width 0.5. It shrinks
+        // sizes itself to the terminal grid. We open it with default-section-width 0.5. It shrinks
         // by a few pixels to evenly match the terminal grid. Then we press
-        // switch-preset-column-width intending to go to proportion 0.667, but the preset width
+        // switch-preset-section-width intending to go to proportion 0.667, but the preset width
         // matching code picks the proportion 0.5 preset because it's the next smallest width after
         // the current foot's window width. Effectively, this makes the first
-        // switch-preset-column-width press ignored.
+        // switch-preset-section-width press ignored.
         //
         // However, here, we do know that width = proportion 0.5 (regardless of what the window
         // opened with), and we can match it to a preset right away, if one exists.
         let preset_width_idx = options
             .layout
-            .preset_column_widths
+            .preset_section_widths
             .iter()
             .position(|preset| width == SectionWidth::from(*preset));
 
@@ -5444,7 +5444,7 @@ impl<W: LayoutElement> Section<W> {
         // This matches the existing section behavior where tiles stack along the cross axis.
         // For tabbed display, we use a Tabbed node instead.
         let tab_header = TabHeader::new_indicator(tab_indicator_config);
-        let root = if display_mode == ColumnDisplay::Tabbed {
+        let root = if display_mode == SectionDisplay::Tabbed {
             TileNode::tabbed(vec![tile], 0, tab_header)
         } else {
             TileNode::cross_split(vec![tile], 0)
@@ -5490,7 +5490,7 @@ impl<W: LayoutElement> Section<W> {
         }
 
         // Animate the tab indicator for new sections.
-        if display_mode == ColumnDisplay::Tabbed
+        if display_mode == SectionDisplay::Tabbed
             && !hide_when_single_tab
             && rv.sizing_mode().is_normal()
         {
@@ -5526,7 +5526,7 @@ impl<W: LayoutElement> Section<W> {
         }
 
         // If preset widths changed, clear our stored preset index.
-        if self.options.layout.preset_column_widths != options.layout.preset_column_widths {
+        if self.options.layout.preset_section_widths != options.layout.preset_section_widths {
             self.preset_width_idx = None;
         }
 
@@ -6492,7 +6492,7 @@ impl<W: LayoutElement> Section<W> {
     /// `axis` (a `Split` of that axis, or a `Tabbed` node for the cross axis) and that has a
     /// sibling in the requested direction (`delta` = -1 / +1). Focus then descends into that
     /// sibling's most-recently-focused leaf. Returns false if no such move exists within this
-    /// section (the caller may then fall through to inter-column navigation).
+    /// section (the caller may then fall through to inter-section navigation).
     fn focus_in_axis(&mut self, axis: SplitAxis, delta: isize) -> bool {
         // Resolve the target leaf path using only immutable borrows first.
         let target = {
@@ -6536,7 +6536,7 @@ impl<W: LayoutElement> Section<W> {
 
     /// Swaps the active leaf's subtree with its adjacent sibling along `axis` (the move counterpart
     /// of [`focus_in_axis`]). Returns false if there is no sibling in that direction within this
-    /// section, so the caller can fall through to inter-column movement.
+    /// section, so the caller can fall through to inter-section movement.
     fn swap_in_axis(&mut self, axis: SplitAxis, delta: isize) -> bool {
         let plan = {
             let active_path = self.root.active_leaf_path();
@@ -6611,7 +6611,7 @@ impl<W: LayoutElement> Section<W> {
             self.preset_width_idx
         };
 
-        let len = self.options.layout.preset_column_widths.len();
+        let len = self.options.layout.preset_section_widths.len();
         let preset_idx = if let Some(idx) = preset_idx {
             (idx + if forwards { 1 } else { len - 1 }) % len
         } else {
@@ -6622,7 +6622,7 @@ impl<W: LayoutElement> Section<W> {
             let mut it = self
                 .options
                 .layout
-                .preset_column_widths
+                .preset_section_widths
                 .iter()
                 .map(|preset| self.resolve_preset_main_span(*preset));
 
@@ -6647,7 +6647,7 @@ impl<W: LayoutElement> Section<W> {
             }
         };
 
-        let preset = self.options.layout.preset_column_widths[preset_idx];
+        let preset = self.options.layout.preset_section_widths[preset_idx];
         self.set_section_width(SizeChange::from(preset), Some(tile_idx), true);
 
         self.preset_width_idx = Some(preset_idx);
@@ -6977,7 +6977,7 @@ impl<W: LayoutElement> Section<W> {
         self.update_tile_sizes(true);
     }
 
-    fn set_section_display(&mut self, display: ColumnDisplay) {
+    fn set_section_display(&mut self, display: SectionDisplay) {
         if self.display_mode() == display {
             return;
         }
@@ -6996,18 +6996,18 @@ impl<W: LayoutElement> Section<W> {
 
         // Determine which leaves are hidden in tabbed mode (everything outside the active tab's
         // subtree). These are exactly the tiles whose opacity changes on the transition.
-        self.set_display_mode(ColumnDisplay::Tabbed);
+        self.set_display_mode(SectionDisplay::Tabbed);
         let hidden_in_tabbed: Vec<bool> =
             self.root.leaf_visibility().into_iter().map(|v| !v).collect();
 
         // We need to walk the tiles in the normal display mode to get the right offsets.
-        self.set_display_mode(ColumnDisplay::Normal);
+        self.set_display_mode(SectionDisplay::Normal);
         let anim_config = self.options.animations.window_movement.0;
         for (tile, pos) in self.tiles_mut() {
             let mut cross_delta = pos.y - prev_origin.y;
 
             // Invert the cross-axis motion when transitioning *to* normal display mode.
-            if display == ColumnDisplay::Normal {
+            if display == SectionDisplay::Normal {
                 cross_delta *= -1.;
             }
 
@@ -7019,7 +7019,7 @@ impl<W: LayoutElement> Section<W> {
         // and fade back in when leaving it.
         for ((_, tile), &hidden) in self.tiles_enumerated_mut().zip(&hidden_in_tabbed) {
             if hidden {
-                let (from, to) = if display == ColumnDisplay::Tabbed {
+                let (from, to) = if display == SectionDisplay::Tabbed {
                     (1., 0.)
                 } else {
                     (0., 1.)
@@ -7032,7 +7032,7 @@ impl<W: LayoutElement> Section<W> {
         self.set_display_mode(display);
 
         // Animate the appearance of the tab indicator.
-        if display == ColumnDisplay::Tabbed {
+        if display == SectionDisplay::Tabbed {
             let clock = self.clock.clone();
             if let Some(tab_indicator) = self.tab_header_mut() {
                 tab_indicator.start_open_animation(clock, anim_config);
@@ -7078,7 +7078,7 @@ impl<W: LayoutElement> Section<W> {
 
         // Centering / start-edge shift only applies to leaves that share the section's main-axis
         // origin (no Main-split ancestor); the max main span is taken over just those leaves.
-        let center = self.options.layout.center_focused_column == CenterFocusedColumn::Always;
+        let center = self.options.layout.center_focused_section == CenterFocusedSection::Always;
         let max_main = raw
             .iter()
             .filter(|l| l.aligned)
@@ -7214,7 +7214,7 @@ impl<W: LayoutElement> Section<W> {
             let tab_count = node.child_count();
             let active_idx = node.active_idx();
 
-            // Content area = bounding box of every leaf under the node (column-local). All tabs are
+            // Content area = bounding box of every leaf under the node (section-local). All tabs are
             // sized to the same content rectangle, so this is exactly that rectangle; the header
             // draws in the band just above it.
             let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -7339,7 +7339,7 @@ impl<W: LayoutElement> Section<W> {
         }
 
         if let Some(idx) = self.preset_width_idx {
-            assert!(idx < self.options.layout.preset_column_widths.len());
+            assert!(idx < self.options.layout.preset_section_widths.len());
         }
 
         let is_tabbed = self.is_tabbed();

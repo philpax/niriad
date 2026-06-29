@@ -92,7 +92,7 @@ pub struct Mapped {
     is_focused: bool,
 
     /// Whether this window is the active window in its section.
-    is_active_in_column: bool,
+    is_active_in_section: bool,
 
     /// Whether this window is floating.
     is_floating: bool,
@@ -287,7 +287,7 @@ impl Mapped {
             offscreen_data: RefCell::new(None),
             is_urgent: false,
             is_focused: false,
-            is_active_in_column: true,
+            is_active_in_section: true,
             is_floating: false,
             is_window_cast_target: false,
             ignore_opacity_window_rule: false,
@@ -371,8 +371,8 @@ impl Mapped {
         self.is_focused
     }
 
-    pub fn is_active_in_column(&self) -> bool {
-        self.is_active_in_column
+    pub fn is_active_in_section(&self) -> bool {
+        self.is_active_in_section
     }
 
     pub fn is_floating(&self) -> bool {
@@ -995,8 +995,8 @@ impl LayoutElement for Mapped {
     }
 
     fn set_active_in_section(&mut self, active: bool) {
-        let changed = self.is_active_in_column != active;
-        self.is_active_in_column = active;
+        let changed = self.is_active_in_section != active;
+        self.is_active_in_section = active;
         self.need_to_recompute_rules |= changed;
     }
 

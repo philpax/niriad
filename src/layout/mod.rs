@@ -42,7 +42,7 @@ use niri_config::{
     Config, CornerRadius, LayoutPart, MainAxis, PresetSize, Workspace as WorkspaceConfig,
     WorkspaceReference,
 };
-use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
+use niri_ipc::{SectionDisplay, PositionChange, SizeChange, WindowLayout};
 use scrolling::{Section, SectionWidth};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
@@ -2377,7 +2377,7 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_tab(direction);
     }
 
-    pub fn set_section_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: SectionDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
@@ -3034,7 +3034,7 @@ impl<W: LayoutElement> Layout<W> {
                     let position = if move_.is_floating {
                         InsertPosition::Floating
                     } else {
-                        InsertPosition::NewColumn(0)
+                        InsertPosition::NewSection(0)
                     };
                     mon.insert_hint = Some(InsertHint {
                         workspace: insert_ws,
@@ -4346,7 +4346,7 @@ impl<W: LayoutElement> Layout<W> {
                                 let position = if move_.is_floating {
                                     InsertPosition::Floating
                                 } else {
-                                    InsertPosition::NewColumn(0)
+                                    InsertPosition::NewSection(0)
                                 };
 
                                 (position, None)
@@ -4395,7 +4395,7 @@ impl<W: LayoutElement> Layout<W> {
                 };
 
                 match position {
-                    InsertPosition::NewColumn(section_idx) => {
+                    InsertPosition::NewSection(section_idx) => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             move_.tile,
@@ -4410,7 +4410,7 @@ impl<W: LayoutElement> Layout<W> {
                             false,
                         );
                     }
-                    InsertPosition::InColumn(section_idx, tile_idx) => {
+                    InsertPosition::InSection(section_idx, tile_idx) => {
                         mon.add_tile_to_section(
                             ws_idx,
                             section_idx,

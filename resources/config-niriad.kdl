@@ -113,22 +113,22 @@ layout {
     // Set gaps around windows in logical pixels.
     gaps 16
 
-    // When to center a column when changing focus, options are:
-    // - "never", default behavior, focusing an off-screen column will keep at the left
+    // When to center a section when changing focus, options are:
+    // - "never", default behavior, focusing an off-screen section will keep at the left
     //   or right edge of the screen.
-    // - "always", the focused column will always be centered.
-    // - "on-overflow", focusing a column will center it if it doesn't fit
-    //   together with the previously focused column.
-    center-focused-column "never"
+    // - "always", the focused section will always be centered.
+    // - "on-overflow", focusing a section will center it if it doesn't fit
+    //   together with the previously focused section.
+    center-focused-section "never"
 
     // Main axis of the scrolling layout:
-    // - "horizontal", default behavior: columns are laid out left-to-right.
-    // - "vertical", columns are laid out top-to-bottom.
+    // - "horizontal", default behavior: sections are laid out left-to-right.
+    // - "vertical", sections are laid out top-to-bottom.
     // Column width actions work on the main axis; window height actions work on the cross axis.
     // main-axis "horizontal"
 
-    // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.
-    preset-column-widths {
+    // You can customize the widths that "switch-preset-section-width" (Mod+R) toggles between.
+    preset-section-widths {
         // Proportion sets the width as a fraction of the output width, taking gaps into account.
         // For example, you can perfectly fit four windows sized "proportion 0.25" on an output.
         // The default preset widths are 1/3, 1/2 and 2/3 of the output.
@@ -144,9 +144,9 @@ layout {
     // preset-window-heights { }
 
     // You can change the default width of the new windows.
-    default-column-width { proportion 0.5; }
+    default-section-width { proportion 0.5; }
     // If you leave the brackets empty, the windows themselves will decide their initial width.
-    // default-column-width {}
+    // default-section-width {}
 
     // By default focus ring and border are rendered as a solid background rectangle
     // behind windows. That is, they will show up through semitransparent windows.
@@ -255,11 +255,11 @@ layout {
         color "#0007"
     }
 
-    // Tabbed columns can show their tabs either as Niri's colored indicator
-    // along the column edge, or as an i3/sway-style header bar with text labels.
+    // Tabbed sections can show their tabs either as Niri's colored indicator
+    // along the section edge, or as an i3/sway-style header bar with text labels.
     // tab-header {
     //     // Choose how tabs are displayed:
-    //     // - "indicator": colored gradient bars along a column edge (default),
+    //     // - "indicator": colored gradient bars along a section edge (default),
     //     //   configured via the separate tab-indicator section.
     //     // - "bar": horizontal header bar with text labels for each tab.
     //     style "bar"
@@ -273,7 +273,7 @@ layout {
     //         // Height of the header bar in logical pixels.
     //         height 24
     //
-    //         // Where to place the bar relative to the column: "top" or "bottom".
+    //         // Where to place the bar relative to the section: "top" or "bottom".
     //         position "top"
     //
     //         // Pango font description used for the tab labels.
@@ -355,13 +355,13 @@ animations {
 // https://niri-wm.github.io/niri/Configuration:-Window-Rules
 
 // Work around WezTerm's initial configure bug
-// by setting an empty default-column-width.
+// by setting an empty default-section-width.
 window-rule {
     // This regular expression is intentionally made as specific as possible,
     // since this is the default config, and we want no false positives.
     // You can get away with just app-id="wezterm" if you want.
     match app-id=r#"^org\.wezfurlong\.wezterm$"#
-    default-column-width {}
+    default-section-width {}
 }
 
 // Open the Firefox picture-in-picture player as floating by default.
@@ -392,13 +392,16 @@ window-rule {
     clip-to-geometry true
 }
 
-// Sway-themed keybindings for niriad.
+// niriad keybindings (i3/sway-style).
 //
-// This maps sway's default keymap onto niriad's actions so that, apart from niri's signature
-// scrolling rail (and prettier chrome), driving niriad feels like driving stock sway: the same
-// $mod+hjkl focus / $mod+Shift+hjkl move, $mod+b/v to split, $mod+s/w/e for stacking/tabbed/toggle.
+// niriad models windows as an orientation-neutral tree: each slot in the scrolling rail is a
+// *section* (what niri calls a "column") holding a tree that can split, tab, or stack, nested
+// arbitrarily. These binds drive it with an i3/sway-style keymap, so — apart from niri's scrolling
+// rail and prettier chrome — it feels like a tiling WM you already know: $mod+hjkl focus,
+// $mod+Shift+hjkl move, $mod+b/v split, $mod+s/w/e stacking/tabbed/toggle. (The inline "sway:" notes
+// show each bind's sway equivalent.)
 //
-// "Mod" is Super on a TTY (sway's default $mod=Mod4) and Alt when running nested in a window.
+// "Mod" is Super on a TTY and Alt when running nested in a window.
 binds {
     Mod+Shift+Slash { show-hotkey-overlay; }
 
@@ -443,10 +446,10 @@ binds {
     Mod+Shift+Down  { move-down; }
 
     // --- Container layout (sway: $mod+b/v splith/splitv, $mod+s/w/e stacking/tabbed/toggle) ---
-    Mod+B { set-column-layout "splith"; }
-    Mod+V { set-column-layout "splitv"; }
-    Mod+S { set-column-layout "stacked"; }
-    Mod+W { set-column-layout "tabbed"; }
+    Mod+B { set-section-layout "splith"; }
+    Mod+V { set-section-layout "splitv"; }
+    Mod+S { set-section-layout "stacked"; }
+    Mod+W { set-section-layout "tabbed"; }
     Mod+E { toggle-split-layout; }
 
     // Within a tabbed/stacked container, reorder the focused tab (sway has no default, handy here).
@@ -468,40 +471,40 @@ binds {
     Mod+7 { focus-workspace 7; }
     Mod+8 { focus-workspace 8; }
     Mod+9 { focus-workspace 9; }
-    Mod+Shift+1 { move-column-to-workspace 1; }
-    Mod+Shift+2 { move-column-to-workspace 2; }
-    Mod+Shift+3 { move-column-to-workspace 3; }
-    Mod+Shift+4 { move-column-to-workspace 4; }
-    Mod+Shift+5 { move-column-to-workspace 5; }
-    Mod+Shift+6 { move-column-to-workspace 6; }
-    Mod+Shift+7 { move-column-to-workspace 7; }
-    Mod+Shift+8 { move-column-to-workspace 8; }
-    Mod+Shift+9 { move-column-to-workspace 9; }
+    Mod+Shift+1 { move-section-to-workspace 1; }
+    Mod+Shift+2 { move-section-to-workspace 2; }
+    Mod+Shift+3 { move-section-to-workspace 3; }
+    Mod+Shift+4 { move-section-to-workspace 4; }
+    Mod+Shift+5 { move-section-to-workspace 5; }
+    Mod+Shift+6 { move-section-to-workspace 6; }
+    Mod+Shift+7 { move-section-to-workspace 7; }
+    Mod+Shift+8 { move-section-to-workspace 8; }
+    Mod+Shift+9 { move-section-to-workspace 9; }
 
-    // niri's strip extends beyond a single screen — page through columns/workspaces and outputs.
+    // niri's strip extends beyond a single screen — page through sections/workspaces and outputs.
     Mod+Page_Down { focus-workspace-down; }
     Mod+Page_Up   { focus-workspace-up; }
     Mod+Ctrl+H    { focus-monitor-left; }
     Mod+Ctrl+L    { focus-monitor-right; }
     Mod+Ctrl+K    { focus-monitor-up; }
     Mod+Ctrl+J    { focus-monitor-down; }
-    Mod+Ctrl+Shift+H { move-column-to-monitor-left; }
-    Mod+Ctrl+Shift+L { move-column-to-monitor-right; }
+    Mod+Ctrl+Shift+H { move-section-to-monitor-left; }
+    Mod+Ctrl+Shift+L { move-section-to-monitor-right; }
 
     // Scroll the rail with the wheel.
     Mod+WheelScrollDown      cooldown-ms=150 { focus-workspace-down; }
     Mod+WheelScrollUp        cooldown-ms=150 { focus-workspace-up; }
-    Mod+WheelScrollRight { focus-column-right; }
-    Mod+WheelScrollLeft  { focus-column-left; }
+    Mod+WheelScrollRight { focus-section-right; }
+    Mod+WheelScrollLeft  { focus-section-left; }
 
     // Sizing (sway: $mod+r resize mode; niri uses preset widths + fine adjustment).
-    Mod+R       { switch-preset-column-width; }
+    Mod+R       { switch-preset-section-width; }
     Mod+Ctrl+R  { reset-window-height; }
-    Mod+Minus      { set-column-width "-10%"; }
-    Mod+Equal      { set-column-width "+10%"; }
+    Mod+Minus      { set-section-width "-10%"; }
+    Mod+Equal      { set-section-width "+10%"; }
     Mod+Shift+Minus { set-window-height "-10%"; }
     Mod+Shift+Equal { set-window-height "+10%"; }
-    Mod+C { center-column; }
+    Mod+C { center-section; }
 
     // Screenshots.
     Print { screenshot; }

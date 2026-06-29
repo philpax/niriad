@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    CenterFocusedColumn, CornerRadius, MainAxis, OutputName, PresetSize,
+    CenterFocusedSection, CornerRadius, MainAxis, OutputName, PresetSize,
     Workspace as WorkspaceConfig,
 };
-use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
+use niri_ipc::{SectionDisplay, PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::{layer_map_for_output, Window};
@@ -190,7 +190,7 @@ pub enum WorkspaceAddWindowTarget<'a, W: LayoutElement> {
     #[default]
     Auto,
     /// As a new section at this index.
-    NewColumnAt(usize),
+    NewSectionAt(usize),
     /// Next to this existing window.
     NextTo(&'a W::Id),
 }
@@ -643,7 +643,7 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                 }
             }
-            WorkspaceAddWindowTarget::NewColumnAt(col_idx) => {
+            WorkspaceAddWindowTarget::NewSectionAt(col_idx) => {
                 let activate = activate.map_smart(|| false);
                 self.scrolling
                     .add_tile(Some(col_idx), tile, activate, width, is_full_width, None);
@@ -842,7 +842,7 @@ impl<W: LayoutElement> Workspace<W> {
             Some(Some(width)) => Some(width),
             Some(None) => None,
             None if is_floating => None,
-            None => self.options.layout.default_column_width,
+            None => self.options.layout.default_section_width,
         }
     }
 
@@ -1240,7 +1240,7 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.move_tab(direction);
     }
 
-    pub fn set_section_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: SectionDisplay) {
         if self.floating_is_active.get() {
             return;
         }
@@ -1521,7 +1521,7 @@ impl<W: LayoutElement> Workspace<W> {
             let stored_or_default = self.floating.stored_or_default_tile_pos(&removed.tile);
             if stored_or_default.is_none() {
                 let offset =
-                    if self.options.layout.center_focused_column == CenterFocusedColumn::Always {
+                    if self.options.layout.center_focused_section == CenterFocusedSection::Always {
                         Point::from((0., 0.))
                     } else {
                         Point::from((50., 50.))

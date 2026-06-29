@@ -459,7 +459,7 @@ impl MergeWith<WorkspaceShadowPart> for WorkspaceShadow {
 pub struct TabIndicator {
     pub off: bool,
     pub hide_when_single_tab: bool,
-    pub place_within_column: bool,
+    pub place_within_section: bool,
     pub gap: f64,
     pub width: f64,
     pub length: TabIndicatorLength,
@@ -479,7 +479,7 @@ impl Default for TabIndicator {
         Self {
             off: false,
             hide_when_single_tab: false,
-            place_within_column: false,
+            place_within_section: false,
             gap: 5.,
             width: 4.,
             length: TabIndicatorLength {
@@ -504,7 +504,7 @@ pub enum TabStyle {
     /// i3/sway-style horizontal header bar with text labels.
     #[default]
     Bar,
-    /// Niri-style colored gradient bars along a column edge.
+    /// Niri-style colored gradient bars along a section edge.
     Indicator,
 }
 
@@ -640,7 +640,7 @@ impl MergeWith<TabIndicatorPart> for TabIndicator {
         merge!(
             (self, part),
             hide_when_single_tab,
-            place_within_column,
+            place_within_section,
             gap,
             width,
             gaps_between_tabs,
@@ -667,7 +667,7 @@ pub struct TabIndicatorPart {
     #[knuffel(child)]
     pub hide_when_single_tab: Option<Flag>,
     #[knuffel(child)]
-    pub place_within_column: Option<Flag>,
+    pub place_within_section: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub gap: Option<FloatOrInt<-65535, 65535>>,
     #[knuffel(child, unwrap(argument))]

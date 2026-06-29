@@ -63,7 +63,7 @@ fn unfullscreen_view_offset_not_reset_on_consume() {
         Op::AddWindow {
             params: TestWindowParams::new(1),
         },
-        Op::ConsumeWindowIntoColumn,
+        Op::ConsumeWindowIntoSection,
     ];
 
     check_ops(ops);
@@ -168,9 +168,9 @@ fn disable_tabbed_mode_in_fullscreen() {
             params: TestWindowParams::new(1),
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::ToggleColumnTabbedDisplay,
+        Op::ToggleSectionTabbedDisplay,
         Op::FullscreenWindow(0),
-        Op::ToggleColumnTabbedDisplay,
+        Op::ToggleSectionTabbedDisplay,
     ];
 
     check_ops(ops);
@@ -244,7 +244,7 @@ fn move_pending_unfullscreen_window_out_of_active_section() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::ConsumeWindowIntoColumn,
+        Op::ConsumeWindowIntoSection,
         // Window 1 is now pending unfullscreen.
         // Moving it out should reset view_offset_before_fullscreen.
         Op::MoveWindowToWorkspaceDown(true),
@@ -265,7 +265,7 @@ fn move_unfocused_pending_unfullscreen_window_out_of_active_section() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::ConsumeWindowIntoColumn,
+        Op::ConsumeWindowIntoSection,
         // Window 1 is now pending unfullscreen.
         // Moving it out should reset view_offset_before_fullscreen.
         Op::FocusWindowDown,
@@ -512,10 +512,10 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
             params: TestWindowParams::new(3),
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetColumnDisplay(ColumnDisplay::Tabbed),
+        Op::SetSectionDisplay(SectionDisplay::Tabbed),
         // Get view pos back on the first window.
-        Op::FocusColumnLeft,
-        Op::FocusColumnRight,
+        Op::FocusSectionLeft,
+        Op::FocusSectionRight,
     ];
 
     let mut layout = check_ops(ops);
@@ -565,10 +565,10 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
             params: TestWindowParams::new(3),
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetColumnDisplay(ColumnDisplay::Tabbed),
+        Op::SetSectionDisplay(SectionDisplay::Tabbed),
         // Get view pos back on the first window.
-        Op::FocusColumnLeft,
-        Op::FocusColumnRight,
+        Op::FocusSectionLeft,
+        Op::FocusSectionRight,
     ];
 
     let mut layout = check_ops(ops);
@@ -588,7 +588,7 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     assert_snapshot!(layout.active_workspace().unwrap().scrolling().view_pos(), @"116");
 
     let ops = [
-        Op::SetColumnDisplay(ColumnDisplay::Normal),
+        Op::SetSectionDisplay(SectionDisplay::Normal),
         Op::Communicate(3),
         Op::CompleteAnimations,
     ];
@@ -615,7 +615,7 @@ fn removing_only_fullscreen_tile_updates_view_offset() {
             params: TestWindowParams::new(2),
         },
         Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetColumnDisplay(ColumnDisplay::Tabbed),
+        Op::SetSectionDisplay(SectionDisplay::Tabbed),
         Op::CompleteAnimations,
     ];
 

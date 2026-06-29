@@ -130,8 +130,8 @@ pub struct WorkspaceSwitchGesture {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum InsertPosition {
-    NewColumn(usize),
-    InColumn(usize, usize),
+    NewSection(usize),
+    InSection(usize, usize),
     /// Drop into a split with the tile at (section_idx, tile_idx) along the given axis.
     /// `is_right_half` indicates which half of the target tile to drop into.
     InSplit(usize, usize, SplitAxis, bool),
@@ -523,7 +523,7 @@ impl<W: LayoutElement> Monitor<W> {
             MonitorAddWindowTarget::Workspace { id, section_idx } => {
                 let idx = self.workspaces.iter().position(|ws| ws.id() == id).unwrap();
                 let target = if let Some(section_idx) = section_idx {
-                    WorkspaceAddWindowTarget::NewColumnAt(section_idx)
+                    WorkspaceAddWindowTarget::NewSectionAt(section_idx)
                 } else {
                     WorkspaceAddWindowTarget::Auto
                 };
@@ -1197,7 +1197,7 @@ impl<W: LayoutElement> Monitor<W> {
                             let view_size = ws.view_size();
 
                             // Make sure the hint is at least partially visible.
-                            if matches!(hint.position, InsertPosition::NewColumn(_)) {
+                            if matches!(hint.position, InsertPosition::NewSection(_)) {
                                 let zoom = self.overview_zoom();
                                 let geo = insert_hint_ws_geo.unwrap();
                                 let geo = geo.downscale(zoom);
