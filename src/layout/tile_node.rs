@@ -1086,8 +1086,18 @@ impl<W: LayoutElement> TileNode<W> {
             *tab_header = None;
         } else {
             *prev_split = *layout;
-            *layout = Layout::Tabbed;
-            *tab_header = Some(TabHeader::new(tab_header_config));
+            // Family-aware tabbing, matching sway's two title styles: a vertical (cross-axis) split
+            // tabs into `Stacked` (one full-width title row per child, stacked downward), a
+            // horizontal (main-axis) split into `Tabbed` (a single row of side-by-side titles).
+            let tabbing = if layout.axis() == SplitAxis::Cross {
+                Layout::Stacked
+            } else {
+                Layout::Tabbed
+            };
+            *layout = tabbing;
+            let mut header = TabHeader::new(tab_header_config);
+            header.set_stacked(tabbing == Layout::Stacked);
+            *tab_header = Some(header);
         }
     }
 

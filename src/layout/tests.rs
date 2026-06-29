@@ -4720,6 +4720,42 @@ fn stacked_layout_reserves_a_row_per_tab_and_shows_one() {
 }
 
 #[test]
+fn toggle_tabbed_is_family_aware() {
+    // Toggling a vertical (cross) stack tabs into Stacked (one title row per child, stacked down);
+    // toggling a horizontal (main) row tabs into Tabbed (one row of side-by-side titles). Matches
+    // sway's two tab styles.
+    let build = |dir: niri_ipc::SplitDirection| {
+        check_ops([
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(dir),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(dir),
+            Op::AddWindow { params: wide_window(3) },
+            Op::ToggleTabbed,
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ])
+    };
+    let vstack = build(niri_ipc::SplitDirection::Cross);
+    let hstack = build(niri_ipc::SplitDirection::Main);
+
+    // The active child of the toggled vstack sits lower (3 stacked title rows) than the toggled
+    // hstack (a single tab row).
+    let (v, _) = window_geo(&vstack, 3).unwrap();
+    let (h, _) = window_geo(&hstack, 3).unwrap();
+    assert!(
+        v.y > h.y + 10.,
+        "vstack should toggle to Stacked (more rows) and hstack to Tabbed (one row): \
+         vstack y={}, hstack y={}",
+        v.y,
+        h.y
+    );
+}
+
+#[test]
 fn simplify_merges_same_family_splits_only() {
     use std::rc::Rc;
 
