@@ -340,8 +340,12 @@ impl TabBar {
         }
     }
 
-    /// Renders the tab bar: backgrounds first, then title textures on top.
+    /// Renders the tab bar: title textures, then backgrounds behind them.
     /// Texture caching uses interior mutability (RefCell), so this only needs &self.
+    ///
+    /// Render elements are ordered front-to-back (the first pushed is topmost), so the
+    /// titles must be pushed *before* the backgrounds; otherwise the opaque background
+    /// rectangles occlude the text and you get blank grey boxes.
     pub fn render(
         &self,
         renderer: &mut GlesRenderer,
@@ -351,8 +355,8 @@ impl TabBar {
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
-        self.render_backgrounds(pos, is_column_active, push);
         self.render_titles(renderer, pos, scale, is_column_active, titles, push);
+        self.render_backgrounds(pos, is_column_active, push);
     }
 
     /// Renders cached title textures for each tab.
