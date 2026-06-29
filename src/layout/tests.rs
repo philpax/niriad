@@ -4538,6 +4538,37 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn born_tabbed_column_untabs_to_a_vertical_column() {
+    // A column born tabbed (via a default-column-display rule) must, when un-tabbed, collapse to a
+    // vertical column (windows stacked, different y) — not a horizontal row. Regression for the
+    // prev_split default of a freshly-tabbed node.
+    let mut tabbed_rule = TestWindowParams::new(1);
+    tabbed_rule.rules = Some(ResolvedWindowRules {
+        default_column_display: Some(niri_ipc::ColumnDisplay::Tabbed),
+        ..ResolvedWindowRules::default()
+    });
+
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: tabbed_rule },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        // Pull window 2 into the born-tabbed column (it becomes a second tab).
+        Op::ConsumeOrExpelWindowLeft { id: None },
+        // Now turn tabbing off.
+        Op::SetColumnDisplay(niri_ipc::ColumnDisplay::Normal),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert_eq!(tile_count(&layout), 2);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_eq!(p1.x, p2.x, "un-tabbed born-tabbed column must be vertical (shared x)");
+    assert_ne!(p1.y, p2.y, "un-tabbed born-tabbed column must stack windows (different y)");
+}
+
+#[test]
 fn toggle_tabbed_then_untoggle_restores_split() {
     // Toggling tabbed on and then off should restore the split layout.
     let layout = check_ops([

@@ -207,7 +207,14 @@ impl<W: LayoutElement> TileNode<W> {
             active_idx,
             data,
             tab_header,
-            prev_split: layout.split_of_family(),
+            // A plain split's prev_split is itself; a node born in a tabbing layout conceptually
+            // came from a vertical column (niri's default), so un-tabbing it yields a column, not a
+            // row. (Matches the old `restore_axis = Cross` default.)
+            prev_split: if layout.is_split() {
+                layout
+            } else {
+                Layout::SplitV
+            },
         }
     }
 
