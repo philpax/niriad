@@ -4557,6 +4557,79 @@ fn toggle_tabbed_then_untoggle_restores_split() {
 }
 
 #[test]
+fn toggle_tabbed_on_nested_row_tabs_only_the_row() {
+    // Column layout: window 1 on top, a side-by-side row [2 | 3] below. Tabbing while focused
+    // inside the row should tab ONLY the row (the active leaf's parent), leaving window 1 in place
+    // — not collapse all three windows into one tabbed container.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ToggleTabbed,
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert_eq!(tile_count(&layout), 3);
+
+    // Window 1 stays visible (it lives outside the tabbed row).
+    assert_eq!(
+        window_visible(&layout, 1),
+        Some(true),
+        "the window above the row stays visible"
+    );
+    // Inside the tabbed row, only the active tab (3) shows.
+    assert_eq!(
+        window_visible(&layout, 3),
+        Some(true),
+        "active tab in the row is visible"
+    );
+    assert_eq!(
+        window_visible(&layout, 2),
+        Some(false),
+        "inactive tab in the row is hidden"
+    );
+
+    // The two row tabs share a position; window 1 sits above them.
+    let (pos1, _) = window_geo(&layout, 1).unwrap();
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    let (pos3, _) = window_geo(&layout, 3).unwrap();
+    assert_eq!(pos2, pos3, "tabbed row tiles share a position");
+    assert!(pos1.y < pos2.y, "window 1 is above the tabbed row");
+}
+
+#[test]
+fn untoggling_a_tabbed_row_restores_side_by_side() {
+    // Tabbing then untabbing a side-by-side row must restore the row (horizontal), not collapse it
+    // into a vertical stack — the split's restore axis is preserved through the tabbed state.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::ToggleTabbed,
+        Op::ToggleTabbed,
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert_eq!(tile_count(&layout), 3);
+    assert_eq!(window_visible(&layout, 2), Some(true));
+    assert_eq!(window_visible(&layout, 3), Some(true));
+
+    // Row restored: 2 and 3 side by side (different x).
+    let (pos2, _) = window_geo(&layout, 2).unwrap();
+    let (pos3, _) = window_geo(&layout, 3).unwrap();
+    assert_ne!(
+        pos2.x, pos3.x,
+        "the row must be horizontal again after untabbing"
+    );
+}
+
+#[test]
 fn move_tab_reorders_tabs() {
     // MoveTab should reorder tabs within a tabbed container. The three windows start in order
     // [1, 2, 3] with window 3 active (last added). Moving the active tab left swaps it with its
@@ -5069,10 +5142,14 @@ fn directional_swap_moves_subtree_across_nested_split() {
 #[test]
 fn tabbed_tab_containing_split_shows_all_its_leaves() {
     // Build a column whose root, once tabbed, has a tab that is itself a split:
-    //   Main[1, Cross[2, 3]]  -- toggle -->  Tabbed[1, Cross[2, 3]]
+    //   Main[1, Cross[2, 3]]  -- toggle column display -->  Tabbed[1, Cross[2, 3]]
     // The active tab (containing windows 2 and 3) must show BOTH of its windows, while the other
     // tab (window 1) stays hidden. A naive "only the single active leaf is visible" would wrongly
     // hide window 2.
+    //
+    // We use ToggleColumnTabbedDisplay (Mod+W) here, which always tabs the column root regardless
+    // of focus depth — unlike ToggleTabbed (Mod+Ctrl+W), which tabs the focused window's immediate
+    // parent.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -5080,7 +5157,7 @@ fn tabbed_tab_containing_split_shows_all_its_leaves() {
         Op::AddWindow { params: TestWindowParams::new(2) },
         Op::SplitWindow(niri_ipc::SplitDirection::Cross),
         Op::AddWindow { params: TestWindowParams::new(3) },
-        Op::ToggleTabbed,
+        Op::ToggleColumnTabbedDisplay,
     ]);
 
     assert_eq!(tile_count(&layout), 3);

@@ -2845,22 +2845,55 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.set_column_display(display);
     }
 
-    /// Toggles the active column's root between split and tabbed.
-    /// This is the generalized version that works at any tree level.
+    /// Toggles the container *holding the active window* between split and tabbed.
+    ///
+    /// This is the generalized version that works at any tree level: if the focused window sits
+    /// directly under the column root, it toggles the whole column (same as
+    /// `toggle_column_tabbed_display`); if it sits inside a nested split (e.g. a side-by-side
+    /// row), only that nested split becomes tabbed, leaving the rest of the column in place.
     pub fn toggle_tabbed(&mut self) {
         if self.columns.is_empty() {
             return;
         }
 
-        // Delegate to set_column_display, which refreshes cached data and clears fullscreen/
-        // maximized when leaving tabbed mode with more than one tile (a non-tabbed multi-tile
-        // column can't stay fullscreen).
-        let display = if self.columns[self.active_column_idx].is_tabbed() {
-            ColumnDisplay::Normal
-        } else {
-            ColumnDisplay::Tabbed
-        };
-        self.set_column_display(display);
+        let col = &self.columns[self.active_column_idx];
+        let path = col.root.active_path();
+        // The parent of the active leaf is the container we toggle.
+        let parent_len = path.len().saturating_sub(1);
+
+        if parent_len == 0 {
+            // The active window's container is the column root. Use the column-level toggle, which
+            // has the nicer cross-axis fade animation and clears fullscreen/maximized when leaving
+            // tabbed mode with more than one tile.
+            let display = if col.is_tabbed() {
+                ColumnDisplay::Normal
+            } else {
+                ColumnDisplay::Tabbed
+            };
+            self.set_column_display(display);
+            return;
+        }
+
+        // The active window is nested: toggle just its parent split/tabbed node in place.
+        let parent_path = path[..parent_len].to_vec();
+        let col = &mut self.columns[self.active_column_idx];
+        cancel_resize_for_column(&mut self.interactive_resize, col);
+
+        let tab_header_config = col.options.layout.tab_header.clone();
+        let node = col.root.node_at_mut(&parent_path);
+        let became_tabbed = !node.is_tabbed();
+        node.toggle_tabbed(tab_header_config);
+
+        // Fade the new tab header in, mirroring the column-level transition.
+        if became_tabbed {
+            let clock = col.clock.clone();
+            let anim = col.options.animations.window_movement.0;
+            if let TileNode::Tabbed { tab_header, .. } = col.root.node_at_mut(&parent_path) {
+                tab_header.start_open_animation(clock, anim);
+            }
+        }
+
+        col.update_tile_sizes(true);
     }
 
     /// Moves the active tab left or right within its tabbed container.

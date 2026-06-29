@@ -121,6 +121,11 @@ pub enum TileNode<W: LayoutElement> {
         active_idx: usize,
         data: Vec<SplitChildData>,
         tab_header: TabHeader,
+        /// The split axis to restore when this node is un-tabbed. A tabbed container is
+        /// axis-agnostic (children overlap), but it was created from a split along some axis
+        /// — `Cross` for a normal column, `Main` for a side-by-side row — and toggling back
+        /// should return to that arrangement rather than always collapsing to a column.
+        restore_axis: SplitAxis,
     },
 }
 
@@ -155,6 +160,8 @@ impl<W: LayoutElement> TileNode<W> {
             active_idx,
             data,
             tab_header,
+            // A freshly-tabbed column is conceptually a cross-axis stack.
+            restore_axis: SplitAxis::Cross,
         }
     }
 
@@ -860,6 +867,25 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Returns the path to the active leaf, following `active_idx` down the tree. Empty if the
+    /// root is itself a leaf.
+    pub fn active_path(&self) -> TilePath {
+        let mut path = Vec::new();
+        let mut node = self;
+        loop {
+            match node {
+                TileNode::Leaf(_) => break,
+                TileNode::Split { children, active_idx, .. }
+                | TileNode::Tabbed { children, active_idx, .. } => {
+                    let idx = (*active_idx).min(children.len().saturating_sub(1));
+                    path.push(idx);
+                    node = &children[idx];
+                }
+            }
+        }
+        path
+    }
+
     /// Returns the flat leaf index of the active leaf (following active_idx down the tree).
     pub fn path_for_leaf_index_from_active(&self) -> Option<usize> {
         let mut count = 0;
@@ -956,26 +982,29 @@ impl<W: LayoutElement> TileNode<W> {
                 children,
                 active_idx,
                 data,
+                restore_axis,
                 ..
             } => {
-                // Convert to cross-axis split (the existing normal column behavior).
+                // Convert back to a split along the axis we were created from (a column for a
+                // tabbed column, a row for a tabbed row).
                 let children = std::mem::take(children);
                 let data = std::mem::take(data);
                 let active_idx = *active_idx;
                 *self = TileNode::Split {
-                    axis: SplitAxis::Cross,
+                    axis: *restore_axis,
                     children,
                     active_idx,
                     data,
                 };
             }
             TileNode::Split {
+                axis,
                 children,
                 active_idx,
                 data,
-                ..
             } => {
                 let tab_header = TabHeader::new(tab_header_config);
+                let restore_axis = *axis;
                 let children = std::mem::take(children);
                 let data = std::mem::take(data);
                 let active_idx = *active_idx;
@@ -984,6 +1013,7 @@ impl<W: LayoutElement> TileNode<W> {
                     active_idx,
                     data,
                     tab_header,
+                    restore_axis,
                 };
             }
             TileNode::Leaf(_) => {
@@ -1304,7 +1334,7 @@ impl<W: LayoutElement> TileNode<W> {
                     *active_idx = 0;
                 }
             }
-            TileNode::Tabbed { children, data, active_idx, tab_header } => {
+            TileNode::Tabbed { children, data, active_idx, tab_header, .. } => {
                 let count = children.len();
                 if count == 0 {
                     return;
