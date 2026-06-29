@@ -1267,11 +1267,25 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 } else if dist_to_bottom <= edge_threshold {
                     InsertPosition::InColumn(col_idx, below_idx)
                 } else {
-                    // Interior — horizontal split (side-by-side) of the tile under the pointer.
+                    // Interior of the tile. Divide it into thirds across the main (x) axis: the
+                    // left and right thirds split the tile side-by-side (a Main split), while the
+                    // centre third splits it top/bottom (a Cross split), turning a single window
+                    // into a vertical stack. This makes both "place beside" and "convert into a
+                    // column" reachable by drag, mirroring split-window's two directions — instead
+                    // of the previous behaviour where the whole interior could only split
+                    // side-by-side.
                     let tile_w = leaf_size(tile_idx).w;
-                    let tile_center = col_main_start + tile_off.x + tile_w / 2.;
-                    let is_right_half = main > tile_center;
-                    InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, is_right_half)
+                    let left = col_main_start + tile_off.x;
+                    let rel_x = (main - left) / tile_w.max(1.);
+                    if rel_x < 1. / 3. {
+                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
+                    } else if rel_x > 2. / 3. {
+                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, true)
+                    } else {
+                        // Centre third → stack this tile vertically; below if past its centre.
+                        let place_below = cross > tile_top + tile_h / 2.;
+                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Cross, place_below)
+                    }
                 }
             } else {
                 InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
@@ -3321,7 +3335,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_main_pos(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
-            InsertPosition::InSplit(column_index, tile_index, _axis, is_right_half) => {
+            InsertPosition::InSplit(column_index, tile_index, axis, place_after) => {
                 if column_index >= self.columns.len() {
                     return None;
                 }
@@ -3340,15 +3354,29 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .unwrap_or((0., 0.));
                 let col_main = self.column_main_pos(column_index);
 
-                // Show a half-width rectangle on the appropriate side.
-                let half_w = tile_w / 2.;
-                let loc = if is_right_half {
-                    Point::from((col_main + tile_off.x + half_w, tile_off.y))
-                } else {
-                    Point::from((col_main + tile_off.x, tile_off.y))
-                };
-                let size = Size::from((half_w, tile_h));
-                Rectangle::new(loc, size)
+                // Show a half-size rectangle on the side the new tile will land: a half-width
+                // rect (left/right) for a side-by-side Main split, a half-height rect (top/bottom)
+                // for a stacking Cross split.
+                match axis {
+                    SplitAxis::Main => {
+                        let half_w = tile_w / 2.;
+                        let loc = if place_after {
+                            Point::from((col_main + tile_off.x + half_w, tile_off.y))
+                        } else {
+                            Point::from((col_main + tile_off.x, tile_off.y))
+                        };
+                        Rectangle::new(loc, Size::from((half_w, tile_h)))
+                    }
+                    SplitAxis::Cross => {
+                        let half_h = tile_h / 2.;
+                        let loc = if place_after {
+                            Point::from((col_main + tile_off.x, tile_off.y + half_h))
+                        } else {
+                            Point::from((col_main + tile_off.x, tile_off.y))
+                        };
+                        Rectangle::new(loc, Size::from((tile_w, half_h)))
+                    }
+                }
             }
             InsertPosition::Floating => return None,
         };
