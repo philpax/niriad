@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::axis::AxisMap;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
-use super::scrolling::{Column, ColumnWidth};
+use super::scrolling::{Section, SectionWidth};
 use super::tile::Tile;
 use super::tile_node::SplitAxis;
 use super::workspace::{
@@ -132,11 +132,11 @@ pub struct WorkspaceSwitchGesture {
 pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
-    /// Drop into a split with the tile at (column_idx, tile_idx) along the given axis.
+    /// Drop into a split with the tile at (section_idx, tile_idx) along the given axis.
     /// `is_right_half` indicates which half of the target tile to drop into.
     InSplit(usize, usize, SplitAxis, bool),
     /// Drop beside the *whole* vertical (Cross) stack that contains the tile at
-    /// (column_idx, tile_idx). The stacked tiles share their left/right edges, so dropping to
+    /// (section_idx, tile_idx). The stacked tiles share their left/right edges, so dropping to
     /// either side of any of them places the new window next to the entire stack rather than
     /// next to one tile. `place_after` is true for the right side. Produced only by drag.
     InSplitStack(usize, usize, bool),
@@ -178,8 +178,8 @@ pub enum MonitorAddWindowTarget<'a, W: LayoutElement> {
     Workspace {
         /// Id of the target workspace.
         id: WorkspaceId,
-        /// Override where the window will open as a new column.
-        column_idx: Option<usize>,
+        /// Override where the window will open as a new section.
+        section_idx: Option<usize>,
     },
     /// Next to this existing window.
     NextTo(&'a W::Id),
@@ -520,10 +520,10 @@ impl<W: LayoutElement> Monitor<W> {
             MonitorAddWindowTarget::Auto => {
                 (self.active_workspace_idx, WorkspaceAddWindowTarget::Auto)
             }
-            MonitorAddWindowTarget::Workspace { id, column_idx } => {
+            MonitorAddWindowTarget::Workspace { id, section_idx } => {
                 let idx = self.workspaces.iter().position(|ws| ws.id() == id).unwrap();
-                let target = if let Some(column_idx) = column_idx {
-                    WorkspaceAddWindowTarget::NewColumnAt(column_idx)
+                let target = if let Some(section_idx) = section_idx {
+                    WorkspaceAddWindowTarget::NewColumnAt(section_idx)
                 } else {
                     WorkspaceAddWindowTarget::Auto
                 };
@@ -545,7 +545,7 @@ impl<W: LayoutElement> Monitor<W> {
         window: W,
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
-        width: ColumnWidth,
+        width: SectionWidth,
         is_full_width: bool,
         is_floating: bool,
     ) {
@@ -564,10 +564,10 @@ impl<W: LayoutElement> Monitor<W> {
         );
     }
 
-    pub fn add_column(&mut self, mut workspace_idx: usize, column: Column<W>, activate: bool) {
+    pub fn add_section(&mut self, mut workspace_idx: usize, section: Section<W>, activate: bool) {
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_column(column, activate);
+        workspace.add_section(section, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {
@@ -595,7 +595,7 @@ impl<W: LayoutElement> Monitor<W> {
         activate: ActivateWindow,
         // FIXME: Refactor ActivateWindow enum to make this better.
         allow_to_activate_workspace: bool,
-        width: ColumnWidth,
+        width: SectionWidth,
         is_full_width: bool,
         is_floating: bool,
     ) {
@@ -625,10 +625,10 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn add_tile_to_column(
+    pub fn add_tile_to_section(
         &mut self,
         workspace_idx: usize,
-        column_idx: usize,
+        section_idx: usize,
         tile_idx: Option<usize>,
         tile: Tile<W>,
         activate: bool,
@@ -637,14 +637,14 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile_to_column(column_idx, tile_idx, tile, activate);
+        workspace.add_tile_to_section(section_idx, tile_idx, tile, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {
             workspace.original_output = OutputId::new(&self.output);
         }
 
-        // Since we're adding window to an existing column, the workspace isn't empty, and
+        // Since we're adding window to an existing section, the workspace isn't empty, and
         // therefore cannot be the last one, so we never need to insert a new empty workspace.
 
         if allow_to_activate_workspace && activate {
@@ -656,7 +656,7 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn add_tile_to_split(
         &mut self,
         workspace_idx: usize,
-        column_idx: usize,
+        section_idx: usize,
         tile_idx: usize,
         axis: SplitAxis,
         place_after: bool,
@@ -667,7 +667,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile_to_split(column_idx, tile_idx, axis, place_after, tile, activate);
+        workspace.add_tile_to_split(section_idx, tile_idx, axis, place_after, tile, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {
@@ -683,7 +683,7 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn add_tile_beside_stack(
         &mut self,
         workspace_idx: usize,
-        column_idx: usize,
+        section_idx: usize,
         tile_idx: usize,
         place_after: bool,
         tile: Tile<W>,
@@ -693,7 +693,7 @@ impl<W: LayoutElement> Monitor<W> {
     ) {
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile_beside_stack(column_idx, tile_idx, place_after, tile, activate);
+        workspace.add_tile_beside_stack(section_idx, tile_idx, place_after, tile, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {
@@ -763,7 +763,7 @@ impl<W: LayoutElement> Monitor<W> {
         ws.set_output(None);
 
         // For monitor current workspace removal, we focus previous rather than next (<= rather
-        // than <). This is different from columns and tiles, but it lets move-workspace-to-monitor
+        // than <). This is different from sections and tiles, but it lets move-workspace-to-monitor
         // back and forth to preserve position.
         if idx <= self.active_workspace_idx && self.active_workspace_idx > 0 {
             self.active_workspace_idx -= 1;
@@ -889,7 +889,7 @@ impl<W: LayoutElement> Monitor<W> {
             removed.tile,
             MonitorAddWindowTarget::Workspace {
                 id: new_id,
-                column_idx: None,
+                section_idx: None,
             },
             activate,
             true,
@@ -923,7 +923,7 @@ impl<W: LayoutElement> Monitor<W> {
             removed.tile,
             MonitorAddWindowTarget::Workspace {
                 id: new_id,
-                column_idx: None,
+                section_idx: None,
             },
             activate,
             true,
@@ -972,7 +972,7 @@ impl<W: LayoutElement> Monitor<W> {
             removed.tile,
             MonitorAddWindowTarget::Workspace {
                 id: new_id,
-                column_idx: None,
+                section_idx: None,
             },
             if activate {
                 ActivateWindow::Yes
@@ -990,7 +990,7 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    pub fn move_column_to_workspace_up(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_up(&mut self, activate: bool) {
         let source_workspace_idx = self.active_workspace_idx;
 
         let new_idx = source_workspace_idx.saturating_sub(1);
@@ -1004,14 +1004,14 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(column) = workspace.remove_active_column() else {
+        let Some(section) = workspace.remove_active_section() else {
             return;
         };
 
-        self.add_column(new_idx, column, activate);
+        self.add_section(new_idx, section, activate);
     }
 
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_down(&mut self, activate: bool) {
         let source_workspace_idx = self.active_workspace_idx;
 
         let new_idx = min(source_workspace_idx + 1, self.workspaces.len() - 1);
@@ -1025,14 +1025,14 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(column) = workspace.remove_active_column() else {
+        let Some(section) = workspace.remove_active_section() else {
             return;
         };
 
-        self.add_column(new_idx, column, activate);
+        self.add_section(new_idx, section, activate);
     }
 
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
+    pub fn move_section_to_workspace(&mut self, idx: usize, activate: bool) {
         let source_workspace_idx = self.active_workspace_idx;
 
         let new_idx = min(idx, self.workspaces.len() - 1);
@@ -1051,11 +1051,11 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let Some(column) = workspace.remove_active_column() else {
+        let Some(section) = workspace.remove_active_section() else {
             return;
         };
 
-        self.add_column(new_idx, column, activate);
+        self.add_section(new_idx, section, activate);
     }
 
     pub fn switch_workspace_up(&mut self) {

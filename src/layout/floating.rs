@@ -10,7 +10,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::axis::{AxisDirection, AxisEdge, AxisMap};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::scrolling::ColumnWidth;
+use super::scrolling::SectionWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
@@ -534,7 +534,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // Store the floating position.
         tile.floating_pos = Some(data.pos);
 
-        let width = ColumnWidth::Fixed(tile.tile_expected_or_current_size().w);
+        let width = SectionWidth::Fixed(tile.tile_expected_or_current_size().w);
         RemovedTile {
             tile,
             width,
@@ -1254,7 +1254,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for tile in &mut self.tiles {
             let win = tile.window_mut();
 
-            win.set_active_in_column(true);
+            win.set_active_in_section(true);
             win.set_floating(true);
 
             let mut is_active = is_active && Some(win.id()) == active.as_ref();

@@ -88,7 +88,7 @@ fn resize_to_different_size() {
     f.double_roundtrip(id);
 
     f.niri().layout.toggle_window_floating(None);
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
     f.double_roundtrip(id);
 
     // This should request the new size, 500 × 100.
@@ -155,7 +155,7 @@ fn set_window_width_uses_current_height() {
     f.roundtrip(id);
 
     // Request a width change.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
 
     f.double_roundtrip(id);
 
@@ -209,7 +209,7 @@ fn resize_to_same_size() {
     f.roundtrip(id);
 
     // Request a size change to the same size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(200));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(200));
 
     f.double_roundtrip(id);
 
@@ -239,7 +239,7 @@ fn resize_to_different_then_same() {
     f.roundtrip(id);
 
     // Request a size change to a different size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
 
     f.double_roundtrip(id);
 
@@ -250,7 +250,7 @@ fn resize_to_different_then_same() {
     );
 
     // Before the window has a chance to respond, request a size change to the same, new size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
 
     // And also drop the Activated state to have some pending change.
     f.niri_focus_output(2);
@@ -342,7 +342,7 @@ fn moving_across_workspaces_doesnt_cancel_resize() {
     let _ = f.client(id).window(&surface).recent_configures();
 
     // Request a size change to a different size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
     f.double_roundtrip(id);
 
     // This should request the new size.
@@ -389,7 +389,7 @@ fn moving_to_floating_doesnt_cancel_resize() {
     let _ = f.client(id).window(&surface).recent_configures();
 
     // Request a size change to a different size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
     f.double_roundtrip(id);
 
     // This should request the new size (500 ×).
@@ -579,7 +579,7 @@ fn resize_in_steps() {
     f.double_roundtrip(id);
 
     // Request a size change to a different size in two steps.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
     f.niri()
         .layout
         .set_window_height(None, SizeChange::SetFixed(500));
@@ -595,7 +595,7 @@ fn resize_in_steps() {
     let serial = window.configures_received.last().unwrap().0;
 
     // Request a size change now that the previous one is pending-but-not-acked.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(600));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(600));
     // Drop Activated to work around resize throttling.
     f.niri_focus_output(2);
     f.double_roundtrip(id);
@@ -651,7 +651,7 @@ fn state_change_doesnt_break_use_window_size() {
     f.roundtrip(id);
 
     // Request a size change to a different size.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(500));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(500));
     f.double_roundtrip(id);
 
     // This should request the new size (500 × 100).
@@ -1321,7 +1321,7 @@ fn repeated_size_request() {
     );
 
     // Request a size change to the same size as we have just requested.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(200));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(200));
     f.double_roundtrip(id);
 
     // Should request nothing as this is a repeated same-size request in floating and the surface
@@ -1337,7 +1337,7 @@ fn repeated_size_request() {
     f.double_roundtrip(id);
 
     // Request a size change to the same size as we have just requested.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(200));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(200));
     f.double_roundtrip(id);
 
     // Should request nothing as this is a repeated same-size request in floating and the surface
@@ -1353,7 +1353,7 @@ fn repeated_size_request() {
     f.double_roundtrip(id);
 
     // Request the size change again.
-    f.niri().layout.set_column_width(SizeChange::SetFixed(200));
+    f.niri().layout.set_section_width(SizeChange::SetFixed(200));
     f.double_roundtrip(id);
 
     // This should send a new configure since the window had committed.

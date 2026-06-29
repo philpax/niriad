@@ -46,7 +46,7 @@ pub struct ResolvedWindowRules {
     /// - `Some(Some(height))`: set to a particular height.
     pub default_height: Option<Option<PresetSize>>,
 
-    /// Default column display for this window.
+    /// Default section display for this window.
     pub default_column_display: Option<ColumnDisplay>,
 
     /// Default floating position for this window.

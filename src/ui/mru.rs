@@ -1240,7 +1240,7 @@ fn compute_view_offset(cur_x: f64, working_width: f64, new_col_x: f64, new_col_w
     let new_x = new_col_x;
     let new_right_x = new_col_x + new_col_width;
 
-    // If the column is already fully visible, leave the view as is.
+    // If the section is already fully visible, leave the view as is.
     if cur_x <= new_x && new_right_x <= cur_x + working_width {
         return -(new_col_x - cur_x);
     }

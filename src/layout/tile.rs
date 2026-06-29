@@ -911,7 +911,7 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         // The size request has to be i32 unfortunately, due to Wayland. We floor here instead of
-        // round to avoid situations where proportionally-sized columns don't fit on the screen
+        // round to avoid situations where proportionally-sized sections don't fit on the screen
         // exactly.
         self.window.request_size(
             size.to_i32_floor(),

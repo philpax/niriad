@@ -21,7 +21,7 @@ use smithay::wayland::shell::xdg::SurfaceCachedState;
 use super::axis::{AxisDirection, AxisEdge, AxisMap};
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::scrolling::{
-    Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
+    Section, SectionWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
 };
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
@@ -189,7 +189,7 @@ pub enum WorkspaceAddWindowTarget<'a, W: LayoutElement> {
     /// No particular preference.
     #[default]
     Auto,
-    /// As a new column at this index.
+    /// As a new section at this index.
     NewColumnAt(usize),
     /// Next to this existing window.
     NextTo(&'a W::Id),
@@ -614,7 +614,7 @@ impl<W: LayoutElement> Workspace<W> {
         mut tile: Tile<W>,
         target: WorkspaceAddWindowTarget<W>,
         activate: ActivateWindow,
-        width: ColumnWidth,
+        width: SectionWidth,
         is_full_width: bool,
         is_floating: bool,
     ) {
@@ -703,7 +703,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn add_tile_to_column(
+    pub fn add_tile_to_section(
         &mut self,
         col_idx: usize,
         tile_idx: Option<usize>,
@@ -712,7 +712,7 @@ impl<W: LayoutElement> Workspace<W> {
     ) {
         self.enter_output_for_window(tile.window());
         self.scrolling
-            .add_tile_to_column(col_idx, tile_idx, tile, activate);
+            .add_tile_to_section(col_idx, tile_idx, tile, activate);
 
         if activate {
             self.floating_is_active = FloatingActive::No;
@@ -754,12 +754,12 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn add_column(&mut self, column: Column<W>, activate: bool) {
-        for (tile, _) in column.tiles() {
+    pub fn add_section(&mut self, section: Section<W>, activate: bool) {
+        for (tile, _) in section.tiles() {
             self.enter_output_for_window(tile.window());
         }
 
-        self.scrolling.add_column(None, column, activate, None);
+        self.scrolling.add_section(None, section, activate, None);
 
         if activate {
             self.floating_is_active = FloatingActive::No;
@@ -814,23 +814,23 @@ impl<W: LayoutElement> Workspace<W> {
         Some(removed)
     }
 
-    pub fn remove_active_column(&mut self) -> Option<Column<W>> {
+    pub fn remove_active_section(&mut self) -> Option<Section<W>> {
         let from_floating = self.floating_is_active.get();
         if from_floating {
             return None;
         }
 
-        let column = self.scrolling.remove_active_column()?;
+        let section = self.scrolling.remove_active_section()?;
 
         if let Some(output) = &self.output {
-            for (tile, _) in column.tiles() {
+            for (tile, _) in section.tiles() {
                 tile.window().output_leave(output);
             }
         }
 
         self.update_focus_floating_tiling_after_removing(from_floating);
 
-        Some(column)
+        Some(section)
     }
 
     pub fn resolve_default_width(
@@ -932,7 +932,7 @@ impl<W: LayoutElement> Workspace<W> {
         &self,
         window: &W,
         width: Option<PresetSize>,
-    ) -> ColumnWidth {
+    ) -> SectionWidth {
         let width = width.unwrap_or_else(|| {
             let fixed = self.axis().size_main(window.size());
             PresetSize::Fixed(fixed)
@@ -941,16 +941,16 @@ impl<W: LayoutElement> Workspace<W> {
             PresetSize::Fixed(fixed) => {
                 let mut fixed = f64::from(fixed);
 
-                // Add border width since ColumnWidth includes borders.
+                // Add border width since SectionWidth includes borders.
                 let rules = window.rules();
                 let border = self.options.layout.border.merged_with(&rules.border);
                 if !border.off {
                     fixed += border.width * 2.;
                 }
 
-                ColumnWidth::Fixed(fixed)
+                SectionWidth::Fixed(fixed)
             }
-            PresetSize::Proportion(prop) => ColumnWidth::Proportion(prop),
+            PresetSize::Proportion(prop) => SectionWidth::Proportion(prop),
         }
     }
 
@@ -972,46 +972,46 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn focus_column_first(&mut self) {
+    pub fn focus_section_first(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_main_edge(self.axis(), AxisEdge::Start);
         } else {
-            self.scrolling.focus_column_first();
+            self.scrolling.focus_section_first();
         }
     }
 
-    pub fn focus_column_last(&mut self) {
+    pub fn focus_section_last(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_main_edge(self.axis(), AxisEdge::End);
         } else {
-            self.scrolling.focus_column_last();
+            self.scrolling.focus_section_last();
         }
     }
 
-    pub fn focus_column_right_or_first(&mut self) {
+    pub fn focus_section_right_or_first(&mut self) {
         if !self.focus_right() {
-            self.focus_column_first();
+            self.focus_section_first();
         }
     }
 
-    pub fn focus_column_left_or_last(&mut self) {
+    pub fn focus_section_left_or_last(&mut self) {
         if !self.focus_left() {
-            self.focus_column_last();
+            self.focus_section_last();
         }
     }
 
-    pub fn focus_column(&mut self, index: usize) {
+    pub fn focus_section(&mut self, index: usize) {
         if self.floating_is_active.get() {
             self.focus_tiling();
         }
-        self.scrolling.focus_column(index);
+        self.scrolling.focus_section(index);
     }
 
-    pub fn focus_window_in_column(&mut self, index: u8) {
+    pub fn focus_window_in_section(&mut self, index: u8) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.focus_window_in_column(index);
+        self.scrolling.focus_window_in_section(index);
     }
 
     pub fn focus_down(&mut self) -> bool {
@@ -1111,25 +1111,25 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn move_column_to_first(&mut self) {
+    pub fn move_section_to_first(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_first();
+        self.scrolling.move_section_to_first();
     }
 
-    pub fn move_column_to_last(&mut self) {
+    pub fn move_section_to_last(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_last();
+        self.scrolling.move_section_to_last();
     }
 
-    pub fn move_column_to_index(&mut self, index: usize) {
+    pub fn move_section_to_index(&mut self, index: usize) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.move_column_to_index(index);
+        self.scrolling.move_section_to_index(index);
     }
 
     pub fn move_down(&mut self) -> bool {
@@ -1170,18 +1170,18 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.consume_or_expel_window_right(window);
     }
 
-    pub fn consume_into_column(&mut self) {
+    pub fn consume_into_section(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.consume_into_column();
+        self.scrolling.consume_into_section();
     }
 
-    pub fn expel_from_column(&mut self) {
+    pub fn expel_from_section(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.expel_from_column();
+        self.scrolling.expel_from_section();
     }
 
     pub fn split_window(&mut self, direction: Option<SplitAxis>) {
@@ -1205,11 +1205,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.swap_window_in_direction(direction);
     }
 
-    pub fn toggle_column_tabbed_display(&mut self) {
+    pub fn toggle_section_tabbed_display(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.toggle_column_tabbed_display();
+        self.scrolling.toggle_section_tabbed_display();
     }
 
     pub fn toggle_tabbed(&mut self) {
@@ -1240,18 +1240,18 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.move_tab(direction);
     }
 
-    pub fn set_column_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: ColumnDisplay) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.set_column_display(display);
+        self.scrolling.set_section_display(display);
     }
 
-    pub fn center_column(&mut self) {
+    pub fn center_section(&mut self) {
         if self.floating_is_active.get() {
             self.floating.center_window(None);
         } else {
-            self.scrolling.center_column();
+            self.scrolling.center_section();
         }
     }
 
@@ -1265,11 +1265,11 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn center_visible_columns(&mut self) {
+    pub fn center_visible_sections(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.center_visible_columns();
+        self.scrolling.center_visible_sections();
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {
@@ -1289,7 +1289,7 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_full_width();
     }
 
-    pub fn set_column_width(&mut self, change: SizeChange) {
+    pub fn set_section_width(&mut self, change: SizeChange) {
         if self.floating_is_active.get() {
             self.floating.set_main_size(self.axis(), None, change, true);
         } else {
@@ -1350,11 +1350,11 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn expand_column_to_available_width(&mut self) {
+    pub fn expand_section_to_available_width(&mut self) {
         if self.floating_is_active.get() {
             return;
         }
-        self.scrolling.expand_column_to_available_width();
+        self.scrolling.expand_section_to_available_width();
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
@@ -1374,7 +1374,7 @@ impl<W: LayoutElement> Workspace<W> {
             // need to unfullscreen into floating.
             let col = self
                 .scrolling
-                .columns()
+                .sections()
                 .find(|col| col.contains(window))
                 .unwrap();
 
@@ -1386,7 +1386,7 @@ impl<W: LayoutElement> Workspace<W> {
                     .unwrap();
                 if tile.restore_to_floating {
                     // Unfullscreen and float in one call so it has a chance to notice and request a
-                    // (0, 0) size, rather than the scrolling column size.
+                    // (0, 0) size, rather than the scrolling section size.
                     self.toggle_window_floating(Some(window));
                     return;
                 }
@@ -1446,7 +1446,7 @@ impl<W: LayoutElement> Workspace<W> {
             // in that case and not maximized), so this check works.
             if tile.window().pending_sizing_mode().is_maximized() && tile.restore_to_floating {
                 // Unmaximize and float in one call so it has a chance to notice and request a
-                // (0, 0) size, rather than the scrolling column size.
+                // (0, 0) size, rather than the scrolling section size.
                 self.toggle_window_floating(Some(window));
                 return;
             }
@@ -1475,12 +1475,12 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn toggle_maximized(&mut self, window: &W::Id) {
         let mut current = false;
 
-        // We have to check the column property in case the window is in the scrolling layout and
-        // both maximized and fullscreen. In this case, only the column knows whether it's
+        // We have to check the section property in case the window is in the scrolling layout and
+        // both maximized and fullscreen. In this case, only the section knows whether it's
         // maximized.
         //
         // In the floating layout, windows cannot be maximized.
-        if let Some(col) = self.scrolling.columns().find(|col| col.contains(window)) {
+        if let Some(col) = self.scrolling.sections().find(|col| col.contains(window)) {
             current = col.is_pending_maximized();
         }
 

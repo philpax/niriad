@@ -754,7 +754,7 @@ impl State {
         });
 
         // It might make sense to push layout changes after closed windows (since windows about to
-        // be closed will occupy the same column/tile positions as the window that moved into this
+        // be closed will occupy the same section/tile positions as the window that moved into this
         // vacated space), but also we are already pushing some layout changes in
         // WindowOpenedOrChanged above, meaning that the receiving end has to handle this case
         // anyway.

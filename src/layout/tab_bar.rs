@@ -332,7 +332,7 @@ impl TabBar {
     pub fn render_backgrounds(
         &self,
         pos: Point<f64, Logical>,
-        is_column_active: bool,
+        is_section_active: bool,
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
         if self.config.off || self.tab_rects.is_empty() {
@@ -349,7 +349,7 @@ impl TabBar {
             let tab_size = rect.size;
 
             // Tab background color.
-            let bg_color = if i == self.active_idx && is_column_active {
+            let bg_color = if i == self.active_idx && is_section_active {
                 self.config.active_color
                     .unwrap_or(niri_config::Color::new_unpremul(0.35, 0.35, 0.35, 1.))
             } else {
@@ -380,12 +380,12 @@ impl TabBar {
         renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
-        is_column_active: bool,
+        is_section_active: bool,
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
-        self.render_titles(renderer, pos, scale, is_column_active, titles, push);
-        self.render_backgrounds(pos, is_column_active, push);
+        self.render_titles(renderer, pos, scale, is_section_active, titles, push);
+        self.render_backgrounds(pos, is_section_active, push);
     }
 
     /// Renders cached title textures for each tab.
@@ -395,7 +395,7 @@ impl TabBar {
         renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
-        is_column_active: bool,
+        is_section_active: bool,
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
@@ -425,7 +425,7 @@ impl TabBar {
             }
 
             // Text color: active vs inactive, falling back to the shared text_color.
-            let text_color = if i == self.active_idx && is_column_active {
+            let text_color = if i == self.active_idx && is_section_active {
                 self.config.active_text_color.unwrap_or(self.config.text_color)
             } else {
                 self.config.inactive_text_color.unwrap_or(self.config.text_color)

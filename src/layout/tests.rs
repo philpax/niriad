@@ -227,7 +227,7 @@ impl LayoutElement for TestWindow {
 
     fn send_pending_configure(&mut self) {}
 
-    fn set_active_in_column(&mut self, _active: bool) {}
+    fn set_active_in_section(&mut self, _active: bool) {}
 
     fn set_floating(&mut self, _floating: bool) {}
 
@@ -410,7 +410,7 @@ fn arbitrary_node_layout() -> impl Strategy<Value = super::tile_node::Layout> {
     ]
 }
 
-fn arbitrary_column_display() -> impl Strategy<Value = ColumnDisplay> {
+fn arbitrary_section_display() -> impl Strategy<Value = ColumnDisplay> {
     prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)]
 }
 
@@ -538,7 +538,7 @@ enum Op {
     ToggleColumnTabbedDisplay,
     ToggleTabbed,
     MoveTab(#[proptest(strategy = "arbitrary_tab_direction()")] niri_ipc::TabDirection),
-    SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
+    SetColumnDisplay(#[proptest(strategy = "arbitrary_section_display()")] ColumnDisplay),
     SetLayout(#[proptest(strategy = "arbitrary_node_layout()")] super::tile_node::Layout),
     CenterColumn,
     CenterWindow {
@@ -1113,11 +1113,11 @@ impl Op {
             }
             Op::FocusColumnLeft => layout.focus_left(),
             Op::FocusColumnRight => layout.focus_right(),
-            Op::FocusColumnFirst => layout.focus_column_first(),
-            Op::FocusColumnLast => layout.focus_column_last(),
-            Op::FocusColumnRightOrFirst => layout.focus_column_right_or_first(),
-            Op::FocusColumnLeftOrLast => layout.focus_column_left_or_last(),
-            Op::FocusColumn(index) => layout.focus_column(index),
+            Op::FocusColumnFirst => layout.focus_section_first(),
+            Op::FocusColumnLast => layout.focus_section_last(),
+            Op::FocusColumnRightOrFirst => layout.focus_section_right_or_first(),
+            Op::FocusColumnLeftOrLast => layout.focus_section_left_or_last(),
+            Op::FocusColumn(index) => layout.focus_section(index),
             Op::FocusWindowOrMonitorUp(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
@@ -1140,7 +1140,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_column_left_or_output(&output);
+                layout.focus_section_left_or_output(&output);
             }
             Op::FocusColumnOrMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1148,7 +1148,7 @@ impl Op {
                     return;
                 };
 
-                layout.focus_column_right_or_output(&output);
+                layout.focus_section_right_or_output(&output);
             }
             Op::FocusWindowDown => layout.focus_down(),
             Op::FocusWindowUp => layout.focus_up(),
@@ -1159,22 +1159,22 @@ impl Op {
             Op::FocusWindowOrWorkspaceDown => layout.focus_window_or_workspace_down(),
             Op::FocusWindowOrWorkspaceUp => layout.focus_window_or_workspace_up(),
             Op::FocusWindow(id) => layout.activate_window(&id),
-            Op::FocusWindowInColumn(index) => layout.focus_window_in_column(index),
+            Op::FocusWindowInColumn(index) => layout.focus_window_in_section(index),
             Op::FocusWindowTop => layout.focus_window_top(),
             Op::FocusWindowBottom => layout.focus_window_bottom(),
             Op::FocusWindowDownOrTop => layout.focus_window_down_or_top(),
             Op::FocusWindowUpOrBottom => layout.focus_window_up_or_bottom(),
             Op::MoveColumnLeft => layout.move_left(),
             Op::MoveColumnRight => layout.move_right(),
-            Op::MoveColumnToFirst => layout.move_column_to_first(),
-            Op::MoveColumnToLast => layout.move_column_to_last(),
+            Op::MoveColumnToFirst => layout.move_section_to_first(),
+            Op::MoveColumnToLast => layout.move_section_to_last(),
             Op::MoveColumnLeftOrToMonitorLeft(id) => {
                 let name = format!("output{id}");
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
 
-                layout.move_column_left_or_to_output(&output);
+                layout.move_section_left_or_to_output(&output);
             }
             Op::MoveColumnRightOrToMonitorRight(id) => {
                 let name = format!("output{id}");
@@ -1182,9 +1182,9 @@ impl Op {
                     return;
                 };
 
-                layout.move_column_right_or_to_output(&output);
+                layout.move_section_right_or_to_output(&output);
             }
-            Op::MoveColumnToIndex(index) => layout.move_column_to_index(index),
+            Op::MoveColumnToIndex(index) => layout.move_section_to_index(index),
             Op::MoveWindowDown => layout.move_down(),
             Op::MoveWindowUp => layout.move_up(),
             Op::MoveWindowDownOrToWorkspaceDown => layout.move_down_or_to_workspace_down(),
@@ -1197,8 +1197,8 @@ impl Op {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.consume_or_expel_window_right(id.as_ref());
             }
-            Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
-            Op::ExpelWindowFromColumn => layout.expel_from_column(),
+            Op::ConsumeWindowIntoColumn => layout.consume_into_section(),
+            Op::ExpelWindowFromColumn => layout.expel_from_section(),
             Op::SplitWindow(direction) => {
                 let dir = Some(match direction {
                     niri_ipc::SplitDirection::Main => SplitAxis::Main,
@@ -1210,7 +1210,7 @@ impl Op {
                 layout.consume_window_into_split(None, None);
             }
             Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
-            Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
+            Op::ToggleColumnTabbedDisplay => layout.toggle_section_tabbed_display(),
             Op::ToggleTabbed => layout.toggle_tabbed(),
             Op::MoveTab(direction) => {
                 let dir = match direction {
@@ -1219,14 +1219,14 @@ impl Op {
                 };
                 layout.move_tab(dir);
             }
-            Op::SetColumnDisplay(display) => layout.set_column_display(display),
+            Op::SetColumnDisplay(display) => layout.set_section_display(display),
             Op::SetLayout(node_layout) => layout.set_active_layout(node_layout),
-            Op::CenterColumn => layout.center_column(),
+            Op::CenterColumn => layout.center_section(),
             Op::CenterWindow { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.center_window(id.as_ref());
             }
-            Op::CenterVisibleColumns => layout.center_visible_columns(),
+            Op::CenterVisibleColumns => layout.center_visible_sections(),
             Op::FocusWorkspaceDown => layout.switch_workspace_down(),
             Op::FocusWorkspaceUp => layout.switch_workspace_up(),
             Op::FocusWorkspace(idx) => layout.switch_workspace(idx),
@@ -1243,9 +1243,9 @@ impl Op {
                 let window_id = window_id.filter(|id| layout.has_window(id));
                 layout.move_to_workspace(window_id.as_ref(), workspace_idx, ActivateWindow::Smart);
             }
-            Op::MoveColumnToWorkspaceDown(focus) => layout.move_column_to_workspace_down(focus),
-            Op::MoveColumnToWorkspaceUp(focus) => layout.move_column_to_workspace_up(focus),
-            Op::MoveColumnToWorkspace(idx, focus) => layout.move_column_to_workspace(idx, focus),
+            Op::MoveColumnToWorkspaceDown(focus) => layout.move_section_to_workspace_down(focus),
+            Op::MoveColumnToWorkspaceUp(focus) => layout.move_section_to_workspace_up(focus),
+            Op::MoveColumnToWorkspace(idx, focus) => layout.move_section_to_workspace(idx, focus),
             Op::MoveWindowToOutput {
                 window_id,
                 output_id: id,
@@ -1276,7 +1276,7 @@ impl Op {
                     return;
                 };
 
-                layout.move_column_to_output(&output, target_ws_idx, activate);
+                layout.move_section_to_output(&output, target_ws_idx, activate);
             }
             Op::MoveWorkspaceDown => layout.move_workspace_down(),
             Op::MoveWorkspaceUp => layout.move_workspace_up(),
@@ -1381,7 +1381,7 @@ impl Op {
                 }
                 layout.toggle_maximized(&id);
             }
-            Op::SetColumnWidth(change) => layout.set_column_width(change),
+            Op::SetColumnWidth(change) => layout.set_section_width(change),
             Op::SetWindowWidth { id, change } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.set_window_width(id.as_ref(), change);
@@ -1394,7 +1394,7 @@ impl Op {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.reset_window_height(id.as_ref());
             }
-            Op::ExpandColumnToAvailableWidth => layout.expand_column_to_available_width(),
+            Op::ExpandColumnToAvailableWidth => layout.expand_section_to_available_width(),
             Op::ToggleWindowFloating { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_floating(id.as_ref());
@@ -1703,7 +1703,7 @@ fn check_ops_with_options(
 }
 
 #[test]
-fn vertical_main_axis_places_columns_vertically() {
+fn vertical_main_axis_places_sections_vertically() {
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;
 
@@ -1854,7 +1854,7 @@ fn vertical_main_axis_overview_places_workspaces_horizontally() {
 }
 
 #[test]
-fn vertical_main_axis_set_column_width_changes_tile_height() {
+fn vertical_main_axis_set_section_width_changes_tile_height() {
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;
 
@@ -1985,7 +1985,7 @@ fn vertical_main_axis_interactive_move_tracks_pointer_along_y() {
 }
 
 #[test]
-fn vertical_main_axis_floating_move_column_right_moves_window_down() {
+fn vertical_main_axis_floating_move_section_right_moves_window_down() {
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;
 
@@ -2069,7 +2069,7 @@ fn vertical_main_axis_floating_move_window_down_moves_window_right() {
 }
 
 #[test]
-fn vertical_main_axis_floating_set_column_width_changes_window_height() {
+fn vertical_main_axis_floating_set_section_width_changes_window_height() {
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;
 
@@ -2098,7 +2098,7 @@ fn vertical_main_axis_floating_set_column_width_changes_window_height() {
     assert_eq!(before.w, after.w);
     assert!(
         after.h > before.h,
-        "expected floating column width to grow height in vertical mode: {before:?} -> {after:?}"
+        "expected floating section width to grow height in vertical mode: {before:?} -> {after:?}"
     );
 }
 
@@ -2814,7 +2814,7 @@ fn open_right_of_on_different_workspace() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[0].scrolling().active_column_idx(),
+        mon.workspaces[0].scrolling().active_section_idx(),
         1,
         "the new window must become active"
     );
@@ -2857,7 +2857,7 @@ fn open_right_of_on_different_workspace_ewaf() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[1].scrolling().active_column_idx(),
+        mon.workspaces[1].scrolling().active_section_idx(),
         1,
         "the new window must become active"
     );
@@ -2973,7 +2973,7 @@ fn set_window_height_recomputes_to_auto() {
 }
 
 #[test]
-fn one_window_in_column_becomes_weight_1() {
+fn one_window_in_section_becomes_weight_1() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -3845,7 +3845,7 @@ fn removing_window_above_preserves_focused_window() {
 }
 
 #[test]
-fn preset_column_width_fixed_correct_with_border() {
+fn preset_section_width_fixed_correct_with_border() {
     let ops = [
         Op::AddOutput(0),
         Op::AddWindow {
@@ -3892,7 +3892,7 @@ fn preset_column_width_fixed_correct_with_border() {
 }
 
 #[test]
-fn preset_column_width_reset_after_set_width() {
+fn preset_section_width_reset_after_set_width() {
     let ops = [
         Op::AddOutput(0),
         Op::AddWindow {
@@ -3919,7 +3919,7 @@ fn preset_column_width_reset_after_set_width() {
 }
 
 #[test]
-fn move_column_to_workspace_unfocused_with_multiple_monitors() {
+fn move_section_to_workspace_unfocused_with_multiple_monitors() {
     let ops = [
         Op::AddOutput(1),
         Op::SetWorkspaceName {
@@ -3982,7 +3982,7 @@ fn move_column_to_workspace_unfocused_with_multiple_monitors() {
 }
 
 #[test]
-fn move_column_to_workspace_down_focus_false_on_floating_window() {
+fn move_section_to_workspace_down_focus_false_on_floating_window() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -4005,7 +4005,7 @@ fn move_column_to_workspace_down_focus_false_on_floating_window() {
 }
 
 #[test]
-fn move_column_to_workspace_focus_false_on_floating_window() {
+fn move_section_to_workspace_focus_false_on_floating_window() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -4092,7 +4092,7 @@ fn unmaximize_during_fullscreen_does_not_float() {
 }
 
 #[test]
-fn move_column_to_workspace_maximize_and_fullscreen() {
+fn move_section_to_workspace_maximize_and_fullscreen() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -4131,7 +4131,7 @@ fn move_window_to_workspace_maximize_and_fullscreen() {
     //
     // FIXME: it currently doesn't because windows themselves can only be either fullscreen or
     // maximized. So when a window is fullscreen, whether it is also maximized or not is stored in
-    // the column. MoveWindowToWorkspace removes the window from the column and this information is
+    // the section. MoveWindowToWorkspace removes the window from the section and this information is
     // forgotten.
     assert_eq!(win.pending_sizing_mode(), SizingMode::Normal);
 }
@@ -4177,7 +4177,7 @@ fn tabs_with_different_border() {
 }
 
 #[test]
-fn expel_pending_left_from_fullscreen_tabbed_column() {
+fn expel_pending_left_from_fullscreen_tabbed_section() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -4192,12 +4192,12 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
             params: TestWindowParams::new(2),
         },
         Op::ConsumeOrExpelWindowLeft { id: Some(2) },
-        // 2 is consumed into a fullscreen column, fullscreen is requested but not applied.
+        // 2 is consumed into a fullscreen section, fullscreen is requested but not applied.
         //
         // Now, get it back out while keeping it focused.
         //
-        // Importantly, we expel it *left*, which results in adding a new column with the exact
-        // same active_column_idx.
+        // Importantly, we expel it *left*, which results in adding a new section with the exact
+        // same active_section_idx.
         Op::FocusWindow(2),
         Op::ConsumeOrExpelWindowLeft { id: None },
     ];
@@ -4492,7 +4492,7 @@ fn split_window_creates_side_by_side_tiles() {
         Op::AddWindow { params: TestWindowParams::new(2) },
     ]);
 
-    // Both windows should be in the same column.
+    // Both windows should be in the same section.
     assert_eq!(tile_count(&layout), 2);
 
     // The two windows should be side by side (different x positions).
@@ -4503,20 +4503,20 @@ fn split_window_creates_side_by_side_tiles() {
 
 #[test]
 fn consume_window_into_split_places_side_by_side() {
-    // ConsumeWindowIntoSplit should pull a window from an adjacent column and place it
+    // ConsumeWindowIntoSplit should pull a window from an adjacent section and place it
     // side by side with the focused window.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
         Op::AddWindow { params: TestWindowParams::new(2) },
-        // Now we have two columns, each with one window.
+        // Now we have two sections, each with one window.
         Op::ConsumeWindowIntoSplit,
     ]);
 
     // Both windows should still be present.
     assert_eq!(tile_count(&layout), 2);
 
-    // They should be side by side within one column.
+    // They should be side by side within one section.
     let (pos1, _) = window_geo(&layout, 1).unwrap();
     let (pos2, _) = window_geo(&layout, 2).unwrap();
     assert_ne!(pos1.x, pos2.x, "consumed window should be side by side");
@@ -4524,7 +4524,7 @@ fn consume_window_into_split_places_side_by_side() {
 
 #[test]
 fn toggle_tabbed_hides_inactive_tiles() {
-    // Build a real two-window column (cross split), then tab it. ToggleTabbed should show only the
+    // Build a real two-window section (cross split), then tab it. ToggleTabbed should show only the
     // active tile and hide the rest.
     let layout = check_ops([
         Op::AddOutput(1),
@@ -4551,7 +4551,7 @@ fn toggle_tabbed_hides_inactive_tiles() {
 
 #[test]
 fn spatial_focus_resolves_screen_direction_per_orientation() {
-    // On a landscape monitor the strip runs horizontally, so screen-left moves between columns.
+    // On a landscape monitor the strip runs horizontally, so screen-left moves between sections.
     let mut h = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -4571,8 +4571,8 @@ fn spatial_focus_resolves_screen_direction_per_orientation() {
     assert_eq!(window_order(&h), vec![2, 1], "screen-left move reorders the strip");
 
     // On a portrait monitor the strip runs vertically: screen-UP walks the strip, while
-    // screen-left/right stay within a column (cross axis). This is the case that was confusing with
-    // the old logical column/window binds.
+    // screen-left/right stay within a section (cross axis). This is the case that was confusing with
+    // the old logical section/window binds.
     let mut options = Options::default();
     options.layout.main_axis = MainAxis::Vertical;
     let mut v = check_ops_with_options(
@@ -4599,8 +4599,8 @@ fn spatial_focus_resolves_screen_direction_per_orientation() {
 }
 
 #[test]
-fn toggle_split_layout_flips_row_and_column() {
-    // A side-by-side row [1 | 2]; toggle split → a vertical column [1 / 2]; toggle again → row.
+fn toggle_split_layout_flips_row_and_section() {
+    // A side-by-side row [1 | 2]; toggle split → a vertical section [1 / 2]; toggle again → row.
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -4621,7 +4621,7 @@ fn toggle_split_layout_flips_row_and_column() {
     );
     let (p1, _) = window_geo(&layout, 1).unwrap();
     let (p2, _) = window_geo(&layout, 2).unwrap();
-    assert_eq!(p1.x, p2.x, "after toggle: a column (shared x)");
+    assert_eq!(p1.x, p2.x, "after toggle: a section (shared x)");
     assert_ne!(p1.y, p2.y, "after toggle: stacked (different y)");
 
     layout.toggle_split_layout();
@@ -4743,10 +4743,10 @@ fn simplify_merges_same_family_splits_only() {
         n.leaves().map(|(t, _)| *t.window().id()).collect()
     };
 
-    // V[ 1, V[2,3], 4 ] is a column directly containing a column → flatten to V[1,2,3,4].
+    // V[ 1, V[2,3], 4 ] is a section directly containing a section → flatten to V[1,2,3,4].
     let mut root = node(L::SplitV, vec![leaf(1), node(L::SplitV, vec![leaf(2), leaf(3)]), leaf(4)]);
     root.simplify();
-    assert_eq!(root.child_count(), 4, "same-family column should merge");
+    assert_eq!(root.child_count(), 4, "same-family section should merge");
     assert_eq!(ids(&root), vec![1, 2, 3, 4], "order preserved");
     root.verify_structure();
 
@@ -4766,9 +4766,9 @@ fn simplify_merges_same_family_splits_only() {
 }
 
 #[test]
-fn born_tabbed_column_untabs_to_a_vertical_column() {
-    // A column born tabbed (via a default-column-display rule) must, when un-tabbed, collapse to a
-    // vertical column (windows stacked, different y) — not a horizontal row. Regression for the
+fn born_tabbed_section_untabs_to_a_vertical_section() {
+    // A section born tabbed (via a default-column-display rule) must, when un-tabbed, collapse to a
+    // vertical section (windows stacked, different y) — not a horizontal row. Regression for the
     // prev_split default of a freshly-tabbed node.
     let mut tabbed_rule = TestWindowParams::new(1);
     tabbed_rule.rules = Some(ResolvedWindowRules {
@@ -4780,7 +4780,7 @@ fn born_tabbed_column_untabs_to_a_vertical_column() {
         Op::AddOutput(1),
         Op::AddWindow { params: tabbed_rule },
         Op::AddWindow { params: TestWindowParams::new(2) },
-        // Pull window 2 into the born-tabbed column (it becomes a second tab).
+        // Pull window 2 into the born-tabbed section (it becomes a second tab).
         Op::ConsumeOrExpelWindowLeft { id: None },
         // Now turn tabbing off.
         Op::SetColumnDisplay(niri_ipc::ColumnDisplay::Normal),
@@ -4792,8 +4792,8 @@ fn born_tabbed_column_untabs_to_a_vertical_column() {
     assert_eq!(tile_count(&layout), 2);
     let (p1, _) = window_geo(&layout, 1).unwrap();
     let (p2, _) = window_geo(&layout, 2).unwrap();
-    assert_eq!(p1.x, p2.x, "un-tabbed born-tabbed column must be vertical (shared x)");
-    assert_ne!(p1.y, p2.y, "un-tabbed born-tabbed column must stack windows (different y)");
+    assert_eq!(p1.x, p2.x, "un-tabbed born-tabbed section must be vertical (shared x)");
+    assert_ne!(p1.y, p2.y, "un-tabbed born-tabbed section must stack windows (different y)");
 }
 
 #[test]
@@ -4818,7 +4818,7 @@ fn toggle_tabbed_then_untoggle_restores_split() {
 
 #[test]
 fn toggle_tabbed_on_nested_row_tabs_only_the_row() {
-    // Column layout: window 1 on top, a side-by-side row [2 | 3] below. Tabbing while focused
+    // Section layout: window 1 on top, a side-by-side row [2 | 3] below. Tabbing while focused
     // inside the row should tab ONLY the row (the active leaf's parent), leaving window 1 in place
     // — not collapse all three windows into one tabbed container.
     let layout = check_ops([
@@ -4933,7 +4933,7 @@ fn split_then_focus_within_split() {
         Op::AddWindow { params: TestWindowParams::new(3) },
     ]);
 
-    // Three windows, all in the same column split along the main axis.
+    // Three windows, all in the same section split along the main axis.
     assert_eq!(tile_count(&layout), 3);
 
     // Focus navigation should not panic.
@@ -4968,8 +4968,8 @@ fn close_window_in_split_collapses() {
 }
 
 #[test]
-fn close_all_windows_in_split_removes_column() {
-    // Closing all windows in a split should remove the column.
+fn close_all_windows_in_split_removes_section() {
+    // Closing all windows in a split should remove the section.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -4984,9 +4984,9 @@ fn close_all_windows_in_split_removes_column() {
 }
 
 #[test]
-fn split_in_fullscreen_column_does_not_violate_invariant() {
-    // SplitWindow in a fullscreen column should not create a split
-    // (falls back to normal insertion when the column is fullscreen).
+fn split_in_fullscreen_section_does_not_violate_invariant() {
+    // SplitWindow in a fullscreen section should not create a split
+    // (falls back to normal insertion when the section is fullscreen).
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -4997,7 +4997,7 @@ fn split_in_fullscreen_column_does_not_violate_invariant() {
     ]);
 
     // The split must have been suppressed: both windows exist, but window 1 (fullscreen) is not
-    // shrunk into a side-by-side split — it lands in its own column, wider than the normally-tiled
+    // shrunk into a side-by-side split — it lands in its own section, wider than the normally-tiled
     // window 2. check_ops also verifies the fullscreen invariant.
     assert_eq!(tile_count(&layout), 2);
     let (_, size1) = window_geo(&layout, 1).unwrap();
@@ -5012,14 +5012,14 @@ fn split_in_fullscreen_column_does_not_violate_invariant() {
 }
 
 #[test]
-fn consume_into_split_with_three_columns() {
-    // ConsumeWindowIntoSplit with three columns should work correctly.
+fn consume_into_split_with_three_sections() {
+    // ConsumeWindowIntoSplit with three sections should work correctly.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
         Op::AddWindow { params: TestWindowParams::new(2) },
         Op::AddWindow { params: TestWindowParams::new(3) },
-        // Three columns, each with one window.
+        // Three sections, each with one window.
         Op::ConsumeWindowIntoSplit,
     ]);
 
@@ -5071,25 +5071,25 @@ fn toggle_tabbed_on_main_split() {
 }
 
 #[test]
-fn fullscreen_column_does_not_trip_tile_data_check() {
+fn fullscreen_section_does_not_trip_tile_data_check() {
     // Fullscreen/maximized layout sizes tiles directly and bypasses the flat per-leaf `data`
-    // bookkeeping, so a fullscreen column's cached `data.size` legitimately differs from the
+    // bookkeeping, so a fullscreen section's cached `data.size` legitimately differs from the
     // (fullscreen) tile size. check_ops/verify_invariants must tolerate that.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
         Op::SetFullscreenWindow { window: 1, is_fullscreen: true },
         Op::Communicate(1),
-        // A tabbed fullscreen column is also valid and must not trip the check.
+        // A tabbed fullscreen section is also valid and must not trip the check.
         Op::SetColumnDisplay(niri_ipc::ColumnDisplay::Tabbed),
     ]);
     assert_eq!(tile_count(&layout), 1);
 }
 
 #[test]
-fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
-    // A fullscreen tabbed column (allowed) toggled back to normal must NOT stay fullscreen, since
-    // a non-tabbed multi-tile column can't be fullscreen. check_ops verifies this invariant.
+fn untoggling_tabbed_clears_fullscreen_on_multi_tile_section() {
+    // A fullscreen tabbed section (allowed) toggled back to normal must NOT stay fullscreen, since
+    // a non-tabbed multi-tile section can't be fullscreen. check_ops verifies this invariant.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: TestWindowParams::new(1) },
@@ -5101,13 +5101,13 @@ fn untoggling_tabbed_clears_fullscreen_on_multi_tile_column() {
         Op::ToggleTabbed,
     ]);
 
-    // Two windows remain and the column is back to a normal (non-fullscreen) split.
+    // Two windows remain and the section is back to a normal (non-fullscreen) split.
     assert_eq!(tile_count(&layout), 2);
 }
 
 fn wide_window(id: usize) -> TestWindowParams {
     let mut p = TestWindowParams::new(id);
-    // Give a real minimum width so a side-by-side row fills the column (the default test window
+    // Give a real minimum width so a side-by-side row fills the section (the default test window
     // shrinks to a few pixels, leaving no testable interior).
     p.min_max_size = (Size::from((300, 200)), Size::from((0, 0)));
     p
@@ -5233,7 +5233,7 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
     );
 
     // The top quarter (over either tile) inserts above the whole row (leaf 0), not into it. The
-    // zone is generous — a row fills the column height, so above/below must be easy to hit.
+    // zone is generous — a row fills the section height, so above/below must be easy to hit.
     assert!(
         matches!(ip(482., 100.), InsertPosition::InColumn(0, 0)),
         "top region of the row should insert above the whole row, got {:?}",
@@ -5254,7 +5254,7 @@ fn drag_into_tile_centre_stacks_it_vertically() {
 
     // A horizontal row [1 | 2]. The interior of a tile is split into thirds across x: the left and
     // right thirds place the new window side-by-side (Main); the centre third stacks the tile
-    // top/bottom (Cross), converting that single window into a column.
+    // top/bottom (Cross), converting that single window into a section.
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5301,7 +5301,7 @@ fn drag_into_tile_centre_creates_a_vertical_stack() {
     let [p1, p2, p3] = drag_window3_onto_row(166., 360.);
     assert_eq!(
         p1.x, p3.x,
-        "window 1 and the dropped window share a column (stacked)"
+        "window 1 and the dropped window share a section (stacked)"
     );
     assert_ne!(
         p1.y, p3.y,
@@ -5413,9 +5413,9 @@ fn drag_beside_a_nested_stack_targets_the_whole_stack() {
 
 #[test]
 fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
-    // End-to-end: Main[1, Cross[2,3]] in column 0, window 4 alone in column 1. Dragging 4 onto the
+    // End-to-end: Main[1, Cross[2,3]] in section 0, window 4 alone in section 1. Dragging 4 onto the
     // right third of the stack yields Main[1, Cross[2,3], 4]: windows 2 and 3 stay stacked (shared
-    // x), and window 4 sits to their right, spanning the full column height.
+    // x), and window 4 sits to their right, spanning the full section height.
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5468,13 +5468,13 @@ fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
     assert!(p1.x < p2.x, "window 1 stays to the left of the stack");
     assert!(
         s4.h > s2.h + 1.,
-        "window 4 spans the full column height, taller than a stacked tile (s4={s4:?}, s2={s2:?})"
+        "window 4 spans the full section height, taller than a stacked tile (s4={s4:?}, s2={s2:?})"
     );
 }
 
 #[test]
 fn vertical_insert_into_a_row_stacks_above_below_not_beside() {
-    // Column 0 is a horizontal row (Main split of windows 1 and 2). Moving window 3 into it
+    // Section 0 is a horizontal row (Main split of windows 1 and 2). Moving window 3 into it
     // vertically (consume) must wrap the row in a Cross split so window 3 becomes a new row, not a
     // third cell beside the others.
     let layout = check_ops([
@@ -5504,7 +5504,7 @@ fn vertical_insert_into_a_row_stacks_above_below_not_beside() {
 #[test]
 fn split_nests_at_target_leaf_not_root() {
     // Repeatedly splitting the active window builds a genuinely nested tree rather than appending
-    // at the column root. Final shape: Cross[1, Main[2, Cross[3, 4]]] (window 4 stacked under 3,
+    // at the section root. Final shape: Cross[1, Main[2, Cross[3, 4]]] (window 4 stacked under 3,
     // that pair beside 2, and all of it under 1).
     let layout = check_ops([
         Op::AddOutput(1),
@@ -5625,13 +5625,13 @@ fn directional_swap_moves_subtree_across_nested_split() {
 
 #[test]
 fn tabbed_tab_containing_split_shows_all_its_leaves() {
-    // Build a column whose root, once tabbed, has a tab that is itself a split:
-    //   Main[1, Cross[2, 3]]  -- toggle column display -->  Tabbed[1, Cross[2, 3]]
+    // Build a section whose root, once tabbed, has a tab that is itself a split:
+    //   Main[1, Cross[2, 3]]  -- toggle section display -->  Tabbed[1, Cross[2, 3]]
     // The active tab (containing windows 2 and 3) must show BOTH of its windows, while the other
     // tab (window 1) stays hidden. A naive "only the single active leaf is visible" would wrongly
     // hide window 2.
     //
-    // We use ToggleColumnTabbedDisplay (Mod+W) here, which always tabs the column root regardless
+    // We use ToggleColumnTabbedDisplay (Mod+W) here, which always tabs the section root regardless
     // of focus depth — unlike ToggleTabbed (Mod+Ctrl+W), which tabs the focused window's immediate
     // parent.
     let layout = check_ops([

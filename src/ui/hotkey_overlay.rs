@@ -315,7 +315,7 @@ fn render(
     let padding: i32 = to_physical_precise_round(scale, PADDING);
     let line_interval: i32 = to_physical_precise_round(scale, LINE_INTERVAL);
 
-    // FIXME: if it doesn't fit, try splitting in two columns or something.
+    // FIXME: if it doesn't fit, try splitting in two sections or something.
     // let mut target_size = output_size;
     // target_size.w -= margin * 2;
     // target_size.h -= margin * 2;
@@ -460,18 +460,18 @@ fn action_name(action: &Action) -> String {
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
-        Action::FocusColumnLeft => String::from("Focus Column to the Left"),
-        Action::FocusColumnRight => String::from("Focus Column to the Right"),
-        Action::MoveColumnLeft => String::from("Move Column Left"),
-        Action::MoveColumnRight => String::from("Move Column Right"),
+        Action::FocusColumnLeft => String::from("Focus Section to the Left"),
+        Action::FocusColumnRight => String::from("Focus Section to the Right"),
+        Action::MoveColumnLeft => String::from("Move Section Left"),
+        Action::MoveColumnRight => String::from("Move Section Right"),
         Action::FocusWorkspaceDown => String::from("Switch Workspace Down"),
         Action::FocusWorkspaceUp => String::from("Switch Workspace Up"),
-        Action::MoveColumnToWorkspaceDown(_) => String::from("Move Column to Workspace Down"),
-        Action::MoveColumnToWorkspaceUp(_) => String::from("Move Column to Workspace Up"),
+        Action::MoveColumnToWorkspaceDown(_) => String::from("Move Section to Workspace Down"),
+        Action::MoveColumnToWorkspaceUp(_) => String::from("Move Section to Workspace Up"),
         Action::MoveWindowToWorkspaceDown(_) => String::from("Move Window to Workspace Down"),
         Action::MoveWindowToWorkspaceUp(_) => String::from("Move Window to Workspace Up"),
-        Action::SwitchPresetColumnWidth => String::from("Switch Preset Column Widths"),
-        Action::MaximizeColumn => String::from("Maximize Column"),
+        Action::SwitchPresetColumnWidth => String::from("Switch Preset Section Widths"),
+        Action::MaximizeColumn => String::from("Maximize Section"),
         Action::ConsumeOrExpelWindowLeft => String::from("Consume or Expel Window Left"),
         Action::ConsumeOrExpelWindowRight => String::from("Consume or Expel Window Right"),
         Action::ToggleWindowFloating => String::from("Move Window Between Floating and Tiling"),

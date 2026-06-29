@@ -9,7 +9,7 @@ pub struct InputAxisPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewWheelTarget {
-    Column,
+    Section,
     Workspace,
 }
 
@@ -44,10 +44,10 @@ impl InputAxisPolicy {
 
     /// Maps a layout-oriented action to the physical axis it should act on for the screenshot UI.
     ///
-    /// In layout terms, column/window width actions and column moves act along the layout's main
+    /// In layout terms, section/window width actions and section moves act along the layout's main
     /// axis, and window-height actions and window moves act along the cross axis. The screenshot
     /// UI works in physical (X/Y) coordinates regardless of layout, so when the layout is vertical
-    /// we need to swap the two: actions the user thinks of as "column/main-axis" should affect the
+    /// we need to swap the two: actions the user thinks of as "section/main-axis" should affect the
     /// selection vertically, and "window/cross-axis" actions should affect it horizontally.
     pub fn screenshot_main_axis(self) -> PhysicalAxis {
         if self.is_vertical() {
@@ -75,14 +75,14 @@ impl InputAxisPolicy {
                 Some(if self.is_vertical() {
                     OverviewWheelTarget::Workspace
                 } else {
-                    OverviewWheelTarget::Column
+                    OverviewWheelTarget::Section
                 })
             } else {
                 None
             }
         } else if modifiers.is_empty() {
             Some(if self.is_vertical() {
-                OverviewWheelTarget::Column
+                OverviewWheelTarget::Section
             } else {
                 OverviewWheelTarget::Workspace
             })
@@ -90,7 +90,7 @@ impl InputAxisPolicy {
             Some(if self.is_vertical() {
                 OverviewWheelTarget::Workspace
             } else {
-                OverviewWheelTarget::Column
+                OverviewWheelTarget::Section
             })
         } else {
             None
@@ -142,7 +142,7 @@ mod tests {
 
         assert_eq!(
             horizontal.overview_wheel_target(true, Modifiers::empty()),
-            Some(OverviewWheelTarget::Column)
+            Some(OverviewWheelTarget::Section)
         );
         assert_eq!(
             vertical.overview_wheel_target(true, Modifiers::empty()),
@@ -155,12 +155,12 @@ mod tests {
         );
         assert_eq!(
             horizontal.overview_wheel_target(false, Modifiers::SHIFT),
-            Some(OverviewWheelTarget::Column)
+            Some(OverviewWheelTarget::Section)
         );
 
         assert_eq!(
             vertical.overview_wheel_target(false, Modifiers::empty()),
-            Some(OverviewWheelTarget::Column)
+            Some(OverviewWheelTarget::Section)
         );
         assert_eq!(
             vertical.overview_wheel_target(false, Modifiers::SHIFT),

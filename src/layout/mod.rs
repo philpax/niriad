@@ -43,7 +43,7 @@ use niri_config::{
     WorkspaceReference,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
-use scrolling::{Column, ColumnWidth};
+use scrolling::{Section, SectionWidth};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -250,7 +250,7 @@ pub trait LayoutElement {
     fn output_leave(&self, output: &Output);
     fn set_offscreen_data(&self, data: Option<OffscreenData>);
     fn set_activated(&mut self, active: bool);
-    fn set_active_in_column(&mut self, active: bool);
+    fn set_active_in_section(&mut self, active: bool);
     fn set_floating(&mut self, floating: bool);
     fn set_bounds(&self, bounds: Size<i32, Logical>);
     fn is_ignoring_opacity_window_rule(&self) -> bool;
@@ -436,9 +436,9 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) output: Output,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
-    /// Window column width.
-    pub(self) width: ColumnWidth,
-    /// Whether the window column was full-width.
+    /// Window section width.
+    pub(self) width: SectionWidth,
+    /// Whether the window section was full-width.
     pub(self) is_full_width: bool,
     /// Whether the window targets the floating layout.
     pub(self) is_floating: bool,
@@ -502,9 +502,9 @@ pub enum ConfigureIntent {
 /// Tile that was just removed from the layout.
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
-    /// Width of the column the tile was in.
-    width: ColumnWidth,
-    /// Whether the column the tile was in was full-width.
+    /// Width of the section the tile was in.
+    width: SectionWidth,
+    /// Whether the section the tile was in was full-width.
     is_full_width: bool,
     /// Whether the tile was floating.
     is_floating: bool,
@@ -916,11 +916,11 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    pub fn add_column_by_idx(
+    pub fn add_section_by_idx(
         &mut self,
         monitor_idx: usize,
         workspace_idx: usize,
-        column: Column<W>,
+        section: Section<W>,
         activate: bool,
     ) {
         let MonitorSet::Normal {
@@ -932,7 +932,7 @@ impl<W: LayoutElement> Layout<W> {
             panic!()
         };
 
-        monitors[monitor_idx].add_column(workspace_idx, column, activate);
+        monitors[monitor_idx].add_section(workspace_idx, section, activate);
 
         if activate {
             *active_monitor_idx = monitor_idx;
@@ -982,7 +982,7 @@ impl<W: LayoutElement> Layout<W> {
                             mon_idx,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                section_idx: None,
                             },
                         )
                     }
@@ -1820,47 +1820,47 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_right();
     }
 
-    pub fn move_column_to_first(&mut self) {
+    pub fn move_section_to_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_first();
+        workspace.move_section_to_first();
     }
 
-    pub fn move_column_to_last(&mut self) {
+    pub fn move_section_to_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_last();
+        workspace.move_section_to_last();
     }
 
-    pub fn move_column_left_or_to_output(&mut self, output: &Output) -> bool {
+    pub fn move_section_left_or_to_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.move_left() {
                 return false;
             }
         }
 
-        self.move_column_to_output(output, None, true);
+        self.move_section_to_output(output, None, true);
         true
     }
 
-    pub fn move_column_right_or_to_output(&mut self, output: &Output) -> bool {
+    pub fn move_section_right_or_to_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.move_right() {
                 return false;
             }
         }
 
-        self.move_column_to_output(output, None, true);
+        self.move_section_to_output(output, None, true);
         true
     }
 
-    pub fn move_column_to_index(&mut self, index: usize) {
+    pub fn move_section_to_index(&mut self, index: usize) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_index(index);
+        workspace.move_section_to_index(index);
     }
 
     pub fn move_down(&mut self) {
@@ -2022,39 +2022,39 @@ impl<W: LayoutElement> Layout<W> {
         workspace.focus_right();
     }
 
-    pub fn focus_column_first(&mut self) {
+    pub fn focus_section_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_first();
+        workspace.focus_section_first();
     }
 
-    pub fn focus_column_last(&mut self) {
+    pub fn focus_section_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_last();
+        workspace.focus_section_last();
     }
 
-    pub fn focus_column_right_or_first(&mut self) {
+    pub fn focus_section_right_or_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_right_or_first();
+        workspace.focus_section_right_or_first();
     }
 
-    pub fn focus_column_left_or_last(&mut self) {
+    pub fn focus_section_left_or_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_left_or_last();
+        workspace.focus_section_left_or_last();
     }
 
-    pub fn focus_column(&mut self, index: usize) {
+    pub fn focus_section(&mut self, index: usize) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column(index);
+        workspace.focus_section(index);
     }
 
     pub fn focus_window_up_or_output(&mut self, output: &Output) -> bool {
@@ -2079,7 +2079,7 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_column_left_or_output(&mut self, output: &Output) -> bool {
+    pub fn focus_section_left_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.focus_left() {
                 return false;
@@ -2090,7 +2090,7 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_column_right_or_output(&mut self, output: &Output) -> bool {
+    pub fn focus_section_right_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.focus_right() {
                 return false;
@@ -2101,11 +2101,11 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_window_in_column(&mut self, index: u8) {
+    pub fn focus_window_in_section(&mut self, index: u8) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_window_in_column(index);
+        workspace.focus_window_in_section(index);
     }
 
     pub fn focus_down(&mut self) {
@@ -2237,25 +2237,25 @@ impl<W: LayoutElement> Layout<W> {
         monitor.move_to_workspace(window, idx, activate);
     }
 
-    pub fn move_column_to_workspace_up(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_up(&mut self, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace_up(activate);
+        monitor.move_section_to_workspace_up(activate);
     }
 
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_down(&mut self, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace_down(activate);
+        monitor.move_section_to_workspace_down(activate);
     }
 
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
+    pub fn move_section_to_workspace(&mut self, idx: usize, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace(idx, activate);
+        monitor.move_section_to_workspace(idx, activate);
     }
 
     pub fn switch_workspace_up(&mut self) {
@@ -2293,18 +2293,18 @@ impl<W: LayoutElement> Layout<W> {
         monitor.switch_workspace_previous();
     }
 
-    pub fn consume_into_column(&mut self) {
+    pub fn consume_into_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.consume_into_column();
+        workspace.consume_into_section();
     }
 
-    pub fn expel_from_column(&mut self) {
+    pub fn expel_from_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.expel_from_column();
+        workspace.expel_from_section();
     }
 
     pub fn split_window(&mut self, direction: Option<SplitAxis>) {
@@ -2342,11 +2342,11 @@ impl<W: LayoutElement> Layout<W> {
         ws.scroll_tab_bar(pos_within_output, delta)
     }
 
-    pub fn toggle_column_tabbed_display(&mut self) {
+    pub fn toggle_section_tabbed_display(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.toggle_column_tabbed_display();
+        workspace.toggle_section_tabbed_display();
     }
 
     pub fn toggle_tabbed(&mut self) {
@@ -2377,18 +2377,18 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_tab(direction);
     }
 
-    pub fn set_column_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: ColumnDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.set_column_display(display);
+        workspace.set_section_display(display);
     }
 
-    pub fn center_column(&mut self) {
+    pub fn center_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.center_column();
+        workspace.center_section();
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
@@ -2410,11 +2410,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.center_window(id);
     }
 
-    pub fn center_visible_columns(&mut self) {
+    pub fn center_visible_sections(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.center_visible_columns();
+        workspace.center_visible_sections();
     }
 
     pub fn focus(&self) -> Option<&W> {
@@ -3191,11 +3191,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_full_width();
     }
 
-    pub fn set_column_width(&mut self, change: SizeChange) {
+    pub fn set_section_width(&mut self, change: SizeChange) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.set_column_width(change);
+        workspace.set_section_width(change);
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -3267,11 +3267,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.reset_window_height(window);
     }
 
-    pub fn expand_column_to_available_width(&mut self) {
+    pub fn expand_section_to_available_width(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.expand_column_to_available_width();
+        workspace.expand_section_to_available_width();
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
@@ -3508,7 +3508,7 @@ impl<W: LayoutElement> Layout<W> {
                 removed.tile,
                 MonitorAddWindowTarget::Workspace {
                     id: ws_id,
-                    column_idx: None,
+                    section_idx: None,
                 },
                 activate,
                 true,
@@ -3527,7 +3527,7 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    pub fn move_column_to_output(
+    pub fn move_section_to_output(
         &mut self,
         output: &Output,
         target_ws_idx: Option<usize>,
@@ -3552,14 +3552,14 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             }
 
-            let Some(column) = ws.remove_active_column() else {
+            let Some(section) = ws.remove_active_section() else {
                 return;
             };
 
             let workspace_idx = target_ws_idx
                 .unwrap_or(monitors[new_idx].active_workspace_idx)
                 .min(monitors[new_idx].workspaces.len() - 1);
-            self.add_column_by_idx(new_idx, workspace_idx, column, activate);
+            self.add_section_by_idx(new_idx, workspace_idx, section, activate);
         }
     }
 
@@ -4395,13 +4395,13 @@ impl<W: LayoutElement> Layout<W> {
                 };
 
                 match position {
-                    InsertPosition::NewColumn(column_idx) => {
+                    InsertPosition::NewColumn(section_idx) => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             move_.tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: Some(column_idx),
+                                section_idx: Some(section_idx),
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
@@ -4410,20 +4410,20 @@ impl<W: LayoutElement> Layout<W> {
                             false,
                         );
                     }
-                    InsertPosition::InColumn(column_idx, tile_idx) => {
-                        mon.add_tile_to_column(
+                    InsertPosition::InColumn(section_idx, tile_idx) => {
+                        mon.add_tile_to_section(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             Some(tile_idx),
                             move_.tile,
                             true,
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplit(column_idx, tile_idx, axis, is_right_half) => {
+                    InsertPosition::InSplit(section_idx, tile_idx, axis, is_right_half) => {
                         mon.add_tile_to_split(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             tile_idx,
                             axis,
                             is_right_half,
@@ -4432,10 +4432,10 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplitStack(column_idx, tile_idx, place_after) => {
+                    InsertPosition::InSplitStack(section_idx, tile_idx, place_after) => {
                         mon.add_tile_beside_stack(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             tile_idx,
                             place_after,
                             move_.tile,
@@ -4480,7 +4480,7 @@ impl<W: LayoutElement> Layout<W> {
                             tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                section_idx: None,
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
@@ -5032,7 +5032,7 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let win = move_.tile.window_mut();
 
-            win.set_active_in_column(true);
+            win.set_active_in_section(true);
             win.set_floating(move_.is_floating);
             win.set_activated(true);
 
