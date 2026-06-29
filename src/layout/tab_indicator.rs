@@ -88,6 +88,15 @@ impl TabHeader {
         }
     }
 
+    /// Sets whether this header renders a Stacked layout (one full-width title row per tab) rather
+    /// than a Tabbed one (a single row of side-by-side tabs). Only the i3/sway-style Bar honours
+    /// this; the niri-style Indicator is a thin edge strip and ignores it.
+    pub fn set_stacked(&mut self, stacked: bool) {
+        if let TabHeader::Bar(bar) = self {
+            bar.set_stacked(stacked);
+        }
+    }
+
     pub fn advance_animations(&mut self) {
         match self {
             TabHeader::Indicator(ti) => ti.advance_animations(),

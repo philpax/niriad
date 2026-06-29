@@ -400,6 +400,16 @@ fn arbitrary_scroll_direction() -> impl Strategy<Value = ScrollDirection> {
     prop_oneof![Just(ScrollDirection::Left), Just(ScrollDirection::Right)]
 }
 
+fn arbitrary_node_layout() -> impl Strategy<Value = super::tile_node::Layout> {
+    use super::tile_node::Layout;
+    prop_oneof![
+        Just(Layout::SplitH),
+        Just(Layout::SplitV),
+        Just(Layout::Tabbed),
+        Just(Layout::Stacked),
+    ]
+}
+
 fn arbitrary_column_display() -> impl Strategy<Value = ColumnDisplay> {
     prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)]
 }
@@ -529,6 +539,7 @@ enum Op {
     ToggleTabbed,
     MoveTab(#[proptest(strategy = "arbitrary_tab_direction()")] niri_ipc::TabDirection),
     SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
+    SetLayout(#[proptest(strategy = "arbitrary_node_layout()")] super::tile_node::Layout),
     CenterColumn,
     CenterWindow {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
@@ -1209,6 +1220,7 @@ impl Op {
                 layout.move_tab(dir);
             }
             Op::SetColumnDisplay(display) => layout.set_column_display(display),
+            Op::SetLayout(node_layout) => layout.set_active_layout(node_layout),
             Op::CenterColumn => layout.center_column(),
             Op::CenterWindow { id } => {
                 let id = id.filter(|id| layout.has_window(id));
@@ -4535,6 +4547,46 @@ fn toggle_tabbed_hides_inactive_tiles() {
     let (pos1, _) = window_geo(&layout, 1).unwrap();
     let (pos2, _) = window_geo(&layout, 2).unwrap();
     assert_eq!(pos1, pos2, "tabbed tiles should share the same position");
+}
+
+#[test]
+fn stacked_layout_reserves_a_row_per_tab_and_shows_one() {
+    use super::tile_node::Layout;
+
+    let build = |layout: Layout| {
+        check_ops([
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(3) },
+            Op::SetLayout(layout),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ])
+    };
+
+    let tabbed = build(Layout::Tabbed);
+    let stacked = build(Layout::Stacked);
+
+    // A stacked container shows only its active child (window 3, the last added).
+    assert_eq!(window_visible(&stacked, 3), Some(true), "active stacked child visible");
+    assert_eq!(window_visible(&stacked, 1), Some(false), "inactive stacked child hidden");
+    assert_eq!(window_visible(&stacked, 2), Some(false), "inactive stacked child hidden");
+
+    // Stacked reserves one title row per tab (3 rows) vs tabbed's single row, so the active
+    // content sits lower.
+    let (t3, _) = window_geo(&tabbed, 3).unwrap();
+    let (s3, _) = window_geo(&stacked, 3).unwrap();
+    assert!(
+        s3.y > t3.y + 10.,
+        "stacked reserves more header rows than tabbed (tabbed y={}, stacked y={})",
+        t3.y,
+        s3.y
+    );
 }
 
 #[test]

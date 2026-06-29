@@ -1219,6 +1219,13 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.toggle_tabbed();
     }
 
+    pub fn set_active_layout(&mut self, layout: super::tile_node::Layout) {
+        if self.floating_is_active.get() {
+            return;
+        }
+        self.scrolling.set_active_layout(layout);
+    }
+
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         if self.floating_is_active.get() {
             return;

@@ -199,8 +199,11 @@ impl<W: LayoutElement> TileNode<W> {
         children: Vec<TileNode<W>>,
         active_idx: usize,
         data: Vec<SplitChildData>,
-        tab_header: Option<TabHeader>,
+        mut tab_header: Option<TabHeader>,
     ) -> Self {
+        if let Some(h) = &mut tab_header {
+            h.set_stacked(layout == Layout::Stacked);
+        }
         TileNode::Internal {
             layout,
             children,
@@ -1108,6 +1111,9 @@ impl<W: LayoutElement> TileNode<W> {
         if new.is_tabbing() {
             if tab_header.is_none() {
                 *tab_header = Some(TabHeader::new(tab_header_config));
+            }
+            if let Some(h) = tab_header {
+                h.set_stacked(new == Layout::Stacked);
             }
         } else {
             *tab_header = None;

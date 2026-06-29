@@ -2996,6 +2996,52 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.update_tile_sizes(true);
     }
 
+    /// Sets the layout of the container holding the active window (sway's `layout` command). A
+    /// window directly under the column root sets the whole column's layout; a window inside a
+    /// nested split sets just that nested container. Same-family redundancy is then merged away.
+    pub fn set_active_layout(&mut self, new_layout: Layout) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let col = &self.columns[self.active_column_idx];
+        let path = col.root.active_path();
+        let parent_len = path.len().saturating_sub(1);
+        let parent_path = path[..parent_len].to_vec();
+
+        let col = &mut self.columns[self.active_column_idx];
+        cancel_resize_for_column(&mut self.interactive_resize, col);
+
+        let cfg = col.options.layout.tab_header.clone();
+        let node = col.root.node_at_mut(&parent_path);
+        let was_tabbing = node.is_tabbed();
+        node.set_layout(new_layout, cfg);
+
+        // Fade in a new header when entering a tabbing layout.
+        if new_layout.is_tabbing() && !was_tabbing {
+            let clock = col.clock.clone();
+            let anim = col.options.animations.window_movement.0;
+            if let TileNode::Internal { tab_header: Some(h), .. } = col.root.node_at_mut(&parent_path)
+            {
+                h.start_open_animation(clock, anim);
+            }
+        }
+
+        // Changing a node's layout can leave it same-family-redundant with its parent.
+        col.root.simplify();
+        col.collapse_redundant_root_wrapper();
+
+        // A non-tabbed multi-tile column can't stay fullscreen/maximized.
+        let col = &self.columns[self.active_column_idx];
+        if !col.is_tabbed() && col.tiles_len() > 1 {
+            let window = col.active_tile().window().id().clone();
+            self.set_fullscreen(&window, false);
+            self.set_maximized(&window, false);
+        }
+
+        self.columns[self.active_column_idx].update_tile_sizes(true);
+    }
+
     /// Moves the active tab left or right within its tabbed container.
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         if self.columns.is_empty() {

@@ -2284,6 +2284,13 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_tabbed();
     }
 
+    pub fn set_active_layout(&mut self, layout: crate::layout::tile_node::Layout) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.set_active_layout(layout);
+    }
+
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
