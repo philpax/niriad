@@ -4550,6 +4550,50 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn stacked_root_reserves_one_row_per_child_not_per_leaf() {
+    use super::tile_node::Layout;
+
+    // Flat: Stacked[1, 2] — two direct children → two title rows.
+    let flat = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SetLayout(Layout::Stacked),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    // Nested: Stacked[1, SplitH[2,3]] — still two direct children, so it must reserve TWO rows,
+    // not three (one per leaf). Regression for the root using leaf-count.
+    let nested = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::FocusWindow(1),
+        Op::SetLayout(Layout::Stacked),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    // Window 1 sits at the content top in both; equal y means equal reserved header bands.
+    let (flat1, _) = window_geo(&flat, 1).unwrap();
+    let (nested1, _) = window_geo(&nested, 1).unwrap();
+    assert_eq!(
+        flat1.y, nested1.y,
+        "nested stacked root must reserve per-child rows like the flat one \
+         (flat y={}, nested y={})",
+        flat1.y, nested1.y
+    );
+}
+
+#[test]
 fn stacked_layout_reserves_a_row_per_tab_and_shows_one() {
     use super::tile_node::Layout;
 

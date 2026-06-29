@@ -5540,8 +5540,12 @@ impl<W: LayoutElement> Column<W> {
         // Update config for all tiles recursively (including nested splits).
         self.root.update_config_tiles(tile_view_size, scale, options.clone(), axis);
 
+        // Re-derive the Stacked flag: update_config can recreate the header (on a tab-style flip),
+        // which would otherwise reset it to a single-row Tabbed.
+        let root_stacked = self.root.layout() == Some(Layout::Stacked);
         if let Some(tab_header) = self.tab_header_mut() {
             tab_header.update_config(options.layout.tab_header.clone());
+            tab_header.set_stacked(root_stacked);
         }
         self.view_size = view_size;
         self.working_area = working_area;
@@ -5629,7 +5633,8 @@ impl<W: LayoutElement> Column<W> {
             // many changes to the code for too little benefit (it's mostly invisible anyway).
             let enabled = self.is_tabbed() && self.sizing_mode().is_normal();
             let tab_indicator_area = self.tab_indicator_area();
-            let tiles_len = self.tiles_len();
+            // One tab/row per direct child of the root (a Stacked root reserves a row each).
+            let tab_count = self.root.child_count();
             let scale = self.scale;
 
             if let Some(tab_indicator) = self.tab_header_mut() {
@@ -5637,7 +5642,7 @@ impl<W: LayoutElement> Column<W> {
                     enabled,
                     tab_indicator_area,
                     view_rect,
-                    tiles_len,
+                    tab_count,
                     tabs.into_iter(),
                     is_active,
                     scale,
@@ -6007,7 +6012,9 @@ impl<W: LayoutElement> Column<W> {
     /// Extra size taken up by elements in the column such as the tab indicator.
     fn extra_size(&self) -> Size<f64, Logical> {
         if self.is_tabbed() {
-            self.tab_header().unwrap().extra_size(self.tiles_len(), self.scale)
+            // A tabbing header has one tab/row per *direct child* of the root, not per leaf (they
+            // differ when the root has a nested child); Stacked reserves a row per tab.
+            self.tab_header().unwrap().extra_size(self.root.child_count(), self.scale)
         } else {
             Size::from((0., 0.))
         }
@@ -6447,7 +6454,10 @@ impl<W: LayoutElement> Column<W> {
         };
 
         if self.is_tabbed() && self.sizing_mode().is_normal() {
-            let extra_size = self.tab_header().unwrap().extra_size(self.tiles_len(), self.scale);
+            let extra_size = self
+                .tab_header()
+                .unwrap()
+                .extra_size(self.root.child_count(), self.scale);
             main_span += extra_size.w;
         }
 
@@ -7033,7 +7043,7 @@ impl<W: LayoutElement> Column<W> {
             origin += self
                 .tab_header()
                 .unwrap()
-                .content_offset(self.tiles_len(), self.scale);
+                .content_offset(self.root.child_count(), self.scale);
         }
 
         origin
