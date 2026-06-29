@@ -131,3 +131,39 @@ green (build + tests + clippy + fuzzer).
   through the nested-header path would resolve it.
 - The node enum is unified, but the root tab header still has a dedicated render path (kept to avoid
   changing the common-case visuals); folding it into the nested-header walk is a possible cleanup.
+
+## S6 — sway-literal in-place drag
+
+Make the interactive *tiling* drag match sway: the window stays in the tree during the drag (an
+indicator + a translucent following ghost show the drop), so placements are computed by real cursor
+hit-testing and a centre-drop performs a true **swap**. This is the default; the current
+detach-and-follow stays available via config.
+
+Grounded in the two sources (`../sway/sway/input/seatop_move_tiling.c`, `src/layout/mod.rs`):
+- **sway**: tiling and floating drags are *separate* seatops chosen at grab time — a tiling drag is
+  always tiling (you can't float by dragging). It's in-place the whole time (the container detaches
+  only at release, and not at all for swap), and its target is `node_at_coords` over sway's single
+  global tree — so it spans every workspace/output and can swap with any container anywhere.
+- **niri**: one unified detach-and-follow move (`Starting` keeps the window in place and rubberbands;
+  past `INTERACTIVE_MOVE_START_THRESHOLD` it detaches into `Moving` and follows the cursor). It can
+  cross outputs, and can float a tiled window mid-drag — but only via the explicit
+  `toggle_window_floating` keybind, **not** a spatial zone. Layout is per-output separate trees.
+
+Design (since the float trigger is an explicit toggle, the in-place phase needs no spatial boundary):
+- **In-place covers every tiling target** — same workspace, other workspace, other output — plus
+  swap anywhere. "In-place" = keep the source in its tree until release; ghost follows the cursor;
+  hit-test whichever tree is under the pointer; apply move/swap at release (cross-tree when needed).
+- **The only handoff to detach-and-follow is the explicit float toggle** (niri's extra capability,
+  which genuinely pulls the window out of tiling). One-way: once detached, stay detached for the
+  drag.
+- Config `tiling-drag "sway" | "niri"`, default `sway`. Translucent following ghost for feedback.
+
+Stages (each builds/tests/reviews/commits):
+- **S6.1 — done.** Family-aware `toggle-tabbed` (vstack→Stacked, hstack→Tabbed), as a warm-up.
+- **S6.2 — in-place phase, same workspace.** Prolong `Starting` for sway-mode tiling drags: live-tree
+  hit-test (excluding the source), indicator + ghost, no auto-detach. Apply move + true swap on
+  release. New `InsertPosition::Swap`.
+- **S6.3 — cross-output / cross-workspace** in-place (cross-tree move + swap).
+- **S6.4 — float-toggle handoff** to the existing `Moving` flow.
+- **S6.5 — exact region map under in-place** (titlebar→tab at the cursor index, edge→split,
+  body→edge-split, centre→swap), refining S4's approximation now that hit-testing is exact.
