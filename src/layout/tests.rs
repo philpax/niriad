@@ -1771,7 +1771,8 @@ fn vertical_main_axis_insert_position_follows_y() {
         | super::monitor::InsertPosition::InSection(idx, _)
         | super::monitor::InsertPosition::InSplit(idx, _, _, _)
         | super::monitor::InsertPosition::InSplitStack(idx, _, _)
-        | super::monitor::InsertPosition::InsertTab(idx, _) => idx,
+        | super::monitor::InsertPosition::InsertTab(idx, _)
+        | super::monitor::InsertPosition::Swap(idx, _) => idx,
         super::monitor::InsertPosition::Floating => unreachable!(),
     };
 
@@ -5254,8 +5255,8 @@ fn drop_below_a_nested_row_inserts_after_the_whole_row() {
         "above the row should insert before the whole row, got {:?}",
         ip(166., 480.)
     );
-    // Centre of the row's left tile targets that tile (window 3 = leaf 2) — grouping into tabs —
-    // rather than inserting above/below the whole row.
+    // Centre of the row's left tile targets that tile (window 3 = leaf 2) — grouping into tabs in
+    // the default (detach) mode — rather than inserting above/below the whole row.
     assert!(
         matches!(ip(166., 590.), InsertPosition::InsertTab(0, 2)),
         "centre of the row should target a tile, got {:?}",
@@ -5282,8 +5283,8 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
     // Centre of the left tile → target tile 0; centre of the right tile → target tile 1.
-    // (Previously a row always reported tile 0 regardless of x.) The centre region groups into
-    // tabs, but the point is that the *targeted tile index* follows the cursor's x.
+    // (Previously a row always reported tile 0 regardless of x.) The centre region groups into tabs
+    // in the default (detach) mode, but the point is the *targeted tile index* follows the cursor.
     assert!(
         matches!(ip(166., 360.), InsertPosition::InsertTab(0, 0)),
         "left tile centre should target tile 0, got {:?}",
@@ -5316,8 +5317,8 @@ fn drag_into_tile_regions_split_at_edges_and_tab_at_centre() {
     use super::monitor::InsertPosition;
 
     // A horizontal row [1 | 2]. The tile interior is a sway-style region map: the left/right
-    // edge-ward regions place the window side-by-side (Main); the centre groups the two windows
-    // into tabs (sway centre-drop, adapted to niri's detach-during-drag model).
+    // edge-ward regions place the window side-by-side (Main); the centre groups into tabs in the
+    // default (detach) mode (the in-place mode swaps there instead — see the Swap-region test).
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5363,6 +5364,36 @@ fn drag_into_tile_centre_tabs_the_windows() {
     assert_eq!(p1.x, p3.x, "tabbed windows 1 and 3 share a position (x)");
     assert_eq!(p1.y, p3.y, "tabbed windows 1 and 3 share a position (y)");
     assert_ne!(p2.x, p1.x, "window 2 stays beside the tabbed pair");
+}
+
+#[test]
+fn in_place_drag_mode_swaps_at_centre() {
+    use super::monitor::InsertPosition;
+
+    // In the in-place (sway) drag mode the source stays in the tree, so the centre region is a swap
+    // target rather than a tab group. (The full in-place state machine that applies the swap is a
+    // later stage; here we verify the region map already routes centre → Swap under that mode.)
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+    assert!(
+        matches!(ip(166., 360.), InsertPosition::Swap(0, 0)),
+        "in-place centre should be a swap target, got {:?}",
+        ip(166., 360.)
+    );
 }
 
 #[test]

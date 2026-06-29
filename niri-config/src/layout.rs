@@ -17,6 +17,7 @@ pub struct Layout {
     pub tab_header: TabHeaderConfig,
     pub insert_hint: InsertHint,
     pub main_axis: MainAxis,
+    pub tiling_drag: TilingDrag,
     pub preset_section_widths: Vec<PresetSize>,
     pub default_section_width: Option<PresetSize>,
     pub preset_window_heights: Vec<PresetSize>,
@@ -39,6 +40,9 @@ impl Default for Layout {
             tab_header: TabHeaderConfig::default(),
             insert_hint: InsertHint::default(),
             main_axis: MainAxis::Horizontal,
+            // Staged: the in-place drag state machine (S6.2) isn't wired up yet, so default to the
+            // current detach-and-follow behaviour. Flips to InPlace once in-place lands.
+            tiling_drag: TilingDrag::Detach,
             preset_section_widths: vec![
                 PresetSize::Proportion(1. / 3.),
                 PresetSize::Proportion(0.5),
@@ -88,6 +92,7 @@ impl MergeWith<LayoutPart> for Layout {
         merge_clone!(
             (self, part),
             main_axis,
+            tiling_drag,
             preset_section_widths,
             preset_window_heights,
             center_focused_section,
@@ -128,6 +133,8 @@ pub struct LayoutPart {
     pub insert_hint: Option<InsertHintPart>,
     #[knuffel(child, unwrap(argument))]
     pub main_axis: Option<MainAxis>,
+    #[knuffel(child, unwrap(argument))]
+    pub tiling_drag: Option<TilingDrag>,
     #[knuffel(child, unwrap(children))]
     pub preset_section_widths: Option<Vec<PresetSize>>,
     #[knuffel(child)]
@@ -197,6 +204,18 @@ pub enum MainAxis {
     #[default]
     Horizontal,
     Vertical,
+}
+
+/// How an interactive *tiling* drag behaves.
+#[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum TilingDrag {
+    /// Sway-style: the dragged window stays in the layout tree during the drag (an indicator plus a
+    /// translucent following ghost show where it will land), so placements are computed by exact
+    /// cursor hit-testing and a centre-drop swaps the two windows. The default.
+    #[default]
+    InPlace,
+    /// niri's classic behaviour: past a threshold the window detaches and follows the cursor.
+    Detach,
 }
 
 impl<S> knuffel::Decode<S> for DefaultPresetSize

@@ -4443,7 +4443,11 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InsertTab(section_idx, tile_idx) => {
+                    // Swap is only produced in the in-place drag, which never reaches this
+                    // detach-mode apply; if it ever did (no source in the tree to swap with), fall
+                    // back to grouping into tabs.
+                    InsertPosition::InsertTab(section_idx, tile_idx)
+                    | InsertPosition::Swap(section_idx, tile_idx) => {
                         mon.add_tile_as_tab(
                             ws_idx,
                             section_idx,

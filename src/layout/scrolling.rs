@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedSection, PresetSize, Struts};
+use niri_config::{CenterFocusedSection, PresetSize, Struts, TilingDrag};
 use niri_ipc::{SectionDisplay, SizeChange, WindowLayout};
 use ordered_float::NotNan;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -1329,7 +1329,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     let in_centre = (1. / 3. ..=2. / 3.).contains(&rel_x)
                         && (1. / 3. ..=2. / 3.).contains(&rel_y);
                     if in_centre {
-                        InsertPosition::InsertTab(col_idx, tile_idx)
+                        // sway's centre-drop: in the in-place mode the source stays in the tree, so
+                        // the two windows can truly swap. In detach mode there's nothing to swap
+                        // back, so we group them into tabs instead (S4's adaptation).
+                        if self.options.layout.tiling_drag == TilingDrag::InPlace {
+                            InsertPosition::Swap(col_idx, tile_idx)
+                        } else {
+                            InsertPosition::InsertTab(col_idx, tile_idx)
+                        }
                     } else if (rel_x - 0.5).abs() >= (rel_y - 0.5).abs() {
                         // Closer to a left/right edge → side-by-side.
                         let after = rel_x > 0.5;
@@ -3618,7 +3625,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 };
                 Rectangle::new(loc, Size::from((half_w, y1 - y0)))
             }
-            InsertPosition::InsertTab(section_index, tile_index) => {
+            InsertPosition::InsertTab(section_index, tile_index)
+            | InsertPosition::Swap(section_index, tile_index) => {
                 if section_index >= self.sections.len() {
                     return None;
                 }

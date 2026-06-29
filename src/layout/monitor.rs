@@ -145,6 +145,10 @@ pub(super) enum InsertPosition {
     /// can't swap): if the target is already in a tabbing container the window joins it as a new
     /// tab, otherwise the target is wrapped in a fresh tabbed container. Produced only by drag.
     InsertTab(usize, usize),
+    /// Swap the dragged window with the tile at (section_idx, tile_idx) — sway's centre-drop. Only
+    /// produced in the in-place (sway) drag mode, where the source stays in the tree so the two can
+    /// exchange slots; applied via `swap_tiles`, never the add-a-tile path.
+    Swap(usize, usize),
     Floating,
 }
 
