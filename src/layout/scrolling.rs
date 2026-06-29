@@ -16,7 +16,7 @@ use super::monitor::InsertPosition;
 use super::tab_indicator::{TabHeader, TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tab_bar::TabBarRenderElement;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::tile_node::{ChildSpan, SplitAxis, SplitChildData, TileNode, TilePath};
+use super::tile_node::{ChildSpan, Layout, SplitAxis, SplitChildData, TileNode, TilePath};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
 use crate::animation::{Animation, Clock};
@@ -1216,7 +1216,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Whether the column's top level is a horizontal row (a Main split). For a row, the tiles
         // sit side by side: the pointer picks a tile by its *main* (x) position, and the top/bottom
         // edges insert above/below the whole row rather than between specific tiles.
-        let col_is_row = matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. });
+        let col_is_row = matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. });
         let col_main_start = self.column_main_pos(col_idx);
 
         let gap_threshold = self.options.layout.gaps * 2.;
@@ -1247,7 +1247,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .and_then(|p| p.first().copied())
                 .unwrap_or(0);
             let tile_in_row = col_is_row
-                || matches!(col.root.node_at(&[rc]), TileNode::Split { axis: SplitAxis::Main, .. });
+                || matches!(col.root.node_at(&[rc]), TileNode::Internal { layout: Layout::SplitH, .. });
 
             // Check if we're near the top/bottom edge — if so, insert a row (InColumn) instead of
             // splitting side-by-side (InSplit).
@@ -1309,7 +1309,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                         .map(|p| {
                             matches!(
                                 col.root.node_at(&p[..p.len() - 1]),
-                                TileNode::Split { axis: SplitAxis::Cross, .. }
+                                TileNode::Internal { layout: Layout::SplitV, .. }
                             )
                         })
                         .unwrap_or(false);
@@ -2986,7 +2986,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         if became_tabbed {
             let clock = col.clock.clone();
             let anim = col.options.animations.window_movement.0;
-            if let TileNode::Tabbed { tab_header, .. } = col.root.node_at_mut(&parent_path) {
+            if let TileNode::Internal { tab_header: Some(tab_header), .. } =
+                col.root.node_at_mut(&parent_path)
+            {
                 tab_header.start_open_animation(clock, anim);
             }
         }
@@ -3615,7 +3617,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let col = &mut self.columns[col_idx];
         // If the column root is a Main-axis split, resize the child's span, not the column width.
-        if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+        if matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. }) {
             let tile_idx = tile_idx.unwrap_or_else(|| col.active_tile_idx());
             col.set_split_child_width(change, tile_idx, true);
         } else {
@@ -4512,7 +4514,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let window_width = (resize.original_window_size.w + dx).round() as i32;
             // If the tile lives in a Main-axis split, resize the boundary with its sibling rather
             // than the whole column (mirrors `set_window_width`).
-            if matches!(&col.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+            if matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. }) {
                 col.set_split_child_width(SizeChange::SetFixed(window_width), tile_idx, false);
             } else {
                 col.set_column_width(SizeChange::SetFixed(window_width), Some(tile_idx), false);
@@ -4857,7 +4859,7 @@ impl<W: LayoutElement> Column<W> {
     fn root_child_first_leaf_idx(&self, root_child: usize) -> usize {
         match &self.root {
             TileNode::Leaf(_) => 0,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.iter().take(root_child).map(TileNode::leaf_count).sum()
             }
         }
@@ -4889,7 +4891,7 @@ impl<W: LayoutElement> Column<W> {
     fn data(&self) -> &[SplitChildData] {
         match &self.root {
             TileNode::Leaf(_) => &[],
-            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data,
+            TileNode::Internal { data, .. } => data,
         }
     }
 
@@ -4897,7 +4899,7 @@ impl<W: LayoutElement> Column<W> {
     fn data_mut(&mut self) -> &mut [SplitChildData] {
         match &mut self.root {
             TileNode::Leaf(_) => &mut [],
-            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data,
+            TileNode::Internal { data, .. } => data,
         }
     }
 
@@ -4974,15 +4976,14 @@ impl<W: LayoutElement> Column<W> {
         // Collapse single-child/empty nested splits (not the root itself).
         // The root should always remain a Split/Tabbed to preserve the column structure.
         match &mut self.root {
-            TileNode::Split { children, data, active_idx, .. }
-            | TileNode::Tabbed { children, data, active_idx, .. } => {
+            TileNode::Internal { children, data, active_idx, .. } => {
                 for child in children.iter_mut() {
                     child.collapse_all_single_child();
                 }
                 // Remove any empty children left after collapse.
                 let mut i = 0;
                 while i < children.len() {
-                    let is_empty = matches!(&children[i], TileNode::Split { children: c, .. } | TileNode::Tabbed { children: c, .. } if c.is_empty());
+                    let is_empty = matches!(&children[i], TileNode::Internal { children: c, .. } if c.is_empty());
                     if is_empty {
                         children.remove(i);
                         data.remove(i);
@@ -5008,14 +5009,14 @@ impl<W: LayoutElement> Column<W> {
         loop {
             let collapse = matches!(
                 &self.root,
-                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. }
+                TileNode::Internal { children, .. }
                     if children.len() == 1 && !matches!(children[0], TileNode::Leaf(_))
             );
             if !collapse {
                 break;
             }
             let child = match &mut self.root {
-                TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                TileNode::Internal { children, .. } => {
                     children.remove(0)
                 }
                 TileNode::Leaf(_) => unreachable!(),
@@ -5027,7 +5028,7 @@ impl<W: LayoutElement> Column<W> {
     /// Resizes a child's main-axis span within a Main-axis split root.
     fn set_split_child_width(&mut self, change: SizeChange, tile_idx: usize, animate: bool) {
         let current_span = match &self.root {
-            TileNode::Split { data, .. } => data[tile_idx].size.w,
+            TileNode::Internal { layout, data, .. } if layout.is_split() => data[tile_idx].size.w,
             _ => return,
         };
 
@@ -5049,12 +5050,14 @@ impl<W: LayoutElement> Column<W> {
         // weight proportional to their current span so they keep their relative proportions when
         // the remaining space is redistributed. (Weights are relative, so the raw span works as
         // the weight directly.)
-        if let TileNode::Split { data, .. } = &mut self.root {
-            data[tile_idx].span = ChildSpan::Fixed(new_span);
-            for (i, d) in data.iter_mut().enumerate() {
-                if i != tile_idx {
-                    let weight = if d.size.w > 0. { d.size.w } else { 1. };
-                    d.span = ChildSpan::Auto { weight };
+        if let TileNode::Internal { layout, data, .. } = &mut self.root {
+            if layout.is_split() {
+                data[tile_idx].span = ChildSpan::Fixed(new_span);
+                for (i, d) in data.iter_mut().enumerate() {
+                    if i != tile_idx {
+                        let weight = if d.size.w > 0. { d.size.w } else { 1. };
+                        d.span = ChildSpan::Auto { weight };
+                    }
                 }
             }
         }
@@ -5110,12 +5113,8 @@ impl<W: LayoutElement> Column<W> {
             }
         };
 
-        let placeholder = || TileNode::Split {
-            axis: SplitAxis::Cross,
-            children: Vec::new(),
-            active_idx: 0,
-            data: Vec::new(),
-        };
+        let placeholder = || TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None);
+        let split_layout = Layout::split_for_axis(axis);
 
         // Resolve the target leaf's position in the tree, then split *there* (at any depth). The
         // path to the new leaf is recorded so it can be activated afterwards.
@@ -5130,7 +5129,7 @@ impl<W: LayoutElement> Column<W> {
             let (children, data, new_idx) = make_pair(old_tile, SplitChildData::new_auto(), tile);
             let internal_active = if activate { new_idx } else { 1 - new_idx };
             new_leaf_path = vec![new_idx];
-            self.root = TileNode::Split { axis, active_idx: internal_active, children, data };
+            self.root = TileNode::internal(split_layout, children, internal_active, data, None);
         } else if let Some(path) = path.filter(|p| !p.is_empty()) {
             let child = *path.last().unwrap();
             let parent_path = path[..path.len() - 1].to_vec();
@@ -5140,13 +5139,12 @@ impl<W: LayoutElement> Column<W> {
             // target leaf in a fresh nested split.
             let parent_matches = matches!(
                 self.root.node_at(&parent_path),
-                TileNode::Split { axis: a, .. } if *a == axis
+                TileNode::Internal { layout, .. } if layout.is_split() && layout.axis() == axis
             );
 
             let mut leaf_path = parent_path.clone();
             {
-                let (TileNode::Split { children, data, active_idx, .. }
-                | TileNode::Tabbed { children, data, active_idx, .. }) =
+                let TileNode::Internal { children, data, active_idx, .. } =
                     self.root.node_at_mut(&parent_path)
                 else {
                     unreachable!("parent path points to a leaf")
@@ -5169,12 +5167,8 @@ impl<W: LayoutElement> Column<W> {
                     let (sub_children, sub_data, new_idx) =
                         make_pair(old_tile, SplitChildData::new_auto(), tile);
                     let internal_active = if activate { new_idx } else { 1 - new_idx };
-                    children[child] = TileNode::Split {
-                        axis,
-                        active_idx: internal_active,
-                        children: sub_children,
-                        data: sub_data,
-                    };
+                    children[child] =
+                        TileNode::internal(split_layout, sub_children, internal_active, sub_data, None);
                     leaf_path.push(child);
                     leaf_path.push(new_idx);
                 }
@@ -5251,12 +5245,7 @@ impl<W: LayoutElement> Column<W> {
         let mut new_data = SplitChildData::new_auto();
         new_data.update(&tile, self.axis());
 
-        let placeholder = || TileNode::Split {
-            axis: SplitAxis::Cross,
-            children: Vec::new(),
-            active_idx: 0,
-            data: Vec::new(),
-        };
+        let placeholder = || TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None);
 
         // Wraps `stack` and the new tile into a fresh Main split, ordered by `place_after`.
         let wrap = |stack: TileNode<W>, new_tile: Tile<W>, new_data: SplitChildData| {
@@ -5281,23 +5270,17 @@ impl<W: LayoutElement> Column<W> {
             let stack = std::mem::replace(&mut self.root, placeholder());
             let (children, data, new_idx) = wrap(stack, tile, new_data);
             let active_idx = if activate { new_idx } else { 1 - new_idx };
-            self.root = TileNode::Split {
-                axis: SplitAxis::Main,
-                active_idx,
-                children,
-                data,
-            };
+            self.root = TileNode::internal(Layout::SplitH, children, active_idx, data, None);
             vec![new_idx]
         } else {
             let stack_idx = *stack_path.last().unwrap();
             let grand_path = stack_path[..stack_path.len() - 1].to_vec();
             let grand_is_row = matches!(
                 self.root.node_at(&grand_path),
-                TileNode::Split { axis: SplitAxis::Main, .. }
+                TileNode::Internal { layout: Layout::SplitH, .. }
             );
 
-            let (TileNode::Split { children, data, active_idx, .. }
-            | TileNode::Tabbed { children, data, active_idx, .. }) =
+            let TileNode::Internal { children, data, active_idx, .. } =
                 self.root.node_at_mut(&grand_path)
             else {
                 unreachable!("grandparent path points to a leaf")
@@ -5320,12 +5303,8 @@ impl<W: LayoutElement> Column<W> {
                 let stack = std::mem::replace(&mut children[stack_idx], placeholder());
                 let (sub_children, sub_data, new_idx) = wrap(stack, tile, new_data);
                 let internal_active = if activate { new_idx } else { 1 - new_idx };
-                children[stack_idx] = TileNode::Split {
-                    axis: SplitAxis::Main,
-                    active_idx: internal_active,
-                    children: sub_children,
-                    data: sub_data,
-                };
+                children[stack_idx] =
+                    TileNode::internal(Layout::SplitH, sub_children, internal_active, sub_data, None);
                 let mut p = grand_path.clone();
                 p.push(stack_idx);
                 p.push(new_idx);
@@ -5365,7 +5344,7 @@ impl<W: LayoutElement> Column<W> {
     fn tiles_and_data(&self) -> impl Iterator<Item = (&Tile<W>, &SplitChildData)> {
         match &self.root {
             TileNode::Leaf(_) => panic!("tiles_and_data called on a Leaf root"),
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 children.iter().zip(data.iter()).filter_map(|(child, data)| {
                     match child {
                         TileNode::Leaf(tile) => Some((tile, data)),
@@ -5872,18 +5851,13 @@ impl<W: LayoutElement> Column<W> {
         new_data.update(&tile, self.axis());
 
         let new_root_idx;
-        if matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. }) {
+        if matches!(&self.root, TileNode::Internal { layout: Layout::SplitH, .. }) {
             // The column is a single horizontal row; wrap it in a Cross split so the new tile lands
             // above or below the whole row rather than beside its tiles.
             let above = leaf_idx == 0;
             let old_root = std::mem::replace(
                 &mut self.root,
-                TileNode::Split {
-                    axis: SplitAxis::Cross,
-                    children: Vec::new(),
-                    active_idx: 0,
-                    data: Vec::new(),
-                },
+                TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None),
             );
             let old_data = SplitChildData::new_auto();
             let (children, data, new_idx) = if above {
@@ -5891,12 +5865,13 @@ impl<W: LayoutElement> Column<W> {
             } else {
                 (vec![old_root, TileNode::Leaf(tile)], vec![old_data, new_data], 1)
             };
-            self.root = TileNode::Split {
-                axis: SplitAxis::Cross,
-                active_idx: if activate { new_idx } else { 1 - new_idx },
+            self.root = TileNode::internal(
+                Layout::SplitV,
                 children,
+                if activate { new_idx } else { 1 - new_idx },
                 data,
-            };
+                None,
+            );
             new_root_idx = new_idx;
         } else {
             // Cross stack / tabbed / lone leaf: insert at the matching root-child boundary (a new
@@ -6087,7 +6062,7 @@ impl<W: LayoutElement> Column<W> {
         // column or a tabbed column. Any main-axis split or any nested structure goes through the
         // recursive path, which distributes space recursively and honors per-child minimums.
         let has_nested = self.root.has_nested_children();
-        let root_is_main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+        let root_is_main_split = matches!(&self.root, TileNode::Internal { layout: Layout::SplitH, .. });
         if has_nested || root_is_main_split {
             self.update_tile_sizes_recursive(animate, transaction, axis);
             return;
@@ -6433,11 +6408,11 @@ impl<W: LayoutElement> Column<W> {
         // split, a Tabbed node, or a lone Leaf all share the main axis (max).
         let mut main_span = match &self.root {
             TileNode::Leaf(tile) => self.axis().size_in(tile.tile_size()).w,
-            TileNode::Split { axis: SplitAxis::Main, data, .. } => {
+            TileNode::Internal { layout: Layout::SplitH, data, .. } => {
                 let sum: f64 = data.iter().map(|d| d.size.w).sum();
                 sum + gaps * data.len().saturating_sub(1) as f64
             }
-            TileNode::Split { data, .. } | TileNode::Tabbed { data, .. } => data
+            TileNode::Internal { data, .. } => data
                 .iter()
                 .map(|data| NotNan::new(data.size.w).unwrap())
                 .max()
@@ -6475,11 +6450,13 @@ impl<W: LayoutElement> Column<W> {
                 let child_idx = active_path[k - 1];
                 let parent = self.root.node_at(parent_path);
                 let is_match = match parent {
-                    TileNode::Split { axis: a, .. } => *a == axis,
-                    // A tabbed container stacks its tabs along the cross axis, matching niri's
-                    // existing tabbed-column navigation (up/down switches tabs).
-                    TileNode::Tabbed { .. } => axis == SplitAxis::Cross,
-                    TileNode::Leaf(_) => false,
+                    TileNode::Internal { layout, .. } if layout.is_split() => layout.axis() == axis,
+                    // A tabbing container navigates along the cross axis (up/down switches tabs),
+                    // matching niri's existing tabbed-column navigation. (Revisited in S5.)
+                    TileNode::Internal { layout, .. } if layout.is_tabbing() => {
+                        axis == SplitAxis::Cross
+                    }
+                    _ => false,
                 };
                 if is_match {
                     let new_child = child_idx as isize + delta;
@@ -6516,9 +6493,11 @@ impl<W: LayoutElement> Column<W> {
                 let child_idx = active_path[k - 1];
                 let parent = self.root.node_at(parent_path);
                 let is_match = match parent {
-                    TileNode::Split { axis: a, .. } => *a == axis,
-                    TileNode::Tabbed { .. } => axis == SplitAxis::Cross,
-                    TileNode::Leaf(_) => false,
+                    TileNode::Internal { layout, .. } if layout.is_split() => layout.axis() == axis,
+                    TileNode::Internal { layout, .. } if layout.is_tabbing() => {
+                        axis == SplitAxis::Cross
+                    }
+                    _ => false,
                 };
                 if is_match {
                     let new_child = child_idx as isize + delta;
@@ -6708,7 +6687,8 @@ impl<W: LayoutElement> Column<W> {
             for k in 0..path.len() {
                 if matches!(
                     self.root.node_at(&path[..k]),
-                    TileNode::Split { axis: SplitAxis::Cross, .. } | TileNode::Tabbed { .. }
+                    TileNode::Internal { layout, .. }
+                        if *layout == Layout::SplitV || layout.is_tabbing()
                 ) {
                     target_len = Some(k + 1);
                 }
@@ -7328,7 +7308,7 @@ impl<W: LayoutElement> Column<W> {
         // The cross-axis sum invariant only applies to Cross-axis splits (where tiles
         // stack along the cross axis). For Main-axis splits, tiles are side-by-side
         // and each gets the full cross span, so the sum is not constrained.
-        let is_main_split = matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+        let is_main_split = matches!(&self.root, TileNode::Internal { layout: Layout::SplitH, .. });
 
         let mut found_fixed = false;
         let mut total_height = 0.;
@@ -7355,7 +7335,7 @@ impl<W: LayoutElement> Column<W> {
             // normal sizing mode: fullscreen/maximized layout bypasses the flat path (and `data`),
             // sizing tiles directly.
             let root_is_main_split =
-                matches!(&self.root, TileNode::Split { axis: SplitAxis::Main, .. });
+                matches!(&self.root, TileNode::Internal { layout: Layout::SplitH, .. });
             if !has_nested && !root_is_main_split && self.pending_sizing_mode().is_normal() {
                 let mut data2 = *data;
                 data2.update(tile, self.axis());
