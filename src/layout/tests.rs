@@ -4550,6 +4550,42 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn toggle_split_layout_flips_row_and_column() {
+    // A side-by-side row [1 | 2]; toggle split → a vertical column [1 / 2]; toggle again → row.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(p1.x, p2.x, "starts as a row (different x)");
+
+    layout.toggle_split_layout();
+    check_ops_on_layout(
+        &mut layout,
+        [Op::Communicate(1), Op::Communicate(2), Op::AdvanceAnimations { msec_delta: 1000 }],
+    );
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_eq!(p1.x, p2.x, "after toggle: a column (shared x)");
+    assert_ne!(p1.y, p2.y, "after toggle: stacked (different y)");
+
+    layout.toggle_split_layout();
+    check_ops_on_layout(
+        &mut layout,
+        [Op::Communicate(1), Op::Communicate(2), Op::AdvanceAnimations { msec_delta: 1000 }],
+    );
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(p1.x, p2.x, "toggled back to a row");
+}
+
+#[test]
 fn stacked_root_reserves_one_row_per_child_not_per_leaf() {
     use super::tile_node::Layout;
 

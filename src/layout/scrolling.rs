@@ -3042,6 +3042,25 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.columns[self.active_column_idx].update_tile_sizes(true);
     }
 
+    /// Toggles the container holding the active window between horizontal and vertical split
+    /// (sway's `layout toggle split`). A tabbing container converts to its family's split.
+    pub fn toggle_split_layout(&mut self) {
+        if self.columns.is_empty() {
+            return;
+        }
+        let col = &self.columns[self.active_column_idx];
+        let path = col.root.active_path();
+        let parent_len = path.len().saturating_sub(1);
+        let parent_path = path[..parent_len].to_vec();
+        let new = match col.root.node_at(&parent_path).layout() {
+            Some(Layout::SplitH) => Layout::SplitV,
+            Some(Layout::SplitV) => Layout::SplitH,
+            Some(l) if l.is_tabbing() => l.split_of_family(),
+            _ => return,
+        };
+        self.set_active_layout(new);
+    }
+
     /// Moves the active tab left or right within its tabbed container.
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         if self.columns.is_empty() {

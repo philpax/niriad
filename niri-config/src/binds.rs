@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use knuffel::errors::DecodeError;
 use miette::miette;
 use niri_ipc::{
-    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, SplitDirection,
+    ColumnDisplay, ColumnLayout, LayoutSwitchTarget, PositionChange, SizeChange, SplitDirection,
     TabDirection, WorkspaceReferenceArg,
 };
 use smithay::input::keyboard::keysyms::KEY_NoSymbol;
@@ -223,6 +223,8 @@ pub enum Action {
     MoveTabLeft,
     MoveTabRight,
     SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
+    SetColumnLayout(#[knuffel(argument, str)] ColumnLayout),
+    ToggleSplitLayout,
     CenterColumn,
     CenterWindow,
     #[knuffel(skip)]
@@ -524,6 +526,8 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::ToggleTabbed {} => Self::ToggleTabbed,
             niri_ipc::Action::MoveTab { direction } => Self::MoveTab(direction),
             niri_ipc::Action::SetColumnDisplay { display } => Self::SetColumnDisplay(display),
+            niri_ipc::Action::SetColumnLayout { layout } => Self::SetColumnLayout(layout),
+            niri_ipc::Action::ToggleSplitLayout {} => Self::ToggleSplitLayout,
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
             niri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
             niri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),

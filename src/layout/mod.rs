@@ -2291,6 +2291,13 @@ impl<W: LayoutElement> Layout<W> {
         workspace.set_active_layout(layout);
     }
 
+    pub fn toggle_split_layout(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.toggle_split_layout();
+    }
+
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

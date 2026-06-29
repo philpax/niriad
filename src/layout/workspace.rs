@@ -1226,6 +1226,13 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.set_active_layout(layout);
     }
 
+    pub fn toggle_split_layout(&mut self) {
+        if self.floating_is_active.get() {
+            return;
+        }
+        self.scrolling.toggle_split_layout();
+    }
+
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         if self.floating_is_active.get() {
             return;

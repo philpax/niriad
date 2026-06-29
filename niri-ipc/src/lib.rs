@@ -486,6 +486,15 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         display: ColumnDisplay,
     },
+    /// Set the layout of the container holding the focused window (sway's `layout`/`split`).
+    SetColumnLayout {
+        /// Layout to set: splith, splitv, tabbed or stacked.
+        #[cfg_attr(feature = "clap", arg())]
+        layout: ColumnLayout,
+    },
+    /// Toggle the container holding the focused window between horizontal and vertical split
+    /// (sway's `layout toggle split`).
+    ToggleSplitLayout {},
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.
@@ -1037,6 +1046,20 @@ pub enum ColumnDisplay {
     Normal,
     /// Windows are in tabs.
     Tabbed,
+}
+
+/// A sway-style container layout for the container holding the focused window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ColumnLayout {
+    /// Children side by side, all visible (sway `splith`).
+    SplitH,
+    /// Children stacked vertically, all visible (sway `splitv`).
+    SplitV,
+    /// Children as tabs; one visible; a single row of side-by-side tab titles (sway `tabbed`).
+    Tabbed,
+    /// Children stacked; one visible; one title row per child (sway `stacking`).
+    Stacked,
 }
 
 /// Direction for splitting a window.
@@ -1959,6 +1982,20 @@ impl FromStr for ColumnDisplay {
             "normal" => Ok(Self::Normal),
             "tabbed" => Ok(Self::Tabbed),
             _ => Err(r#"invalid column display, can be "normal" or "tabbed""#),
+        }
+    }
+}
+
+impl FromStr for ColumnLayout {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "splith" => Ok(Self::SplitH),
+            "splitv" => Ok(Self::SplitV),
+            "tabbed" => Ok(Self::Tabbed),
+            "stacked" | "stacking" => Ok(Self::Stacked),
+            _ => Err(r#"invalid column layout, can be "splith", "splitv", "tabbed" or "stacked""#),
         }
     }
 }

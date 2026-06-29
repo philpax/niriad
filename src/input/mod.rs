@@ -1764,6 +1764,25 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
+            Action::SetColumnLayout(layout) => {
+                use crate::layout::tile_node::Layout;
+                let layout = match layout {
+                    niri_ipc::ColumnLayout::SplitH => Layout::SplitH,
+                    niri_ipc::ColumnLayout::SplitV => Layout::SplitV,
+                    niri_ipc::ColumnLayout::Tabbed => Layout::Tabbed,
+                    niri_ipc::ColumnLayout::Stacked => Layout::Stacked,
+                };
+                self.niri.layout.set_active_layout(layout);
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::ToggleSplitLayout => {
+                self.niri.layout.toggle_split_layout();
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
             Action::SwitchPresetColumnWidth => {
                 self.niri.layout.toggle_width(true);
             }
