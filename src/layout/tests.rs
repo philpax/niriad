@@ -4564,6 +4564,11 @@ fn spatial_focus_resolves_screen_direction_per_orientation() {
         Some(1),
         "screen-left walks the horizontal strip on a landscape monitor"
     );
+    h.focus_screen_right();
+    assert_eq!(active_window_id(&h), Some(2), "screen-right walks back");
+    // Move the focused window (2) screen-left: it swaps past window 1, giving order [2, 1].
+    h.move_screen_left();
+    assert_eq!(window_order(&h), vec![2, 1], "screen-left move reorders the strip");
 
     // On a portrait monitor the strip runs vertically: screen-UP walks the strip, while
     // screen-left/right stay within a column (cross axis). This is the case that was confusing with

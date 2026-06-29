@@ -94,3 +94,32 @@ noted but not required for behavioural parity.
 
 Stages land in order; later stages may be partial if time runs out, but each commit keeps the tree
 green (build + tests + clippy + fuzzer).
+
+## Status
+
+- **S0 — done.** `TileNode` unified to `Leaf | Internal{ layout, .. }`; `Layout` enum with axis/family
+  helpers. Adversarial-reviewed; fixed a born-tabbed un-tab bug it found.
+- **S2 — done.** `simplify()` (flatten + same-family merge), wired into remove/add; `verify_structure`
+  enforces no same-family nesting (fuzzer-checked). Reviewed clean.
+- **S1 — done.** `Stacked` layout (N title rows) + `set-column-layout`. Reviewed; fixed a root
+  leaf-count-vs-child-count geometry desync and a config-reload flag drop it found.
+- **S3 — done.** `set-column-layout splith|splitv|tabbed|stacked` and `toggle-split-layout` actions,
+  wired across the crates; sway-themed config (`resources/sway-config.kdl`). Reviewed clean.
+- **S5 — done.** Spatial `focus/move-left|right|up|down` resolving screen directions per monitor
+  orientation; sway config binds hjkl/arrows to them. Reviewed — 8-way mapping correct both
+  orientations.
+- **S4 — pending.** sway three-region drag (titlebar→tab / edge-band→split / body→split-or-swap).
+  niriad already has a working thirds + beside-stack drag; making it fully sway-faithful is the
+  remaining refinement.
+
+### Known limitations / follow-ups
+- Spatial focus/move stops at a screen edge rather than crossing to the adjacent output (sway
+  crosses). The strip still scrolls; only directional edge-crossing is missing.
+- The new `move-*` actions don't special-case the screenshot UI (the older `move-column-*` do), so
+  pressing them with the screenshot selector open moves a window instead of nudging the selection.
+- A tabbed/stacked **root** with a nested non-leaf child renders one tab/row per direct child
+  (geometry correct) but the per-tab titles are taken per-leaf; a tab whose content is a group shows
+  a leaf title. Nested (non-root) headers already do this correctly. Fully unifying the root header
+  through the nested-header path would resolve it.
+- The node enum is unified, but the root tab header still has a dedicated render path (kept to avoid
+  changing the common-case visuals); folding it into the nested-header walk is a possible cleanup.
