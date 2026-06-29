@@ -1169,6 +1169,50 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::FocusLeft => {
+                self.niri.layout.focus_screen_left();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusRight => {
+                self.niri.layout.focus_screen_right();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusUp => {
+                self.niri.layout.focus_screen_up();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusDown => {
+                self.niri.layout.focus_screen_down();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveLeft => {
+                self.niri.layout.move_screen_left();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveRight => {
+                self.niri.layout.move_screen_right();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveUp => {
+                self.niri.layout.move_screen_up();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
+            Action::MoveDown => {
+                self.niri.layout.move_screen_down();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.queue_redraw_all();
+            }
             Action::FocusColumnLeft => {
                 self.niri.layout.focus_left();
                 self.maybe_warp_cursor_to_focus();

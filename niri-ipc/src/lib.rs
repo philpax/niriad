@@ -334,6 +334,23 @@ pub enum Action {
     },
     /// Focus the previously focused window.
     FocusWindowPrevious {},
+    /// Focus the window/column toward the left of the screen (sway-style spatial focus). Resolves
+    /// to the main or cross axis depending on the monitor's orientation.
+    FocusLeft {},
+    /// Focus toward the right of the screen (sway-style spatial focus).
+    FocusRight {},
+    /// Focus toward the top of the screen (sway-style spatial focus).
+    FocusUp {},
+    /// Focus toward the bottom of the screen (sway-style spatial focus).
+    FocusDown {},
+    /// Move the focused window toward the left of the screen (sway-style spatial move).
+    MoveLeft {},
+    /// Move toward the right of the screen (sway-style spatial move).
+    MoveRight {},
+    /// Move toward the top of the screen (sway-style spatial move).
+    MoveUp {},
+    /// Move toward the bottom of the screen (sway-style spatial move).
+    MoveDown {},
     /// Focus the column to the left.
     FocusColumnLeft {},
     /// Focus the column to the right.

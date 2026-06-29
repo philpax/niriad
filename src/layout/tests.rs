@@ -4550,6 +4550,50 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn spatial_focus_resolves_screen_direction_per_orientation() {
+    // On a landscape monitor the strip runs horizontally, so screen-left moves between columns.
+    let mut h = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+    ]);
+    assert_eq!(active_window_id(&h), Some(2));
+    h.focus_screen_left();
+    assert_eq!(
+        active_window_id(&h),
+        Some(1),
+        "screen-left walks the horizontal strip on a landscape monitor"
+    );
+
+    // On a portrait monitor the strip runs vertically: screen-UP walks the strip, while
+    // screen-left/right stay within a column (cross axis). This is the case that was confusing with
+    // the old logical column/window binds.
+    let mut options = Options::default();
+    options.layout.main_axis = MainAxis::Vertical;
+    let mut v = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: TestWindowParams::new(1) },
+            Op::AddWindow { params: TestWindowParams::new(2) },
+        ],
+    );
+    assert_eq!(active_window_id(&v), Some(2));
+    v.focus_screen_left();
+    assert_eq!(
+        active_window_id(&v),
+        Some(2),
+        "screen-left is within-column (no sibling here) on a portrait monitor"
+    );
+    v.focus_screen_up();
+    assert_eq!(
+        active_window_id(&v),
+        Some(1),
+        "screen-up walks the vertical strip on a portrait monitor"
+    );
+}
+
+#[test]
 fn toggle_split_layout_flips_row_and_column() {
     // A side-by-side row [1 | 2]; toggle split → a vertical column [1 / 2]; toggle again → row.
     let mut layout = check_ops([

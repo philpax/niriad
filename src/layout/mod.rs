@@ -39,7 +39,8 @@ use std::time::Duration;
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
+    Config, CornerRadius, LayoutPart, MainAxis, PresetSize, Workspace as WorkspaceConfig,
+    WorkspaceReference,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use scrolling::{Column, ColumnWidth};
@@ -1941,6 +1942,77 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         workspace.focus_left();
+    }
+
+    /// The active workspace's main axis (the direction the scrolling strip runs).
+    fn active_main_axis(&self) -> MainAxis {
+        self.active_workspace()
+            .map_or(MainAxis::Horizontal, |ws| ws.main_axis())
+    }
+
+    // --- Spatial (screen-direction) focus/move ---
+    //
+    // niri's focus_left/right move along the *main* axis (the strip + side-by-side splits) and
+    // focus_up/down along the *cross* axis. On a landscape monitor the main axis is horizontal, so
+    // those coincide with the screen directions; on a portrait monitor the strip runs vertically, so
+    // the two axes are swapped relative to the screen. These wrappers resolve a *screen* direction to
+    // the right axis per the monitor's orientation, so left/right/up/down always mean what you see —
+    // the way sway/i3 behave, and fixing the confusing vertical-monitor case.
+
+    pub fn focus_screen_left(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_left(),
+            MainAxis::Vertical => self.focus_up(),
+        }
+    }
+
+    pub fn focus_screen_right(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_right(),
+            MainAxis::Vertical => self.focus_down(),
+        }
+    }
+
+    pub fn focus_screen_up(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_up(),
+            MainAxis::Vertical => self.focus_left(),
+        }
+    }
+
+    pub fn focus_screen_down(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_down(),
+            MainAxis::Vertical => self.focus_right(),
+        }
+    }
+
+    pub fn move_screen_left(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_left(),
+            MainAxis::Vertical => self.move_up(),
+        }
+    }
+
+    pub fn move_screen_right(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_right(),
+            MainAxis::Vertical => self.move_down(),
+        }
+    }
+
+    pub fn move_screen_up(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_up(),
+            MainAxis::Vertical => self.move_left(),
+        }
+    }
+
+    pub fn move_screen_down(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_down(),
+            MainAxis::Vertical => self.move_right(),
+        }
     }
 
     pub fn focus_right(&mut self) {
