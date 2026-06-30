@@ -1197,10 +1197,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let main_dist = (closest_col_main - main).abs();
         let cross_dist = (closest_tile_cross - cross).abs();
 
-        // If the pointer is far from both gaps, it's in a tile interior.
-        // Only trigger InSplit (side-by-side) when the pointer is in the main-axis center
-        // of the tile (left/right halves). Near the top/bottom edges, fall through to
-        // InSection (below/above insertion) for vertical stacking.
+        let col_main_start = self.section_main_pos(col_idx);
+
+        // Section-local position (no gap-aiming fudge), in the same coordinate space as
+        // `leaf_positions` and the tab-header geometry. Used for the header-band hit-test.
+        let local = Point::from((pos.x + self.view_main_pos() - col_main_start, pos.y));
+
+        // Tab-header band: if the cursor is over the titlebar band a tabbing container (the root
+        // tabbed section, or a nested Tabbed/Stacked node) reserves at its top, add the dragged
+        // window as a new tab of that container. Below the band, the per-window region map applies
+        // to the visible content. This is the *only* way to add a tab over a tabbed section's body
+        // now — the body itself follows the precise per-window map.
+        if let Some(target) = col.header_band_target(local) {
+            return InsertPosition::InsertTab(col_idx, target);
+        }
+
         // Per-leaf tile size by flat-leaf index, resolved through the tree path so it stays
         // correct for nested splits (where the leaf index is not a root child index).
         let leaf_size = |idx: usize| -> Size<f64, Logical> {
@@ -1211,34 +1222,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .unwrap_or_default()
         };
 
-        // Whether the section's top level is a horizontal row (a Main split). For a row, the tiles
-        // sit side by side: the pointer picks a tile by its *main* (x) position, and the top/bottom
-        // edges insert above/below the whole row rather than between specific tiles.
-        let col_is_row = matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. });
-        let col_main_start = self.section_main_pos(col_idx);
-
         let gap_threshold = self.options.layout.gaps * 2.;
 
-        // Dropping into the body of a tabbed/stacked section tabs the dragged window with the
-        // *visible* active leaf (a flat leaf index resolved through any nesting — not the root child
-        // index). For a flat tabbed section that's a new tab of the section; if the active tab is
-        // itself a nested split, the window tabs with the active leaf *inside* that split (it
-        // becomes the visible tab there, since the drop activates it). The side gaps still reach
-        // NewSection and the top/bottom gaps still reach InSection above/below, so the section stays
-        // escapable.
-        if col.is_tabbed() && main_dist > gap_threshold && cross_dist > gap_threshold {
-            let target = col.root.path_for_leaf_index_from_active().unwrap_or(0);
-            return InsertPosition::InsertTab(col_idx, target);
-        }
-
-        if main_dist > gap_threshold && cross_dist > gap_threshold && !col.is_tabbed() {
-            // Find the tile under the pointer with a 2D hit-test: a vertical stack disambiguates by
-            // cross (y), a horizontal row by main (x). Fall back to the cross-closest tile if the
-            // pointer isn't inside any tile horizontally.
+        // If the pointer is far from both gaps, it's in a tile interior; otherwise it's near a gap
+        // and inserts a new section (side gap) or a new row above/below (top/bottom gap). The gap
+        // branches keep a tabbed/stacked or nested section escapable.
+        if main_dist > gap_threshold && cross_dist > gap_threshold {
+            // Hit-test the *visible* leaf under the pointer: a vertical stack disambiguates by cross
+            // (y), a horizontal row by main (x). The hidden tabs of a tabbing container share the
+            // visible tab's rect, so require the hit leaf to be visible — otherwise a centre-drop
+            // would target a hidden tab instead of the one the user sees. Fall back to the
+            // cross-closest tile if the pointer isn't inside any visible tile.
             let offsets: Vec<_> = col.tile_offsets().collect();
-            // The hidden tabs of a tabbing container share the visible tab's rect, so require the
-            // hit leaf to be *visible* — otherwise a centre-drop would target (and swap with) a
-            // hidden tab instead of the one the user sees.
             let visibility = col.root.leaf_visibility();
             let tile_idx = offsets
                 .iter()
@@ -1255,105 +1250,33 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .map(|(idx, _)| idx)
                 .unwrap_or(closest_tile_idx);
 
-            // The root child (a single window, or a whole row / tabbed group) the tile belongs to,
-            // and whether that child is a horizontal row.
-            let rc = col
-                .root
-                .path_for_leaf_index(tile_idx)
-                .and_then(|p| p.first().copied())
-                .unwrap_or(0);
-            let tile_in_row = col_is_row
-                || matches!(col.root.node_at(&[rc]), TileNode::Internal { layout: Layout::SplitH, .. });
-
-            // Check if we're near the top/bottom edge — if so, insert a row (InSection) instead of
-            // splitting side-by-side (InSplit).
             if let Some(&tile_off) = offsets.get(tile_idx) {
-                let tile_top = tile_off.y;
+                // The visible window's rect, divided into a sway-style region map. The left/right
+                // edge bands place the dragged window beside *this* window (a Main split); the
+                // top/bottom bands stack it above/below *this* window (a Cross split); the centre
+                // swaps the two (in-place mode) or groups them into tabs (detach mode). Every target
+                // is the single window under the cursor — never the whole row, stack, or section it
+                // belongs to.
+                let tile_w = leaf_size(tile_idx).w;
                 let tile_h = leaf_size(tile_idx).h;
-                let tile_bottom = tile_top + tile_h;
-                let dist_to_top = (cross - tile_top).abs();
-                let dist_to_bottom = (cross - tile_bottom).abs();
-                // A row fills its band's full height, so a fixed pixel edge would leave only a
-                // sliver for above/below and devote the whole middle to side-by-side splitting.
-                // Use generous top/bottom quarters for a row; keep a small fixed edge for a single
-                // window, where the inter-tile gaps already handle row insertion.
-                let edge_threshold = if tile_in_row {
-                    f64::max(self.options.layout.gaps * 3., tile_h * 0.25)
-                } else {
-                    self.options.layout.gaps * 3.
-                };
+                let left = col_main_start + tile_off.x;
+                let rel_x = ((main - left) / tile_w.max(1.)).clamp(0., 1.);
+                let rel_y = ((cross - tile_off.y) / tile_h.max(1.)).clamp(0., 1.);
 
-                // Insert above/below the whole root child (the entire row, or the single window) —
-                // never between a row's side-by-side tiles. For a section that is itself one big row,
-                // that means above/below the whole section.
-                let (above_idx, below_idx) = if col_is_row {
-                    (0, col.tiles_len())
-                } else {
-                    let above = col.root_child_first_leaf_idx(rc);
-                    let below = if rc + 1 < col.root.child_count() {
-                        col.root_child_first_leaf_idx(rc + 1)
+                let in_centre = (1. / 3. ..=2. / 3.).contains(&rel_x)
+                    && (1. / 3. ..=2. / 3.).contains(&rel_y);
+                if in_centre {
+                    if self.options.layout.tiling_drag == TilingDrag::InPlace {
+                        InsertPosition::Swap(col_idx, tile_idx)
                     } else {
-                        col.tiles_len()
-                    };
-                    (above, below)
-                };
-
-                if dist_to_top <= edge_threshold {
-                    InsertPosition::InSection(col_idx, above_idx)
-                } else if dist_to_bottom <= edge_threshold {
-                    InsertPosition::InSection(col_idx, below_idx)
-                } else {
-                    // Interior of the tile, divided into a sway-style region map. The four
-                    // edge-ward quadrants split the tile *toward that edge* — left/right place the
-                    // dragged window side-by-side (a Main split), top/bottom stack it above/below (a
-                    // Cross split) — while the centre groups the two windows into a tabbed container.
-                    // (sway swaps the windows on a centre-drop, but niri detaches the dragged window
-                    // during a move so there's nothing to swap back; tabbing them is the natural fit
-                    // and matches the "tabs over different stacks" workflow.)
-                    let tile_w = leaf_size(tile_idx).w;
-                    let left = col_main_start + tile_off.x;
-                    let rel_x = ((main - left) / tile_w.max(1.)).clamp(0., 1.);
-                    let rel_y = ((cross - tile_top) / tile_h.max(1.)).clamp(0., 1.);
-
-                    // If the tile sits in a vertical (Cross) stack, its siblings share its left and
-                    // right edges, so a left/right drop means "beside the whole stack", not beside
-                    // this one tile. Wrapping just the tile would leave a misaligned partial-width
-                    // cell; placing beside the stack matches what you see.
-                    let parent_is_stack = col
-                        .root
-                        .path_for_leaf_index(tile_idx)
-                        .filter(|p| !p.is_empty())
-                        .map(|p| {
-                            matches!(
-                                col.root.node_at(&p[..p.len() - 1]),
-                                TileNode::Internal { layout: Layout::SplitV, .. }
-                            )
-                        })
-                        .unwrap_or(false);
-
-                    let in_centre = (1. / 3. ..=2. / 3.).contains(&rel_x)
-                        && (1. / 3. ..=2. / 3.).contains(&rel_y);
-                    if in_centre {
-                        // sway's centre-drop: in the in-place mode the source stays in the tree, so
-                        // the two windows can truly swap. In detach mode there's nothing to swap
-                        // back, so we group them into tabs instead (S4's adaptation).
-                        if self.options.layout.tiling_drag == TilingDrag::InPlace {
-                            InsertPosition::Swap(col_idx, tile_idx)
-                        } else {
-                            InsertPosition::InsertTab(col_idx, tile_idx)
-                        }
-                    } else if (rel_x - 0.5).abs() >= (rel_y - 0.5).abs() {
-                        // Closer to a left/right edge → side-by-side.
-                        let after = rel_x > 0.5;
-                        if parent_is_stack {
-                            InsertPosition::InSplitStack(col_idx, tile_idx, after)
-                        } else {
-                            InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, after)
-                        }
-                    } else {
-                        // Closer to a top/bottom edge → stack the tile (above/below).
-                        InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Cross, rel_y > 0.5)
+                        InsertPosition::InsertTab(col_idx, tile_idx)
                     }
+                } else if (rel_x - 0.5).abs() >= (rel_y - 0.5).abs() {
+                    // Closer to a left/right edge → side-by-side (a Main split of this window).
+                    InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, rel_x > 0.5)
+                } else {
+                    // Closer to a top/bottom edge → stack above/below (a Cross split of this window).
+                    InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Cross, rel_y > 0.5)
                 }
             } else {
                 InsertPosition::InSplit(col_idx, tile_idx, SplitAxis::Main, false)
@@ -1425,45 +1348,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.activate_section(col_idx);
         }
 
-        let offset = self.section_main_pos(col_idx + 1) - prev_next_x;
-        if offset != 0. {
-            if self.active_section_idx <= col_idx {
-                for col in &mut self.sections[col_idx + 1..] {
-                    col.animate_move_from(-offset);
-                }
-            } else {
-                for col in &mut self.sections[..=col_idx] {
-                    col.animate_move_from(offset);
-                }
-            }
-        }
-    }
-
-    /// Drops a tile beside the whole vertical stack containing the leaf at (col_idx, tile_idx).
-    pub fn add_tile_beside_stack(
-        &mut self,
-        col_idx: usize,
-        tile_idx: usize,
-        place_after: bool,
-        tile: Tile<W>,
-        activate: bool,
-    ) {
-        // Don't create a split in a fullscreen/maximized section.
-        if !self.sections[col_idx].pending_sizing_mode().is_normal() {
-            self.add_tile_to_section(col_idx, None, tile, activate);
-            return;
-        }
-
-        let prev_next_x = self.section_main_pos(col_idx + 1);
-
-        let target_section = &mut self.sections[col_idx];
-        target_section.add_tile_beside_stack(tile_idx, tile, place_after, activate);
-
-        if activate && self.active_section_idx != col_idx {
-            self.activate_section(col_idx);
-        }
-
-        // Move sections to account for width changes.
         let offset = self.section_main_pos(col_idx + 1) - prev_next_x;
         if offset != 0. {
             if self.active_section_idx <= col_idx {
@@ -3642,51 +3526,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     }
                 }
             }
-            InsertPosition::InSplitStack(section_index, tile_index, place_after) => {
-                if section_index >= self.sections.len() {
-                    return None;
-                }
-                let col = &self.sections[section_index];
-                if tile_index >= col.tiles_len() {
-                    return None;
-                }
-                let path = col
-                    .root
-                    .path_for_leaf_index(tile_index)
-                    .filter(|p| !p.is_empty())?;
-                let stack_path = &path[..path.len() - 1];
-                let col_main = self.section_main_pos(section_index);
-
-                // Bounding box over every leaf in the stack — the hint spans the whole stack, since
-                // that's what the new window lands beside.
-                let (mut x0, mut y0, mut x1, mut y1) =
-                    (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-                for idx in 0..col.tiles_len() {
-                    let p = col.root.path_for_leaf_index(idx).unwrap_or_default();
-                    if !p.starts_with(stack_path) {
-                        continue;
-                    }
-                    let off = col.tile_offset(idx);
-                    let sz = col.root.leaf_data(&p).map(|d| d.size).unwrap_or_default();
-                    let lx = col_main + off.x;
-                    x0 = x0.min(lx);
-                    y0 = y0.min(off.y);
-                    x1 = x1.max(lx + sz.w);
-                    y1 = y1.max(off.y + sz.h);
-                }
-                if x0 > x1 || y0 > y1 {
-                    return None;
-                }
-
-                // Half-width rectangle on the side the new window will land.
-                let half_w = (x1 - x0) / 2.;
-                let loc = if place_after {
-                    Point::from((x0 + half_w, y0))
-                } else {
-                    Point::from((x0, y0))
-                };
-                Rectangle::new(loc, Size::from((half_w, y1 - y0)))
-            }
             InsertPosition::InsertTab(section_index, tile_index)
             | InsertPosition::Swap(section_index, tile_index) => {
                 if section_index >= self.sections.len() {
@@ -5481,108 +5320,6 @@ impl<W: LayoutElement> Section<W> {
 
         // Animate existing tiles according to their position changes.
         self.animate_leaves_if_moved(&prev);
-    }
-
-    /// Drops a new tile beside the whole vertical (Cross) stack that contains the leaf at
-    /// `leaf_idx`, on the right if `place_after`. Stacked tiles share their side edges, so a
-    /// left/right drag targets the entire stack: the new window is wrapped around the stack (or
-    /// inserted as a sibling of the stack if the stack already lives in a horizontal row), rather
-    /// than nested next to a single tile (which would leave a misaligned partial-width cell).
-    fn add_tile_beside_stack(
-        &mut self,
-        leaf_idx: usize,
-        mut tile: Tile<W>,
-        place_after: bool,
-        activate: bool,
-    ) {
-        // The stack is the leaf's parent. With no parent (single-tile root) there's no stack to be
-        // beside, so fall back to a plain side-by-side split of the leaf.
-        let stack_path = match self.root.path_for_leaf_index(leaf_idx) {
-            Some(p) if !p.is_empty() => p[..p.len() - 1].to_vec(),
-            _ => {
-                self.add_tile_to_split(leaf_idx, tile, SplitAxis::Main, place_after, activate);
-                return;
-            }
-        };
-
-        tile.update_config(
-            self.map_size_out(self.view_size),
-            self.scale,
-            self.options.clone(),
-        );
-        let prev = self.leaf_positions_by_id();
-
-        let mut new_data = SplitChildData::new_auto();
-        new_data.update(&tile, self.axis());
-
-        let placeholder = || TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None);
-
-        // Wraps `stack` and the new tile into a fresh Main split, ordered by `place_after`.
-        let wrap = |stack: TileNode<W>, new_tile: Tile<W>, new_data: SplitChildData| {
-            let stack_data = SplitChildData::new_auto();
-            if place_after {
-                (
-                    vec![stack, TileNode::Leaf(new_tile)],
-                    vec![stack_data, new_data],
-                    1usize,
-                )
-            } else {
-                (
-                    vec![TileNode::Leaf(new_tile), stack],
-                    vec![new_data, stack_data],
-                    0usize,
-                )
-            }
-        };
-
-        let new_leaf_path: TilePath = if stack_path.is_empty() {
-            // The stack is the section root: wrap the whole root in a Main split.
-            let stack = std::mem::replace(&mut self.root, placeholder());
-            let (children, data, new_idx) = wrap(stack, tile, new_data);
-            let active_idx = if activate { new_idx } else { 1 - new_idx };
-            self.root = TileNode::internal(Layout::SplitH, children, active_idx, data, None);
-            vec![new_idx]
-        } else {
-            let stack_idx = *stack_path.last().unwrap();
-            let grand_path = stack_path[..stack_path.len() - 1].to_vec();
-            let grand_is_row = matches!(
-                self.root.node_at(&grand_path),
-                TileNode::Internal { layout: Layout::SplitH, .. }
-            );
-
-            let TileNode::Internal { children, data, active_idx, .. } =
-                self.root.node_at_mut(&grand_path)
-            else {
-                unreachable!("grandparent path points to a leaf")
-            };
-
-            if grand_is_row {
-                // The stack already sits in a horizontal row: insert the new tile as a sibling
-                // next to it.
-                let insert_idx = if place_after { stack_idx + 1 } else { stack_idx };
-                children.insert(insert_idx, TileNode::Leaf(tile));
-                data.insert(insert_idx, new_data);
-                if !activate && *active_idx >= insert_idx {
-                    *active_idx += 1;
-                }
-                let mut p = grand_path.clone();
-                p.push(insert_idx);
-                p
-            } else {
-                // Wrap just the stack node in a Main split in place.
-                let stack = std::mem::replace(&mut children[stack_idx], placeholder());
-                let (sub_children, sub_data, new_idx) = wrap(stack, tile, new_data);
-                let internal_active = if activate { new_idx } else { 1 - new_idx };
-                children[stack_idx] =
-                    TileNode::internal(Layout::SplitH, sub_children, internal_active, sub_data, None);
-                let mut p = grand_path.clone();
-                p.push(stack_idx);
-                p.push(new_idx);
-                p
-            }
-        };
-
-        self.finish_add_tile_to_split(new_leaf_path, activate, prev);
     }
 
     /// Captures on-screen leaf positions keyed by window id (stable across tree reordering).
@@ -7544,6 +7281,71 @@ impl<W: LayoutElement> Section<W> {
         let indicator_size = Size::from((active_size.w, max_tile_cross_span));
 
         Rectangle::new(self.tiles_origin(), indicator_size)
+    }
+
+    /// If `local` (section-local logical coords, same space as `leaf_positions`) is over the header
+    /// band that a tabbing container reserves at its edge, returns the flat-leaf index of a
+    /// representative leaf in that container — dropping there adds the dragged window as a new tab.
+    ///
+    /// The band is `extra_size` worth of space at the container's header side: the full container
+    /// rect (content + header) minus the content rect. This reuses the exact geometry the renderer
+    /// and the tab-switching hit-test use (`tab_indicator_area`/`collect_nested_tabbed` for the
+    /// content rect, `TabHeader::extra_size`/`content_offset` for the reserved band), so the drop
+    /// region lines up with the drawn header. Handles the root tabbed section and every nested
+    /// Tabbed/Stacked node; the innermost (deepest) matching container wins.
+    fn header_band_target(&self, local: Point<f64, Logical>) -> Option<usize> {
+        let scale = self.scale;
+
+        // A container's header band = full rect (content shifted back by content_offset, grown by
+        // extra_size) minus the content rect. Returns whether `local` is in that band.
+        let in_band = |content: Rectangle<f64, Logical>,
+                       header: &TabHeader,
+                       tab_count: usize|
+         -> bool {
+            let extra = header.extra_size(tab_count, scale);
+            if extra.w <= 0. && extra.h <= 0. {
+                return false;
+            }
+            let offset = header.content_offset(tab_count, scale);
+            let full = Rectangle::new(content.loc - offset, content.size + extra);
+            full.contains(local) && !content.contains(local)
+        };
+
+        let mut best: Option<(usize, usize)> = None; // (path depth, target leaf)
+
+        // Root tabbed section.
+        if self.is_tabbed() {
+            if let Some(header) = self.tab_header() {
+                if in_band(self.tab_indicator_area(), header, self.root.child_count()) {
+                    best = Some((0, self.active_leaf_idx()));
+                }
+            }
+        }
+
+        // Nested tabbing containers (a tabbed row, a stacked column, etc.).
+        for unit in self.collect_nested_tabbed() {
+            if !unit.visible {
+                continue;
+            }
+            let Some(header) = self.root.node_at(&unit.path).tab_header() else {
+                continue;
+            };
+            if !in_band(unit.content_area, header, unit.tab_count) {
+                continue;
+            }
+            let target = unit
+                .rep_leaf_idx
+                .get(unit.active_idx)
+                .or_else(|| unit.rep_leaf_idx.first())
+                .copied()
+                .unwrap_or(0);
+            let depth = unit.path.len();
+            if best.is_none_or(|(d, _)| depth >= d) {
+                best = Some((depth, target));
+            }
+        }
+
+        best.map(|(_, leaf)| leaf)
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {

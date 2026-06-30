@@ -184,7 +184,18 @@ Stages (each builds/tests/reviews/commits):
   staying opaque in its slot. A render smoke test covers no-panic; the *pixels* can't be unit-tested,
   so this needs a human visual check (ghost tracks the grab point, alpha/layering, positioning under
   overview zoom, damage trails) before the default flips to `in-place`.
+- **S6.5 — done (region map); visual verification pending.** Precise per-window targeting: every
+  drop targets the single *visible* window under the cursor — its 4 edges split it (left/right →
+  Main, top/bottom → Cross), the centre swaps (in-place) or tabs (detach). The three aggregating
+  escalations are gone: `InSplitStack` (whole-stack — variant + apply chain `add_tile_beside_stack`
+  fully deleted), the above/below-whole-row `InSection`, and the tabbed-body "add a tab". Tab-add now
+  happens *only* over a tabbing container's titlebar **header band** (`Section::header_band_target`,
+  reusing `collect_nested_tabbed` + `TabHeader::extra_size`/`content_offset`, deepest container wins)
+  — over the content, the per-window map applies, so you can split a tab's window into a stack.
+  Built by a worktree agent, reviewed (header band = full-rect-minus-content; interior is clean).
+  *Visual check:* the header-band thickness boundary, a literal nested horizontal `Tabbed`, the
+  side-split-vs-new-section-gap zone width, and the corner split tiebreak.
+- **Indicator colours (next):** tint the hint by drop type — swap / split / tab-add — configurable in
+  the `insert-hint` block with distinct defaults.
 - **S6.4 — cross-output / cross-workspace** in-place (cross-tree move + swap) and the float-toggle
   handoff to the existing `Moving` flow.
-- **S6.5 — exact region map under in-place** (titlebar→tab at the cursor index, edge→split,
-  body→edge-split, centre→swap), refining S4's approximation now that hit-testing is exact.

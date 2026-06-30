@@ -4649,17 +4649,6 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplitStack(section_idx, tile_idx, place_after) => {
-                        mon.add_tile_beside_stack(
-                            ws_idx,
-                            section_idx,
-                            tile_idx,
-                            place_after,
-                            move_.tile,
-                            true,
-                            allow_to_activate_workspace,
-                        );
-                    }
                     // Swap is only produced in the in-place drag, which never reaches this
                     // detach-mode apply; if it ever did (no source in the tree to swap with), fall
                     // back to grouping into tabs.

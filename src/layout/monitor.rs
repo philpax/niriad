@@ -135,11 +135,6 @@ pub(super) enum InsertPosition {
     /// Drop into a split with the tile at (section_idx, tile_idx) along the given axis.
     /// `is_right_half` indicates which half of the target tile to drop into.
     InSplit(usize, usize, SplitAxis, bool),
-    /// Drop beside the *whole* vertical (Cross) stack that contains the tile at
-    /// (section_idx, tile_idx). The stacked tiles share their left/right edges, so dropping to
-    /// either side of any of them places the new window next to the entire stack rather than
-    /// next to one tile. `place_after` is true for the right side. Produced only by drag.
-    InSplitStack(usize, usize, bool),
     /// Group the dragged window into a tabbed container with the tile at (section_idx, tile_idx) —
     /// sway's "drop on the centre" behaviour, adapted to niri's detach-during-drag model (which
     /// can't swap): if the target is already in a tabbing container the window joins it as a new
@@ -677,32 +672,6 @@ impl<W: LayoutElement> Monitor<W> {
         let workspace = &mut self.workspaces[workspace_idx];
 
         workspace.add_tile_to_split(section_idx, tile_idx, axis, place_after, tile, activate);
-
-        // After adding a new window, workspace becomes this output's own.
-        if workspace.name().is_none() {
-            workspace.original_output = OutputId::new(&self.output);
-        }
-
-        if allow_to_activate_workspace && activate {
-            self.activate_workspace(workspace_idx);
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_tile_beside_stack(
-        &mut self,
-        workspace_idx: usize,
-        section_idx: usize,
-        tile_idx: usize,
-        place_after: bool,
-        tile: Tile<W>,
-        activate: bool,
-        // FIXME: Refactor ActivateWindow enum to make this better.
-        allow_to_activate_workspace: bool,
-    ) {
-        let workspace = &mut self.workspaces[workspace_idx];
-
-        workspace.add_tile_beside_stack(section_idx, tile_idx, place_after, tile, activate);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {

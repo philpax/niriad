@@ -1770,7 +1770,6 @@ fn vertical_main_axis_insert_position_follows_y() {
         super::monitor::InsertPosition::NewSection(idx)
         | super::monitor::InsertPosition::InSection(idx, _)
         | super::monitor::InsertPosition::InSplit(idx, _, _, _)
-        | super::monitor::InsertPosition::InSplitStack(idx, _, _)
         | super::monitor::InsertPosition::InsertTab(idx, _)
         | super::monitor::InsertPosition::Swap(idx, _) => idx,
         super::monitor::InsertPosition::Floating => unreachable!(),
@@ -5210,21 +5209,158 @@ fn drag_onto_a_tabbed_section_body_adds_a_tab() {
 }
 
 #[test]
-fn drag_below_a_row_stacks_below_drag_above_stacks_above() {
-    // Dropping in the bottom region of the row puts window 3 below it (greater y), keeping 1 and 2
-    // as the top row (shared, smaller y).
-    let [p1, p2, p3] = drag_window3_onto_row(166., 600.);
-    assert_eq!(p1.y, p2.y, "the row stays a row");
-    assert!(p3.y > p1.y, "drag to the bottom should stack the window BELOW the row (p3={p3:?}, row y={})", p1.y);
+fn drag_over_tab_header_adds_tab_over_content_uses_region_map() {
+    use super::monitor::InsertPosition;
+    // Fully-tabbed root: Tabbed[1, 2]. The titlebar band at the top adds a tab; below it, the
+    // content follows the precise per-window region map (edge → split the visible window, centre →
+    // tab in detach mode).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SetLayout(super::tile_node::Layout::Tabbed),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
-    // Dropping in the top region puts it above (smaller y than the row).
-    let [p1, p2, p3] = drag_window3_onto_row(166., 100.);
-    assert_eq!(p1.y, p2.y, "the row stays a row");
-    assert!(p3.y < p1.y, "drag to the top should stack the window ABOVE the row (p3={p3:?}, row y={})", p1.y);
+    // The two tabs share the content rect; use window 2's geometry for it.
+    let (cpos, csize) = window_geo(&layout, 2).unwrap();
+    let cx = cpos.x + csize.w / 2.;
+    let cy = cpos.y + csize.h / 2.;
+
+    // A point just above the content (in the reserved titlebar band) adds a tab.
+    let header_y = cpos.y - 6.;
+    assert!(
+        matches!(ip(cx, header_y), InsertPosition::InsertTab(0, _)),
+        "over the tab header band should add a tab, got {:?}",
+        ip(cx, header_y)
+    );
+    // The left edge of the content splits the visible window side-by-side. (Stay clear of the
+    // section's left gap, which would read as a new section, but within the left third.)
+    let left_x = cpos.x + csize.w * 0.15;
+    assert!(
+        matches!(ip(left_x, cy), InsertPosition::InSplit(0, _, SplitAxis::Main, false)),
+        "left edge of the tabbed content should split the visible window, got {:?}",
+        ip(left_x, cy)
+    );
+    // The centre groups into tabs (detach mode).
+    assert!(
+        matches!(ip(cx, cy), InsertPosition::InsertTab(0, _)),
+        "centre of the tabbed content should tab, got {:?}",
+        ip(cx, cy)
+    );
 }
 
 #[test]
-fn drop_below_a_nested_row_inserts_after_the_whole_row() {
+fn drag_over_nested_tabbing_header_adds_tab_over_content_uses_region_map() {
+    use super::monitor::InsertPosition;
+    // Nested tabbing container under a horizontal root: SplitH[1, Stacked[2, 3]] with window 3 the
+    // visible tab. The nested container reserves its own titlebar band; a drop there adds a tab to
+    // it, while a drop over its content follows the per-window region map on the visible leaf (3 =
+    // flat index 2).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(3) },
+        Op::ToggleTabbed, // Cross[2,3] -> Stacked[2,3]; window 3 stays visible.
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+
+    let (cpos, csize) = window_geo(&layout, 3).unwrap();
+    let cx = cpos.x + csize.w / 2.;
+    let cy = cpos.y + csize.h / 2.;
+
+    // Over the nested container's titlebar band → add a tab to *that* container.
+    let header_y = cpos.y - 6.;
+    assert!(
+        matches!(ip(cx, header_y), InsertPosition::InsertTab(0, _)),
+        "over the nested tab header should add a tab, got {:?}",
+        ip(cx, header_y)
+    );
+    // Left edge of the visible content → split window 3 (leaf 2) side-by-side.
+    let left_x = cpos.x + csize.w * 0.15;
+    assert!(
+        matches!(ip(left_x, cy), InsertPosition::InSplit(0, 2, SplitAxis::Main, false)),
+        "left edge of the nested content should split window 3, got {:?}",
+        ip(left_x, cy)
+    );
+    // Centre → group window 3 into tabs (detach mode).
+    assert!(
+        matches!(ip(cx, cy), InsertPosition::InsertTab(0, 2)),
+        "centre of the nested content should tab window 3, got {:?}",
+        ip(cx, cy)
+    );
+}
+
+#[test]
+fn in_place_drag_over_tab_header_adds_tab_centre_swaps() {
+    use super::monitor::InsertPosition;
+    // In-place mode: a tabbed section's titlebar band still adds a tab, but the content centre is a
+    // swap target (sway's centre-drop), not a tab group.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SetLayout(super::tile_node::Layout::Tabbed),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+
+    let (cpos, csize) = window_geo(&layout, 2).unwrap();
+    let cx = cpos.x + csize.w / 2.;
+    let cy = cpos.y + csize.h / 2.;
+
+    let header_y = cpos.y - 6.;
+    assert!(
+        matches!(ip(cx, header_y), InsertPosition::InsertTab(0, _)),
+        "over the tab header band should add a tab even in-place, got {:?}",
+        ip(cx, header_y)
+    );
+    assert!(
+        matches!(ip(cx, cy), InsertPosition::Swap(0, _)),
+        "centre of the tabbed content should swap in-place, got {:?}",
+        ip(cx, cy)
+    );
+}
+
+#[test]
+fn drag_below_a_windows_bottom_stacks_below_above_stacks_above() {
+    // Row [1 | 2]. Dropping in the bottom region of window 1 splits *that window* (a Cross split),
+    // stacking window 3 below it in window 1's column — windows 1 and 3 share the column (same x),
+    // window 3 lands below (greater y).
+    let [p1, _p2, p3] = drag_window3_onto_row(166., 600.);
+    assert_eq!(p1.x, p3.x, "windows 1 and 3 share a column (x)");
+    assert!(p3.y > p1.y, "the bottom region stacks window 3 BELOW window 1 (p3={p3:?}, p1={p1:?})");
+
+    // Dropping in the top region stacks it above (smaller y), still in window 1's column.
+    let [p1, _p2, p3] = drag_window3_onto_row(166., 100.);
+    assert_eq!(p1.x, p3.x, "windows 1 and 3 share a column (x)");
+    assert!(p3.y < p1.y, "the top region stacks window 3 ABOVE window 1 (p3={p3:?}, p1={p1:?})");
+}
+
+#[test]
+fn drop_in_a_nested_row_targets_the_window_under_the_cursor() {
     use super::monitor::InsertPosition;
     // Cross[1, 2, Main[3,4]] — a vertical stack whose bottom child is a side-by-side row.
     // Windows: 1 at y≈16, 2 at y≈251, the row (3 left / 4 right) at y≈486..704.
@@ -5247,21 +5383,22 @@ fn drop_below_a_nested_row_inserts_after_the_whole_row() {
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
-    // Below the row → after the *whole* row (leaf index 4 = past the end), not after the row's
-    // first leaf (3), which would land inside/before the row (the reported "middle").
+    // The top/bottom of the row's left tile (window 3 = leaf 2) now split *that window* (a Cross
+    // split), stacking the dragged window above/below it — not above/below the whole row. (The old
+    // above/below-the-whole-row InSection escalation is deliberately gone; the inter-tile gaps still
+    // reach InSection for escaping the row.)
     assert!(
-        matches!(ip(166., 690.), InsertPosition::InSection(0, 4)),
-        "below the row should insert after the whole row, got {:?}",
-        ip(166., 690.)
+        matches!(ip(166., 660.), InsertPosition::InSplit(0, 2, SplitAxis::Cross, true)),
+        "bottom of the row's left tile should stack below that window, got {:?}",
+        ip(166., 660.)
     );
-    // Above the row → before the row (leaf index 2), i.e. between window 2 and the row.
     assert!(
-        matches!(ip(166., 480.), InsertPosition::InSection(0, 2)),
-        "above the row should insert before the whole row, got {:?}",
-        ip(166., 480.)
+        matches!(ip(166., 540.), InsertPosition::InSplit(0, 2, SplitAxis::Cross, false)),
+        "top of the row's left tile should stack above that window, got {:?}",
+        ip(166., 540.)
     );
     // Centre of the row's left tile targets that tile (window 3 = leaf 2) — grouping into tabs in
-    // the default (detach) mode — rather than inserting above/below the whole row.
+    // the default (detach) mode.
     assert!(
         matches!(ip(166., 590.), InsertPosition::InsertTab(0, 2)),
         "centre of the row should target a tile, got {:?}",
@@ -5301,18 +5438,18 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
         ip(482., 360.)
     );
 
-    // The top quarter (over either tile) inserts above the whole row (leaf 0), not into it. The
-    // zone is generous — a row fills the section height, so above/below must be easy to hit.
+    // The top/bottom regions now split the *targeted window* (a Cross split), stacking the dragged
+    // window above/below that one tile — not above/below the whole row. (The old whole-row
+    // above/below InSection escalation is deliberately gone.) The top of the right tile (window 2 =
+    // leaf 1) stacks above it; the bottom of the left tile (window 1 = leaf 0) stacks below it.
     assert!(
-        matches!(ip(482., 100.), InsertPosition::InSection(0, 0)),
-        "top region of the row should insert above the whole row, got {:?}",
+        matches!(ip(482., 100.), InsertPosition::InSplit(0, 1, SplitAxis::Cross, false)),
+        "top region of the right tile should stack above that window, got {:?}",
         ip(482., 100.)
     );
-    // The bottom quarter inserts below the whole row (past the last leaf) — well away from the very
-    // edge, confirming the zone is reachable.
     assert!(
-        matches!(ip(166., 600.), InsertPosition::InSection(0, 2)),
-        "bottom region of the row should insert below the whole row, got {:?}",
+        matches!(ip(166., 600.), InsertPosition::InSplit(0, 0, SplitAxis::Cross, true)),
+        "bottom region of the left tile should stack below that window, got {:?}",
         ip(166., 600.)
     );
 }
@@ -5795,12 +5932,13 @@ fn tabbed_row_reserves_space_for_its_header() {
 }
 
 #[test]
-fn drag_beside_a_nested_stack_targets_the_whole_stack() {
+fn drag_beside_a_stacked_window_splits_that_window() {
     use super::monitor::InsertPosition;
 
     // Main[1, Cross[2, 3]] — window 1 on the left, a vertical stack [2 over 3] on the right. A
-    // left/right drop on either stacked tile should target the WHOLE stack (its tiles share their
-    // side edges), reported as InSplitStack — not a leaf-level InSplit that would wrap one tile.
+    // left/right drop on a stacked tile now splits *that one window* (a Main split of the leaf
+    // under the cursor), turning it into a side-by-side pair within the stack — not "beside the
+    // whole stack".
     let layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5815,21 +5953,22 @@ fn drag_beside_a_nested_stack_targets_the_whole_stack() {
     ]);
     let ws = layout.active_workspace().unwrap();
 
-    // A point in the right third of window 2 (top tile of the stack).
+    // A point in the right third of window 2 (top tile of the stack, flat leaf index 1).
     let (p2, s2) = window_geo(&layout, 2).unwrap();
     let x = p2.x + s2.w * 0.8;
     let y = p2.y + s2.h * 0.5;
     match ws.scrolling_insert_position(Point::from((x, y))) {
-        InsertPosition::InSplitStack(0, _, true) => {}
-        other => panic!("expected InSplitStack to the right of the stack, got {other:?}"),
+        InsertPosition::InSplit(0, 1, SplitAxis::Main, true) => {}
+        other => panic!("expected a Main split of window 2 to its right, got {other:?}"),
     }
 }
 
 #[test]
-fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
+fn drag_beside_a_stacked_window_splits_that_window_end_to_end() {
     // End-to-end: Main[1, Cross[2,3]] in section 0, window 4 alone in section 1. Dragging 4 onto the
-    // right third of the stack yields Main[1, Cross[2,3], 4]: windows 2 and 3 stay stacked (shared
-    // x), and window 4 sits to their right, spanning the full section height.
+    // right third of window 2 (the stack's top tile) splits *that window*: window 4 lands beside
+    // window 2 (shared row, shared y), window 3 stays below them, and window 4 is only as tall as
+    // window 2 — not the full section height.
     let mut layout = check_ops([
         Op::AddOutput(1),
         Op::AddWindow { params: wide_window(1) },
@@ -5855,10 +5994,20 @@ fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
         &mut layout,
         [
             Op::InteractiveMoveBegin { window: 4, output_idx: 1, px: start.x, py: start.y },
+            // First cross the detach threshold with a large move, then settle on the precise drop
+            // point over window 2's right third.
             Op::InteractiveMoveUpdate {
                 window: 4,
-                dx: drop_x - start.x,
-                dy: drop_y - start.y,
+                dx: -500.,
+                dy: 200.,
+                output_idx: 1,
+                px: start.x - 500.,
+                py: start.y + 200.,
+            },
+            Op::InteractiveMoveUpdate {
+                window: 4,
+                dx: drop_x - (start.x - 500.),
+                dy: drop_y - (start.y + 200.),
                 output_idx: 1,
                 px: drop_x,
                 py: drop_y,
@@ -5877,12 +6026,14 @@ fn drag_beside_a_nested_stack_places_beside_the_whole_stack() {
     let (p2, s2) = window_geo(&layout, 2).unwrap();
     let (p3, _) = window_geo(&layout, 3).unwrap();
     let (p4, s4) = window_geo(&layout, 4).unwrap();
-    assert_eq!(p2.x, p3.x, "the stack stays a vertical stack (shared x)");
-    assert!(p4.x > p2.x, "window 4 sits to the right of the stack (p4={p4:?}, p2={p2:?})");
+    assert_eq!(p2.y, p4.y, "windows 2 and 4 form a side-by-side row (shared y)");
+    assert!(p4.x > p2.x, "window 4 sits to the right of window 2 (p4={p4:?}, p2={p2:?})");
+    assert!(p3.y > p2.y, "window 3 stays below the 2|4 row (p3={p3:?}, p2={p2:?})");
     assert!(p1.x < p2.x, "window 1 stays to the left of the stack");
     assert!(
-        s4.h > s2.h + 1.,
-        "window 4 spans the full section height, taller than a stacked tile (s4={s4:?}, s2={s2:?})"
+        (s4.h - s2.h).abs() < 2.,
+        "window 4 is only as tall as window 2 — it split that one window, not the whole stack \
+         (s4={s4:?}, s2={s2:?})"
     );
 }
 
