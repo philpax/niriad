@@ -7264,19 +7264,9 @@ impl<W: LayoutElement> Section<W> {
             rep_path.extend(child.active_path());
             let rep_leaf_idx = flat_of(&rep_path);
 
-            // Title: the window title for a leaf, or a group label for a nested container.
-            let title = match child {
-                TileNode::Leaf(tile) => tile.window().title().unwrap_or_default(),
-                TileNode::Internal { layout, .. } => {
-                    let glyph = match layout {
-                        Layout::SplitH => 'H',
-                        Layout::SplitV => 'V',
-                        Layout::Tabbed => 'T',
-                        Layout::Stacked => 'S',
-                    };
-                    format!("{glyph}[{}]", child.leaf_count())
-                }
-            };
+            // Title: the window title for a leaf, or the sway/i3-style tree representation
+            // (`H[a b]`, `V[a H[b c]]`, …) for a nested container.
+            let title = child.tree_repr();
 
             out.push(TabChild { rep_leaf_idx, geometry, title });
         }

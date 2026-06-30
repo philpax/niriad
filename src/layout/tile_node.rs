@@ -260,6 +260,29 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// sway/i3-style tree representation: a leaf is its window title; a container is its layout
+    /// glyph (`H`/`V`/`T`/`S`) followed by its children's representations, space-separated, in
+    /// brackets — recursively. E.g. `H[Firefox V[term1 term2]]`. Used for group tab titles.
+    pub fn tree_repr(&self) -> String {
+        match self {
+            TileNode::Leaf(tile) => tile.window().title().unwrap_or_default(),
+            TileNode::Internal { layout, children, .. } => {
+                let glyph = match layout {
+                    Layout::SplitH => 'H',
+                    Layout::SplitV => 'V',
+                    Layout::Tabbed => 'T',
+                    Layout::Stacked => 'S',
+                };
+                let inner = children
+                    .iter()
+                    .map(TileNode::tree_repr)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{glyph}[{inner}]")
+            }
+        }
+    }
+
     /// Returns whether the subtree is empty (has no leaves).
     pub fn is_empty(&self) -> bool {
         self.leaf_count() == 0
