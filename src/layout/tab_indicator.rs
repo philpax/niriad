@@ -586,4 +586,20 @@ impl TabInfo {
 
         TabInfo { gradient, geometry, is_active }
     }
+
+    /// Like [`from_tile`], but uses an explicit geometry rather than the single tile's size. Used for
+    /// a tab whose content is a nested container: the geometry is the union (bounding box) of the
+    /// whole subtree under the tab, so the tab represents the group's full extent rather than one
+    /// descendant leaf's.
+    pub fn from_tile_with_geometry<W: LayoutElement>(
+        tile: &Tile<W>,
+        geometry: Rectangle<f64, Logical>,
+        is_active: bool,
+        is_urgent: bool,
+        config: &niri_config::TabIndicator,
+    ) -> Self {
+        let mut info = Self::from_tile(tile, geometry.loc, is_active, is_urgent, config);
+        info.geometry = geometry;
+        info
+    }
 }

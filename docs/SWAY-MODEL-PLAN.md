@@ -125,10 +125,11 @@ green (build + tests + clippy + fuzzer).
   crosses). The strip still scrolls; only directional edge-crossing is missing.
 - The new `move-*` actions don't special-case the screenshot UI (the older `move-column-*` do), so
   pressing them with the screenshot selector open moves a window instead of nudging the selection.
-- A tabbed/stacked **root** with a nested non-leaf child renders one tab/row per direct child
-  (geometry correct) but the per-tab titles are taken per-leaf; a tab whose content is a group shows
-  a leaf title. Nested (non-root) headers already do this correctly. Fully unifying the root header
-  through the nested-header path would resolve it.
+- ~~A tabbed/stacked root with a nested non-leaf child takes its per-tab title/size from one leaf.~~
+  **Fixed:** `Section::tab_children` now computes each tab from its *direct child* — the union
+  bounding box of all leaves under it (size) and, for a group child, a `{glyph}[count]` label
+  (`H`/`V`/`T`/`S` + total windows) instead of a leaf title. Also fixed a Stacked cross-axis
+  double-subtraction that shrank the active child from the bottom.
 - The node enum is unified, but the root tab header still has a dedicated render path (kept to avoid
   changing the common-case visuals); folding it into the nested-header walk is a possible cleanup.
 

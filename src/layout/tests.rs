@@ -4725,6 +4725,128 @@ fn stacked_layout_reserves_a_row_per_tab_and_shows_one() {
 }
 
 #[test]
+fn stacked_active_child_fills_below_header_no_bottom_loss() {
+    use super::tile_node::Layout;
+
+    // Reference: a single plain window fills the whole section; its bottom edge is the section's
+    // content bottom.
+    let plain = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::Communicate(1),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let (p_pos, p_size) = window_geo(&plain, 1).unwrap();
+    let ref_bottom = p_pos.y + p_size.h;
+
+    // Flat Stacked root (non-recursive sizing path): two leaf children.
+    let flat = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SetLayout(Layout::Stacked),
+        Op::FocusWindow(1),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let (f_pos, f_size) = window_geo(&flat, 1).unwrap();
+    let flat_bottom = f_pos.y + f_size.h;
+
+    // Nested Stacked root (recursive sizing path): one leaf + a horizontal pair, so the root has a
+    // nested child and goes through `update_tile_sizes_recursive`. There the header band was being
+    // double-counted — subtracted in the available size *and* again in `request_sizes` — so the
+    // active child lost height at the bottom as well as the (correct) header offset at the top.
+    let nested = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::FocusWindow(1),
+        Op::SetLayout(Layout::Stacked),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let (n_pos, n_size) = window_geo(&nested, 1).unwrap();
+    let nested_bottom = n_pos.y + n_size.h;
+
+    // The active child starts *below* the reserved header band (top is correctly offset).
+    assert!(
+        n_pos.y > p_pos.y + 1.,
+        "stacked active child should start below the header band (plain y={}, nested y={})",
+        p_pos.y,
+        n_pos.y
+    );
+
+    // ...and fills all the way to the section bottom (no missing strip at the bottom).
+    assert!(
+        (flat_bottom - ref_bottom).abs() < 1.,
+        "flat stacked active child must reach the section bottom (ref={ref_bottom}, flat={flat_bottom})"
+    );
+    assert!(
+        (nested_bottom - ref_bottom).abs() < 1.,
+        "nested stacked active child must reach the section bottom — the header band is reserved at \
+         the top only, not double-counted at the bottom (ref={ref_bottom}, nested={nested_bottom})"
+    );
+}
+
+#[test]
+fn group_tab_reports_subtree_union_size_and_group_label() {
+    use super::tile_node::Layout;
+
+    // Root = Stacked[ 1, SplitH[2,3] ]: tab 0 is a single leaf, tab 1 is a horizontal group.
+    let nested = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::FocusWindow(1),
+        Op::SetLayout(Layout::Stacked),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    // The horizontal pair: window 2 (left) and window 3 (right), side by side.
+    let (w2_pos, _) = window_geo(&nested, 2).unwrap();
+    let (w3_pos, w3_size) = window_geo(&nested, 3).unwrap();
+    let pair_union_w = (w3_pos.x + w3_size.w) - w2_pos.x;
+
+    let ws = nested.active_workspace().unwrap();
+    let infos = ws.scrolling().tab_child_infos(&[]);
+    assert_eq!(infos.len(), 2, "root Stacked has two direct children → two tabs");
+
+    let (g0, t0) = &infos[0]; // leaf 1
+    let (g1, t1) = &infos[1]; // SplitH[2,3]
+
+    // Bug #4: the group tab's geometry is the *union* of windows 2 and 3, not one descendant leaf.
+    // With the bug it would report a single leaf's size (≈ one window), narrower than the pair.
+    assert!(
+        g1.size.w > g0.size.w + 100.,
+        "group tab must span both windows of the subtree, not one leaf: leaf w={}, group w={}",
+        g0.size.w,
+        g1.size.w
+    );
+    assert!(
+        (g1.size.w - pair_union_w).abs() < 1.,
+        "group tab width must equal the union of windows 2 and 3: union={pair_union_w}, group w={}",
+        g1.size.w
+    );
+
+    // Bug #3: the group tab carries a synthesized group label, not a borrowed window title.
+    assert_eq!(t1, "H[2]", "group tab over a 2-window horizontal split should be labelled H[2]");
+    assert_ne!(t0, "H[2]", "the leaf tab keeps its (window) title, not a group label");
+}
+
+#[test]
 fn toggle_tabbed_is_family_aware() {
     // Toggling a vertical (cross) stack tabs into Stacked (one title row per child, stacked down);
     // toggling a horizontal (main) row tabs into Tabbed (one row of side-by-side titles). Matches

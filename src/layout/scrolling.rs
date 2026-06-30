@@ -282,6 +282,17 @@ struct NestedTabbed {
     rep_leaf_idx: Vec<usize>,
 }
 
+/// Per-tab render info for one direct child of a tabbing container.
+struct TabChild {
+    /// Flat leaf index of this tab's representative leaf (its subtree's active leaf).
+    rep_leaf_idx: usize,
+    /// Union (bounding box) of every leaf under this tab's subtree (section-local coords).
+    geometry: Rectangle<f64, Logical>,
+    /// Tab label: the window title for a leaf child, or a group label (e.g. `H[2]`) for a nested
+    /// container child.
+    title: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ViewSnap {
     view_main_pos: f64,
@@ -4047,10 +4058,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             // The section root header.
             if col.is_tabbed() && matches!(col.tab_header(), Some(TabHeader::Bar(_))) {
-                let titles: Vec<String> = col
-                    .tiles_enumerated()
-                    .map(|(_, tile)| tile.window().title().unwrap_or_default())
-                    .collect();
+                // One title per *direct child* of the root: a tab whose child is a nested container
+                // shows a group label (e.g. `H[2]`) rather than one descendant window's title.
+                let titles: Vec<String> =
+                    col.tab_children(&[]).into_iter().map(|c| c.title).collect();
                 bar_render_data.push(BarRenderData {
                     col_idx,
                     path: Vec::new(),
@@ -4071,11 +4082,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 ) {
                     continue;
                 }
-                let titles: Vec<String> = unit
-                    .rep_leaf_idx
-                    .iter()
-                    .map(|&idx| col.tile(idx).window().title().unwrap_or_default())
-                    .collect();
+                let titles: Vec<String> =
+                    col.tab_children(&unit.path).into_iter().map(|c| c.title).collect();
                 bar_render_data.push(BarRenderData {
                     col_idx,
                     path: unit.path,
@@ -4711,6 +4719,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     #[cfg(test)]
     pub fn active_section_idx(&self) -> usize {
         self.active_section_idx
+    }
+
+    /// Test introspection: per-tab `(union geometry, label)` for the tabbing node at `path` in the
+    /// active section (`path` empty = the root header).
+    #[cfg(test)]
+    pub(super) fn tab_child_infos(
+        &self,
+        path: &[usize],
+    ) -> Vec<(Rectangle<f64, Logical>, String)> {
+        let col = &self.sections[self.active_section_idx];
+        col.tab_children(path)
+            .into_iter()
+            .map(|c| (c.geometry, c.title))
+            .collect()
     }
 
     #[cfg(test)]
@@ -5595,16 +5617,24 @@ impl<W: LayoutElement> Section<W> {
         // Extract all needed data before the mutable borrow of tab_header_mut().
         let config = self.tab_header().map(|ti| ti.config());
         if let Some(config) = config {
-            let active_leaf_idx = self.root.path_for_leaf_index_from_active().unwrap_or(0);
-            let offsets: Vec<_> = self.leaf_positions().into_iter().map(|(_, p)| p).collect();
+            // One tab per *direct child* of the root (not per leaf): a tab whose child is a nested
+            // container reports the union extent of its whole subtree, not one descendant leaf's.
+            let active_child_idx = self.root.active_idx();
             let tabs: Vec<_> = self
-                .tiles_enumerated()
-                .zip(offsets)
-                .map(|((tile_idx, tile), tile_off)| {
-                    let is_active = tile_idx == active_leaf_idx;
+                .tab_children(&[])
+                .into_iter()
+                .enumerate()
+                .map(|(i, child)| {
+                    let tile = self.tile(child.rep_leaf_idx);
+                    let is_active = i == active_child_idx;
                     let is_urgent = tile.window().is_urgent();
-                    let tile_pos = tile_off + tile.render_offset();
-                    TabInfo::from_tile(tile, tile_pos, is_active, is_urgent, &config)
+                    TabInfo::from_tile_with_geometry(
+                        tile,
+                        child.geometry,
+                        is_active,
+                        is_urgent,
+                        &config,
+                    )
                 })
                 .collect();
 
@@ -5643,15 +5673,21 @@ impl<W: LayoutElement> Section<W> {
             else {
                 continue;
             };
-            let tabs: Vec<TabInfo> = unit
-                .rep_leaf_idx
-                .iter()
+            let tabs: Vec<TabInfo> = self
+                .tab_children(&unit.path)
+                .into_iter()
                 .enumerate()
-                .map(|(i, &lidx)| {
-                    let tile = self.tile(lidx);
+                .map(|(i, child)| {
+                    let tile = self.tile(child.rep_leaf_idx);
                     let is_tab_active = i == unit.active_idx;
                     let is_urgent = tile.window().is_urgent();
-                    TabInfo::from_tile(tile, unit.content_area.loc, is_tab_active, is_urgent, &config)
+                    TabInfo::from_tile_with_geometry(
+                        tile,
+                        child.geometry,
+                        is_tab_active,
+                        is_urgent,
+                        &config,
+                    )
                 })
                 .collect();
             let enabled = unit.visible && sizing_normal;
@@ -6393,7 +6429,6 @@ impl<W: LayoutElement> Section<W> {
     ) {
         let working_size = self.working_area.size;
         let gaps = self.options.layout.gaps;
-        let extra_size = self.extra_size();
 
         // Compute the section main-axis span from the root's aggregate min/max.
         let (min_main_span, max_main_span) = self.root.aggregate_min_max_main_span(axis);
@@ -6406,9 +6441,15 @@ impl<W: LayoutElement> Section<W> {
         let section_main_span = f64::max(f64::min(section_main_span, max_main_span), min_main_span);
 
         // The available size for the root: main span = section width, cross span = working height.
+        //
+        // We do NOT subtract the root header band here: a tabbing root reserves its own header band
+        // internally in `request_sizes` (`child_cross = available.h - extra.h`), and `tiles_origin`
+        // separately offsets the content past that band. Subtracting it here too would double-count
+        // the band — shrinking the content from the bottom while the offset already shrinks it from
+        // the top. For a non-tabbing root the band is zero anyway, so this is a no-op there.
         let available = Size::from((
             section_main_span.max(1.),
-            (working_size.h - gaps * 2. - extra_size.h).max(1.),
+            (working_size.h - gaps * 2.).max(1.),
         ));
 
         self.root
@@ -7176,6 +7217,72 @@ impl<W: LayoutElement> Section<W> {
         })
     }
 
+    /// Per-tab render info for a tabbing container, computed per *direct child* (one tab each).
+    ///
+    /// Each tab's `geometry` is the union (bounding box) of every leaf under that child subtree, so
+    /// a tab over a multi-window group reports the group's full extent rather than a single
+    /// descendant leaf's size. `title` is the window title for a leaf child, or a synthesized group
+    /// label (e.g. `H[2]`) for a nested container child. `rep_leaf_idx` is the flat index of the
+    /// child subtree's active leaf (used for the gradient/urgency source).
+    fn tab_children(&self, path: &[usize]) -> Vec<TabChild> {
+        let node = self.root.node_at(path);
+        let count = node.child_count();
+
+        let positions = self.leaf_positions();
+        let leaf_paths: Vec<TilePath> = self.root.leaves().map(|(_, p)| p).collect();
+        let flat_of = |target: &[usize]| -> usize {
+            leaf_paths.iter().position(|p| p.as_slice() == target).unwrap_or(0)
+        };
+
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let mut child_path = path.to_vec();
+            child_path.push(i);
+            let child = self.root.node_at(&child_path);
+
+            // Union bounding box of every leaf under this child (section-local coords).
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for (idx, lp) in leaf_paths.iter().enumerate() {
+                if !lp.starts_with(&child_path) {
+                    continue;
+                }
+                let pos = positions[idx].1;
+                let sz = self.root.leaf_data(lp).map(|d| d.size).unwrap_or_default();
+                x0 = x0.min(pos.x);
+                y0 = y0.min(pos.y);
+                x1 = x1.max(pos.x + sz.w);
+                y1 = y1.max(pos.y + sz.h);
+            }
+            let geometry = if x0 > x1 || y0 > y1 {
+                Rectangle::default()
+            } else {
+                Rectangle::new(Point::from((x0, y0)), Size::from((x1 - x0, y1 - y0)))
+            };
+
+            // Representative leaf = the child subtree's active leaf.
+            let mut rep_path = child_path.clone();
+            rep_path.extend(child.active_path());
+            let rep_leaf_idx = flat_of(&rep_path);
+
+            // Title: the window title for a leaf, or a group label for a nested container.
+            let title = match child {
+                TileNode::Leaf(tile) => tile.window().title().unwrap_or_default(),
+                TileNode::Internal { layout, .. } => {
+                    let glyph = match layout {
+                        Layout::SplitH => 'H',
+                        Layout::SplitV => 'V',
+                        Layout::Tabbed => 'T',
+                        Layout::Stacked => 'S',
+                    };
+                    format!("{glyph}[{}]", child.leaf_count())
+                }
+            };
+
+            out.push(TabChild { rep_leaf_idx, geometry, title });
+        }
+        out
+    }
+
     /// Collects render data for every *nested* (non-root) tabbed container in this section. The
     /// root section header is handled by the existing dedicated path; this generalizes headers to
     /// tabbed nodes deeper in the tree (e.g. a tabbed row). Returns an empty vec for the common
@@ -7272,13 +7379,22 @@ impl<W: LayoutElement> Section<W> {
         // cross axis, and using the active tile's animated size in this case only works for the
         // topmost tile, and looks broken otherwise.
         let mut max_tile_cross_span = 0.;
+        let mut max_tile_main_span = 0.;
         for data in self.data() {
             max_tile_cross_span = f64::max(max_tile_cross_span, data.size.h);
+            max_tile_main_span = f64::max(max_tile_main_span, data.size.w);
         }
 
+        // The header band spans the section's content width. When a direct child is a Main split
+        // (e.g. a tabbed/stacked container holding a horizontal pair), its leaves subdivide the
+        // width, so the active *leaf* is narrower than the section; use the child's full extent
+        // (`data.size.w`, which is the per-tab content width) so the header spans the whole group,
+        // not one descendant. Fall back to the active tile's animated width when wider (mid-resize
+        // animation), preserving the smooth main-axis resize the old code aimed for.
         let tile = self.active_tile();
         let active_size = self.map_size_in(tile.animated_tile_size());
-        let indicator_size = Size::from((active_size.w, max_tile_cross_span));
+        let main_span = f64::max(active_size.w, max_tile_main_span);
+        let indicator_size = Size::from((main_span, max_tile_cross_span));
 
         Rectangle::new(self.tiles_origin(), indicator_size)
     }
