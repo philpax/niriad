@@ -113,6 +113,11 @@ layout {
     // Set gaps around windows in logical pixels.
     gaps 16
 
+    // Sway-literal in-place tiling drag: the window stays put while a translucent ghost + a drop
+    // indicator follow the cursor, and a centre-drop swaps the two windows (slots stay, occupants
+    // trade). The other option, "detach", lifts the window and lets it follow the cursor.
+    tiling-drag "in-place"
+
     // When to center a section when changing focus, options are:
     // - "never", default behavior, focusing an off-screen section will keep at the left
     //   or right edge of the screen.
