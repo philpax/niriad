@@ -152,6 +152,12 @@ pub trait LayoutElement {
         None
     }
 
+    /// Returns the window's app id, if available. Used for the compact tree representation in group
+    /// tab titles (titles are usually more verbose than the app id).
+    fn app_id(&self) -> Option<String> {
+        None
+    }
+
     /// Updates the config for the element.
     fn update_config(&mut self, blur_config: niri_config::Blur) {
         let _ = blur_config;

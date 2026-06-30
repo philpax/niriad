@@ -260,12 +260,26 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// sway/i3-style tree representation: a leaf is its window title; a container is its layout
-    /// glyph (`H`/`V`/`T`/`S`) followed by its children's representations, space-separated, in
-    /// brackets — recursively. E.g. `H[Firefox V[term1 term2]]`. Used for group tab titles.
+    /// sway/i3-style tree representation for a tab title. A leaf tab shows its window *title*; a
+    /// container shows its layout glyph (`H`/`V`/`T`/`S`) followed by its children's compact
+    /// identifiers, space-separated, in brackets — recursively. E.g. `H[firefox V[kitty kitty]]`.
     pub fn tree_repr(&self) -> String {
         match self {
             TileNode::Leaf(tile) => tile.window().title().unwrap_or_default(),
+            TileNode::Internal { .. } => self.repr_id(),
+        }
+    }
+
+    /// The compact identifier used *inside* a group representation: a leaf's app id (falling back to
+    /// its title), or a container's bracketed representation (recursive). app id is preferred here
+    /// because titles are usually too verbose to list together.
+    fn repr_id(&self) -> String {
+        match self {
+            TileNode::Leaf(tile) => tile
+                .window()
+                .app_id()
+                .or_else(|| tile.window().title())
+                .unwrap_or_default(),
             TileNode::Internal { layout, children, .. } => {
                 let glyph = match layout {
                     Layout::SplitH => 'H',
@@ -275,7 +289,7 @@ impl<W: LayoutElement> TileNode<W> {
                 };
                 let inner = children
                     .iter()
-                    .map(TileNode::tree_repr)
+                    .map(TileNode::repr_id)
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("{glyph}[{inner}]")

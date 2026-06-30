@@ -128,9 +128,10 @@ green (build + tests + clippy + fuzzer).
 - ~~A tabbed/stacked root with a nested non-leaf child takes its per-tab title/size from one leaf.~~
   **Fixed:** `Section::tab_children` now computes each tab from its *direct child* — the union
   bounding box of all leaves under it (size) and, for a group child, the sway/i3 tree
-  representation (`TileNode::tree_repr`: layout glyph `H`/`V`/`T`/`S` + the children's titles in
-  brackets, recursive — e.g. `H[Firefox V[term1 term2]]`) instead of a leaf title. (Identifiers are
-  window titles, since that's what the layout layer exposes; sway uses class/app_id.) Also fixed a
+  representation (`TileNode::tree_repr`: layout glyph `H`/`V`/`T`/`S` + the children's compact
+  identifiers in brackets, recursive — e.g. `H[firefox V[kitty kitty]]`) instead of a leaf title. A
+  leaf *tab* shows its full window title; nested identifiers inside a group use the **app id**
+  (falling back to title), matching sway (`app_id` plumbed through `LayoutElement`). Also fixed a
   Stacked cross-axis double-subtraction that shrank the active child from the bottom.
 - The node enum is unified, but the root tab header still has a dedicated render path (kept to avoid
   changing the common-case visuals); folding it into the nested-header walk is a possible cleanup.

@@ -160,6 +160,10 @@ impl LayoutElement for TestWindow {
         Some(format!("win{}", self.0.id))
     }
 
+    fn app_id(&self) -> Option<String> {
+        Some(format!("app{}", self.0.id))
+    }
+
     fn size(&self) -> Size<i32, Logical> {
         self.0.bbox.get().size
     }
@@ -4848,10 +4852,10 @@ fn group_tab_reports_subtree_union_size_and_group_label() {
     // Bug #3: the group tab carries the sway/i3 tree representation (layout glyph + the children's
     // titles in brackets), not a borrowed single-window title; the leaf tab keeps its own title.
     assert_eq!(
-        t1, "H[win2 win3]",
-        "group tab over a horizontal split should be the sway-style H[child titles]"
+        t1, "H[app2 app3]",
+        "group tab is the sway-style tree repr with compact app-id child identifiers"
     );
-    assert_eq!(t0, "win1", "the leaf tab keeps its own window title");
+    assert_eq!(t0, "win1", "the leaf tab keeps its own (verbose) window title");
 }
 
 #[test]
