@@ -2817,16 +2817,29 @@ impl<W: LayoutElement> Layout<W> {
             is_dnd = true;
         }
 
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.advance_animations();
+        match &mut self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => {
+                move_.tile.advance_animations();
 
-            if dnd_scroll.is_none() {
-                dnd_scroll = Some((
-                    move_.output.clone(),
-                    move_.pointer_pos_within_output,
-                    !move_.is_floating,
-                ));
+                if dnd_scroll.is_none() {
+                    dnd_scroll = Some((
+                        move_.output.clone(),
+                        move_.pointer_pos_within_output,
+                        !move_.is_floating,
+                    ));
+                }
             }
+            // The in-place (sway) drag keeps the source in the tree, so it's an `InPlace` state
+            // rather than `Moving`, but it must still edge-scroll the strip when dragged near the
+            // screen edge — consistently, regardless of whether a window is there to tile over.
+            // It's always tiling, so `is_scrolling = true`.
+            Some(InteractiveMoveState::InPlace(data)) => {
+                if dnd_scroll.is_none() {
+                    dnd_scroll =
+                        Some((data.output.clone(), data.pointer_pos_within_output, true));
+                }
+            }
+            _ => {}
         }
 
         let is_overview_open = self.overview_open;
