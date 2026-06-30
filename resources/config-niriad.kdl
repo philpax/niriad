@@ -223,6 +223,15 @@ layout {
         // inactive-gradient from="#505050" to="#808080" angle=45 relative-to="workspace-view"
     }
 
+    // The interactive-drag drop indicator. niriad tints it by drop kind so split vs swap vs
+    // tab-add are obvious at a glance; the colours below are the (distinct) defaults — uncomment to
+    // customise. Each accepts a "color" and/or a "*-gradient" like the focus ring.
+    // insert-hint {
+    //     color "#7fc8ff80"        // split / move / new section (blue)
+    //     swap-color "#96f09680"   // swap (centre-drop in the in-place drag) (green)
+    //     tab-color "#e1a0ff80"    // add a tab (drop on a titlebar) (purple)
+    // }
+
     // You can enable drop shadows for windows.
     shadow {
         // Uncomment the next line to enable shadows.

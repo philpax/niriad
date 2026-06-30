@@ -713,14 +713,25 @@ pub struct InsertHint {
     pub off: bool,
     pub color: Color,
     pub gradient: Option<Gradient>,
+    /// Colour of a swap target (a centre-drop in the in-place tiling drag).
+    pub swap_color: Color,
+    pub swap_gradient: Option<Gradient>,
+    /// Colour of a tab-add target (a drop on a tabbing container's titlebar).
+    pub tab_color: Color,
+    pub tab_gradient: Option<Gradient>,
 }
 
 impl Default for InsertHint {
     fn default() -> Self {
         Self {
             off: false,
-            color: Color::from_rgba8_unpremul(127, 200, 255, 128),
+            // Distinct hues per drop kind so split / swap / tab-add are obvious at a glance.
+            color: Color::from_rgba8_unpremul(127, 200, 255, 128), // blue — split / move
             gradient: None,
+            swap_color: Color::from_rgba8_unpremul(150, 240, 150, 140), // green — swap
+            swap_gradient: None,
+            tab_color: Color::from_rgba8_unpremul(225, 160, 255, 140), // purple — tab-add
+            tab_gradient: None,
         }
     }
 }
@@ -733,6 +744,8 @@ impl MergeWith<InsertHintPart> for InsertHint {
         }
 
         merge_color_gradient!((self, part), (color, gradient));
+        merge_color_gradient!((self, part), (swap_color, swap_gradient));
+        merge_color_gradient!((self, part), (tab_color, tab_gradient));
     }
 }
 
@@ -746,6 +759,14 @@ pub struct InsertHintPart {
     pub color: Option<Color>,
     #[knuffel(child)]
     pub gradient: Option<Gradient>,
+    #[knuffel(child)]
+    pub swap_color: Option<Color>,
+    #[knuffel(child)]
+    pub swap_gradient: Option<Gradient>,
+    #[knuffel(child)]
+    pub tab_color: Option<Color>,
+    #[knuffel(child)]
+    pub tab_gradient: Option<Gradient>,
 }
 
 #[derive(knuffel::DecodeScalar, Debug, Clone, Copy, PartialEq, Eq)]

@@ -195,7 +195,11 @@ Stages (each builds/tests/reviews/commits):
   Built by a worktree agent, reviewed (header band = full-rect-minus-content; interior is clean).
   *Visual check:* the header-band thickness boundary, a literal nested horizontal `Tabbed`, the
   side-split-vs-new-section-gap zone width, and the corner split tiebreak.
-- **Indicator colours (next):** tint the hint by drop type — swap / split / tab-add — configurable in
-  the `insert-hint` block with distinct defaults.
+- **Indicator colours — done.** The drop hint is tinted by kind: split/move/new-section (blue),
+  swap (green), tab-add (purple). Implemented by repurposing the `FocusRing`'s three colour slots
+  (active/inactive/urgent → split/swap/tab), selected at render time by a `HintKind` derived from the
+  `InsertPosition` — no per-frame reconfig. Configurable via new `swap-color`/`swap-gradient` and
+  `tab-color`/`tab-gradient` keys in the `insert-hint` block (distinct defaults, so zero-config), with
+  a documented example in `config-niriad.kdl`.
 - **S6.4 — cross-output / cross-workspace** in-place (cross-tree move + swap) and the float-toggle
   handoff to the existing `Moving` flow.

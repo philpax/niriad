@@ -11,7 +11,7 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::axis::AxisMap;
-use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
+use super::insert_hint_element::{HintKind, InsertHintElement, InsertHintRenderElement};
 use super::scrolling::{Section, SectionWidth};
 use super::tile::Tile;
 use super::tile_node::SplitAxis;
@@ -1209,9 +1209,15 @@ impl<W: LayoutElement> Monitor<W> {
                             // Round to physical pixels.
                             area = area.to_physical_precise_round(scale).to_logical(scale);
 
+                            let kind = match hint.position {
+                                InsertPosition::Swap(..) => HintKind::Swap,
+                                InsertPosition::InsertTab(..) => HintKind::Tab,
+                                _ => HintKind::Split,
+                            };
                             let view_rect = Rectangle::new(area.loc.upscale(-1.), view_size);
                             self.insert_hint_element.update_render_elements(
                                 area.size,
+                                kind,
                                 view_rect,
                                 hint.corner_radius,
                                 scale,
@@ -1251,8 +1257,10 @@ impl<W: LayoutElement> Monitor<W> {
                     // the previous one).
                     let view_rect = Rectangle::new(hint_loc_diff, next_ws_geo.size);
 
+                    // A new-section drop between workspaces is always a Split-kind hint.
                     self.insert_hint_element.update_render_elements(
                         self.map_size_out(hint_size),
+                        HintKind::Split,
                         self.map_rect_out(view_rect),
                         CornerRadius::default(),
                         scale,
