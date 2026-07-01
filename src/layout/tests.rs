@@ -5904,6 +5904,26 @@ fn in_place_centre_drop_swaps_across_outputs() {
     assert_eq!(active_window_id(&layout), Some(1), "dragged window 1 is focused");
 }
 
+/// Helper: the current render (move-animation) offset of a window found anywhere in the layout. A
+/// non-zero offset means the tile is mid-slide.
+fn window_render_offset(layout: &Layout<TestWindow>, id: usize) -> Option<Point<f64, Logical>> {
+    layout.workspaces().find_map(|(_, _, ws)| {
+        ws.tiles_with_render_positions().find_map(|(tile, _, _)| {
+            (*tile.window().id() == id).then(|| tile.render_offset())
+        })
+    })
+}
+
+/// Helper: the `(workspace id, tiling slot)` of a window, searched across every workspace.
+fn window_ws_and_slot(
+    layout: &Layout<TestWindow>,
+    id: usize,
+) -> Option<(WorkspaceId, (usize, usize))> {
+    layout
+        .workspaces()
+        .find_map(|(_, _, ws)| ws.scrolling_position_of(&id).map(|slot| (ws.id(), slot)))
+}
+
 /// Helper: fetch the `Output` handle with the given name from the layout.
 fn output_named(layout: &Layout<TestWindow>, name: &str) -> Output {
     layout
@@ -5996,6 +6016,124 @@ fn focus_screen_left_stays_when_interior_neighbour_exists() {
         "focus stayed on output1"
     );
     assert_eq!(active_window_id(&layout), Some(1), "focus moved to the interior neighbour");
+}
+
+/// Builds two workspaces, each holding a two-tile section, where window 1 (in one section) is a
+/// fixed-narrow tile and window 2 (in the other) is wide. Swapping window 1 and window 2 therefore
+/// reflows each section's neighbour (window 3 beside window 1; window 4 beside window 2). The two
+/// sections live on `ws_a`/`ws_b`; whether those share an output is controlled by `same_output`.
+fn cross_workspace_swap_layout(same_output: bool) -> Layout<TestWindow> {
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+
+    // Window 1 is a fixed 300px-wide tile and window 2 a fixed 500px-wide one. Because tiled tiles
+    // here render at their minimum width, swapping the two changes each section's width and so
+    // shifts each section's neighbour (window 3 beside window 1; window 4 beside window 2).
+    let mut narrow = wide_window(1);
+    narrow.min_max_size = (Size::from((300, 200)), Size::from((300, 200)));
+    let mut wide = wide_window(2);
+    wide.min_max_size = (Size::from((500, 200)), Size::from((500, 200)));
+
+    let mut ops = vec![
+        Op::AddOutput(1),
+        // Section A: [1 (300px), 3].
+        Op::AddWindow { params: narrow },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+    ];
+    if same_output {
+        // Section B: [2 (500px), 4], then pushed to a new workspace below on the SAME output.
+        ops.extend([
+            Op::AddWindow { params: wide },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(4) },
+            Op::MoveSectionToWorkspaceDown(false),
+        ]);
+    } else {
+        // Section B: [2 (500px), 4] on a SECOND output.
+        ops.extend([
+            Op::AddOutput(2),
+            Op::FocusOutput(2),
+            Op::AddWindow { params: wide },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(4) },
+        ]);
+    }
+    ops.extend([
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::Communicate(4),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    check_ops_with_options(options, ops)
+}
+
+#[test]
+fn cross_workspace_same_output_swap_slides_tiles() {
+    // A cross-workspace centre-drop swap between two workspaces on the SAME output slides the
+    // reflowed tiles into place (instead of teleporting them).
+    let mut layout = cross_workspace_swap_layout(true);
+
+    let (ws1, slot1) = window_ws_and_slot(&layout, 1).unwrap();
+    let (ws2, slot2) = window_ws_and_slot(&layout, 2).unwrap();
+    assert_ne!(ws1, ws2, "windows 1 and 2 start on different workspaces");
+
+    // Everything settled from the build, so no tile is mid-slide before the swap.
+    assert_eq!(window_render_offset(&layout, 3).unwrap().x, 0.);
+    assert_eq!(window_render_offset(&layout, 4).unwrap().x, 0.);
+
+    let swapped = layout.swap_tiles_cross_workspace(ws1, slot1, ws2, slot2);
+    assert!(swapped, "the cross-workspace swap succeeded");
+
+    // The two windows exchanged workspaces.
+    assert_eq!(window_ws_and_slot(&layout, 1).unwrap().0, ws2, "window 1 moved to ws2");
+    assert_eq!(window_ws_and_slot(&layout, 2).unwrap().0, ws1, "window 2 moved to ws1");
+
+    // Each section's neighbour is now mid-slide (the swapped-in tile changed the section width).
+    assert_ne!(
+        window_render_offset(&layout, 3).unwrap().x,
+        0.,
+        "window 3 slides after the same-output swap"
+    );
+    assert_ne!(
+        window_render_offset(&layout, 4).unwrap().x,
+        0.,
+        "window 4 slides after the same-output swap"
+    );
+}
+
+#[test]
+fn cross_output_swap_does_not_animate() {
+    // The same swap across two DIFFERENT outputs teleports (niri's layout isn't position-aware), so
+    // no tile ends up mid-slide even though the sections reflow.
+    let mut layout = cross_workspace_swap_layout(false);
+
+    let (ws1, slot1) = window_ws_and_slot(&layout, 1).unwrap();
+    let (ws2, slot2) = window_ws_and_slot(&layout, 2).unwrap();
+    assert_ne!(ws1, ws2, "windows 1 and 2 start on different workspaces");
+    assert_eq!(window_output_and_geo(&layout, 1).unwrap().0, "output1");
+    assert_eq!(window_output_and_geo(&layout, 2).unwrap().0, "output2");
+
+    let swapped = layout.swap_tiles_cross_workspace(ws1, slot1, ws2, slot2);
+    assert!(swapped, "the cross-output swap succeeded");
+
+    // The windows exchanged outputs...
+    assert_eq!(window_output_and_geo(&layout, 1).unwrap().0, "output2", "window 1 crossed outputs");
+    assert_eq!(window_output_and_geo(&layout, 2).unwrap().0, "output1", "window 2 crossed outputs");
+
+    // ...but nothing slid: the reflowed neighbours snapped straight to their new slots.
+    assert_eq!(
+        window_render_offset(&layout, 3).unwrap().x,
+        0.,
+        "window 3 teleports across outputs"
+    );
+    assert_eq!(
+        window_render_offset(&layout, 4).unwrap().x,
+        0.,
+        "window 4 teleports across outputs"
+    );
 }
 
 #[test]

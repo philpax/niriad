@@ -5078,6 +5078,22 @@ impl<W: LayoutElement> Layout<W> {
         let out_a = ws_a.current_output().cloned();
         let out_b = ws_b.current_output().cloned();
 
+        // Only animate the reflow when both workspaces live on the same output: niri's layout code
+        // isn't monitor-position-aware, so a slide between two outputs isn't meaningful (see
+        // `interactive_move_update`) — those stay teleports.
+        let same_output = matches!((&out_a, &out_b), (Some(a), Some(b)) if a == b);
+
+        // Capture each affected section's pre-swap leaf positions so their tiles can slide into the
+        // new slots afterwards (mirrors `ScrollingSpace::swap_tiles`' cross-section animation).
+        let (prev_a, prev_b) = if same_output {
+            (
+                ws_a.scrolling_section_leaf_positions(a_slot.0),
+                ws_b.scrolling_section_leaf_positions(b_slot.0),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
         // Exchange the two leaf tiles in place. If either slot is stale, bail with both trees still
         // intact so we never half-swap.
         {
@@ -5093,6 +5109,12 @@ impl<W: LayoutElement> Layout<W> {
         // Resettle each adopted tile in its new home (the tile now at `a_slot` came from `out_b`).
         ws_a.finish_cross_tree_swap(a_slot, out_b.as_ref());
         ws_b.finish_cross_tree_swap(b_slot, out_a.as_ref());
+
+        // Slide the reflowed section tiles into place (same-output only, per above).
+        if same_output {
+            ws_a.animate_scrolling_section_leaves(a_slot.0, &prev_a);
+            ws_b.animate_scrolling_section_leaves(b_slot.0, &prev_b);
+        }
 
         true
     }

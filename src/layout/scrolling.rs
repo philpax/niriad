@@ -2957,6 +2957,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         Some(section.tile_mut(flat_leaf_idx))
     }
 
+    /// The pre-swap leaf positions of `section_idx` (keyed by window id), captured before a
+    /// cross-workspace swap so its tiles can slide into their new slots afterwards. Mirrors the
+    /// `leaf_positions_by_id()` capture in `swap_tiles`' cross-section path.
+    pub fn section_leaf_positions(&self, section_idx: usize) -> Vec<(W::Id, Point<f64, Logical>)> {
+        self.sections
+            .get(section_idx)
+            .map(|section| section.leaf_positions_by_id())
+            .unwrap_or_default()
+    }
+
+    /// Animates any leaf in `section_idx` whose position changed from `prev` — the tail of a
+    /// cross-workspace swap on a shared output, mirroring `swap_tiles`' `animate_leaves_if_moved`.
+    pub fn animate_section_leaves_if_moved(
+        &mut self,
+        section_idx: usize,
+        prev: &[(W::Id, Point<f64, Logical>)],
+    ) {
+        if let Some(section) = self.sections.get_mut(section_idx) {
+            section.animate_leaves_if_moved(prev);
+        }
+    }
+
     /// Resizes the tiles in `section_idx` to fit their slots — the tail of a cross-tree swap, where
     /// the adopted tile may have come from a differently-sized slot (mirrors the `update_tile_sizes`
     /// in `swap_tiles`' cross-section path).

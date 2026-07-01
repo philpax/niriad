@@ -1232,6 +1232,26 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.tile_mut_at(section_idx, flat_leaf_idx)
     }
 
+    /// The pre-swap leaf positions of scrolling `section_idx`, captured before a cross-workspace
+    /// swap so the section's tiles can slide into place afterwards (same-output only).
+    pub(super) fn scrolling_section_leaf_positions(
+        &self,
+        section_idx: usize,
+    ) -> Vec<(W::Id, Point<f64, Logical>)> {
+        self.scrolling.section_leaf_positions(section_idx)
+    }
+
+    /// Slides any tile in scrolling `section_idx` that moved relative to `prev` — the tail of a
+    /// same-output cross-workspace swap.
+    pub(super) fn animate_scrolling_section_leaves(
+        &mut self,
+        section_idx: usize,
+        prev: &[(W::Id, Point<f64, Logical>)],
+    ) {
+        self.scrolling
+            .animate_section_leaves_if_moved(section_idx, prev);
+    }
+
     /// Resettles a tile that just arrived at `slot` via a cross-workspace swap: reconfigure this
     /// workspace's tiles (scale/options may differ from where the tile came from), resize the
     /// section so the adopted tile fits its new slot, and migrate the window's output if it changed.
