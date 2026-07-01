@@ -3550,6 +3550,19 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
+        // An in-place (sway) drag keeps the source in the tree; the float toggle is the one hand-off
+        // to detach-and-follow (see `interactive_move_inplace_to_floating`). Detach first, then the
+        // `Moving` arm below flips the now-owned tile to floating.
+        if let Some(InteractiveMoveState::InPlace(data)) = &self.interactive_move {
+            if window.is_none() || window == Some(&data.window_id) {
+                let Some(InteractiveMoveState::InPlace(data)) = self.interactive_move.take() else {
+                    unreachable!()
+                };
+                self.interactive_move_inplace_to_floating(data);
+                return;
+            }
+        }
+
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 move_.is_floating = !move_.is_floating;
@@ -4335,6 +4348,11 @@ impl<W: LayoutElement> Layout<W> {
                     })
                     .unwrap();
 
+                // A fullscreen/maximized window can't sensibly stay in a tiling slot to be swapped,
+                // and the detach path is what unsets those sizing modes — so in-place is gated on a
+                // normal-sized window below.
+                let is_normal_sizing = tile.window().pending_sizing_mode().is_normal();
+
                 let mut move_offset = pointer_delta.upscale(factor);
                 if !is_floating {
                     move_offset = main_axis.point_out(move_offset);
@@ -4354,8 +4372,10 @@ impl<W: LayoutElement> Layout<W> {
 
                 // S6.2: in-place (sway) tiling drag. Past the threshold we keep the source in the
                 // layout tree (no detach/follow) and just track the pointer; the swap/move is
-                // resolved on release. Floating drags always use the classic detach path.
+                // resolved on release. Floating and fullscreen/maximized drags always use the
+                // classic detach path.
                 if !is_floating
+                    && is_normal_sizing
                     && self.options.layout.tiling_drag == niri_config::TilingDrag::InPlace
                 {
                     // Settle the source back into its slot (drop the rubberband offset).
@@ -4488,9 +4508,9 @@ impl<W: LayoutElement> Layout<W> {
                     return false;
                 }
 
-                // S6.4: cross-output in-place is deferred — the source stays on its original output
-                // and never re-renders elsewhere, so we only track the pointer/output here for the
-                // release decision (a drop on a different output falls back to the detach apply).
+                // The source stays put in its home tree; we only track where the pointer is. The
+                // ghost renders on `data.output` (so it follows across outputs, S6.4) and the
+                // release resolves its target on whichever workspace/output the pointer is over.
                 if output != data.output {
                     data.output = output.clone();
                     self.focus_output(&output);
@@ -4884,43 +4904,76 @@ impl<W: LayoutElement> Layout<W> {
         let output = data.output.clone();
         let pointer = data.pointer_pos_within_output;
 
-        // Source workspace + the dragged window's current slot.
+        // Source workspace + the dragged window's current slot, and whether it's still normal-sized
+        // (a client can request fullscreen/maximized mid-drag; such a window can't be swapped in
+        // place — it must take the detach path, which unsets those modes).
         let source = self
             .workspaces()
             .find(|(_, _, ws)| ws.has_window(&window_id))
-            .map(|(_, _, ws)| (ws.id(), ws.scrolling_position_of(&window_id)));
-        let Some((source_ws_id, source_slot)) = source else {
+            .map(|(_, _, ws)| {
+                let slot = ws.scrolling_position_of(&window_id);
+                let normal = slot
+                    .and_then(|(sec, leaf)| ws.scrolling_tile(sec, leaf))
+                    .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                (ws.id(), slot, normal)
+            });
+        let Some((source_ws_id, source_slot, source_normal)) = source else {
             return;
         };
 
         enum Outcome {
             Swap((usize, usize), (usize, usize)),
+            SwapCross {
+                source_slot: (usize, usize),
+                target_ws: WorkspaceId,
+                target_slot: (usize, usize),
+            },
             NoOp,
             MoveOut,
         }
 
-        // Resolve the drop. A swap only happens for a centre-drop onto another tile in the *same*
-        // workspace (the source is still in the tree to swap with); everything else — a non-swap
-        // move, a drop on a different workspace, or a drop on a different output — falls back to the
-        // detach apply. The slot under the cursor is found with the source still present; a swap
-        // never shifts indices, and the move path detaches first so its apply recomputes the target
-        // on the source-free tree.
+        // Resolve the drop. A centre-drop onto another tile swaps the two windows in place (the
+        // source is still in the tree to swap with): within the same workspace via `swap_tiles`, or
+        // across trees — another workspace, including on another output — via
+        // `swap_tiles_cross_workspace`. A centre-drop on the source itself is a no-op. Anything else
+        // (a non-centre move) falls back to the detach apply, which detaches first and recomputes
+        // its target on the source-free tree. The target slot is resolved with the source still
+        // present, on whichever workspace/output the pointer is over; an in-place swap never shifts
+        // indices.
         let mut outcome = Outcome::MoveOut;
         if let Some(slot) = source_slot {
             if let Some(mon) = self.monitor_for_output(&output) {
                 let zoom = mon.overview_zoom();
                 let (insert_ws, geo) = mon.insert_position(pointer);
-                if insert_ws == InsertWorkspace::Existing(source_ws_id) {
-                    if let Some(ws) = mon.workspaces.iter().find(|ws| ws.id() == source_ws_id) {
+                if let InsertWorkspace::Existing(target_ws_id) = insert_ws {
+                    if let Some(ws) = mon.workspaces.iter().find(|ws| ws.id() == target_ws_id) {
                         let pos_within_ws = (pointer - geo.loc).downscale(zoom);
                         if let InsertPosition::Swap(sec, leaf) =
                             ws.scrolling_insert_position(pos_within_ws)
                         {
-                            outcome = if (sec, leaf) == slot {
-                                Outcome::NoOp
-                            } else {
-                                Outcome::Swap(slot, (sec, leaf))
-                            };
+                            // A swap only makes sense between two normal-sized tiles: swapping into
+                            // a fullscreen/maximized target (that state is section-level, so it'd
+                            // stay behind and display the arrived window with the wrong mode) or out
+                            // of a mid-drag-fullscreened source is wrong. Leave those as MoveOut so
+                            // the detach apply handles them (it unsets fullscreen/maximized).
+                            let target_normal = ws
+                                .scrolling_tile(sec, leaf)
+                                .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                            if source_normal && target_normal {
+                                outcome = if target_ws_id == source_ws_id {
+                                    if (sec, leaf) == slot {
+                                        Outcome::NoOp
+                                    } else {
+                                        Outcome::Swap(slot, (sec, leaf))
+                                    }
+                                } else {
+                                    Outcome::SwapCross {
+                                        source_slot: slot,
+                                        target_ws: target_ws_id,
+                                        target_slot: (sec, leaf),
+                                    }
+                                };
+                            }
                         }
                     }
                 }
@@ -4940,13 +4993,115 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
+            Outcome::SwapCross {
+                source_slot,
+                target_ws,
+                target_slot,
+            } => {
+                if self.swap_tiles_cross_workspace(
+                    source_ws_id,
+                    source_slot,
+                    target_ws,
+                    target_slot,
+                ) {
+                    // Keep focus on the dragged window in its new workspace/output, like sway.
+                    self.activate_window(&window_id);
+                } else {
+                    // The slots went stale between resolve and apply; fall back to the detach apply
+                    // so the drag still lands somewhere sensible rather than half-swapping.
+                    self.interactive_move_detach_and_apply(data);
+                }
+            }
             Outcome::MoveOut => self.interactive_move_detach_and_apply(data),
         }
     }
 
-    /// Detaches the in-place source into an owned tile and runs the shared apply, mirroring the
-    /// Starting→Moving detach in `interactive_move_update`.
-    fn interactive_move_detach_and_apply(&mut self, data: InPlaceMoveData<W>) {
+    /// Swaps two tiles that live in *different* workspaces (same or different output) — the
+    /// cross-tree case of sway's centre-drop. The two leaf `Tile`s trade slots in place, so both
+    /// trees keep their shape; each workspace then resettles its adopted tile (reconfig, resize,
+    /// output migration). Returns whether the swap happened (false leaves both trees untouched, so
+    /// the caller can fall back).
+    fn swap_tiles_cross_workspace(
+        &mut self,
+        a_ws_id: WorkspaceId,
+        a_slot: (usize, usize),
+        b_ws_id: WorkspaceId,
+        b_slot: (usize, usize),
+    ) -> bool {
+        if a_ws_id == b_ws_id {
+            return false;
+        }
+
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return false;
+        };
+
+        let locate = |monitors: &[Monitor<W>], id: WorkspaceId| {
+            monitors.iter().enumerate().find_map(|(mi, mon)| {
+                mon.workspaces
+                    .iter()
+                    .position(|ws| ws.id() == id)
+                    .map(|wi| (mi, wi))
+            })
+        };
+        let Some((a_mon, a_wi)) = locate(monitors, a_ws_id) else {
+            return false;
+        };
+        let Some((b_mon, b_wi)) = locate(monitors, b_ws_id) else {
+            return false;
+        };
+
+        // Two disjoint `&mut Workspace`, split either across monitors or within one monitor's
+        // workspaces (the two workspace ids differ, so the indices never collide).
+        let (ws_a, ws_b): (&mut Workspace<W>, &mut Workspace<W>) = if a_mon == b_mon {
+            let mon = &mut monitors[a_mon];
+            let (lo, hi) = (a_wi.min(b_wi), a_wi.max(b_wi));
+            let (left, right) = mon.workspaces.split_at_mut(hi);
+            let (ws_lo, ws_hi) = (&mut left[lo], &mut right[0]);
+            if a_wi < b_wi {
+                (ws_lo, ws_hi)
+            } else {
+                (ws_hi, ws_lo)
+            }
+        } else {
+            let (lo, hi) = (a_mon.min(b_mon), a_mon.max(b_mon));
+            let (left, right) = monitors.split_at_mut(hi);
+            let (mon_lo, mon_hi) = (&mut left[lo], &mut right[0]);
+            let (mon_a, mon_b) = if a_mon < b_mon {
+                (mon_lo, mon_hi)
+            } else {
+                (mon_hi, mon_lo)
+            };
+            (&mut mon_a.workspaces[a_wi], &mut mon_b.workspaces[b_wi])
+        };
+
+        let out_a = ws_a.current_output().cloned();
+        let out_b = ws_b.current_output().cloned();
+
+        // Exchange the two leaf tiles in place. If either slot is stale, bail with both trees still
+        // intact so we never half-swap.
+        {
+            let (Some(ta), Some(tb)) = (
+                ws_a.scrolling_tile_mut(a_slot.0, a_slot.1),
+                ws_b.scrolling_tile_mut(b_slot.0, b_slot.1),
+            ) else {
+                return false;
+            };
+            std::mem::swap(ta, tb);
+        }
+
+        // Resettle each adopted tile in its new home (the tile now at `a_slot` came from `out_b`).
+        ws_a.finish_cross_tree_swap(a_slot, out_b.as_ref());
+        ws_b.finish_cross_tree_swap(b_slot, out_a.as_ref());
+
+        true
+    }
+
+    /// Detaches the in-place source into an owned `Moving` tile, mirroring the Starting→Moving
+    /// detach in `interactive_move_update`. Returns the built move data *without* installing it as
+    /// the interactive-move state or re-inserting it — callers either apply it (a release) or keep
+    /// following (the float hand-off).
+    fn detach_inplace_into_move(&mut self, data: InPlaceMoveData<W>) -> InteractiveMoveData<W> {
         let window_id = data.window_id;
         let output = data.output;
         let pointer_pos_within_output = data.pointer_pos_within_output;
@@ -5022,7 +5177,27 @@ impl<W: LayoutElement> Layout<W> {
                 .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
         }
 
+        move_
+    }
+
+    /// Detaches the in-place source into an owned tile and runs the shared apply — the in-place
+    /// fallback for cross-workspace/output drops and non-swap moves, landing identically to the
+    /// classic detach-and-follow release.
+    fn interactive_move_detach_and_apply(&mut self, data: InPlaceMoveData<W>) {
+        let move_ = self.detach_inplace_into_move(data);
         self.finish_interactive_move_apply(move_);
+    }
+
+    /// The float toggle's hand-off out of an in-place drag: detach the source into a `Moving`
+    /// follow and flip it to floating (niri's extra capability — it genuinely pulls the window out
+    /// of tiling). One-way: once detached the drag stays a detach-and-follow to release.
+    fn interactive_move_inplace_to_floating(&mut self, data: InPlaceMoveData<W>) {
+        // Detach into a `Moving` follow, install it, then reuse the existing `Moving` float toggle
+        // to flip it to floating (restores the floating size and does the usual dim→opaque fade).
+        let move_ = self.detach_inplace_into_move(data);
+        let window_id = move_.tile.window().id().clone();
+        self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+        self.toggle_window_floating(Some(&window_id));
     }
 
     pub fn interactive_move_is_moving_above_output(&self, output: &Output) -> bool {
@@ -5539,19 +5714,17 @@ impl<W: LayoutElement> Layout<W> {
         data: &InPlaceMoveData<W>,
         push: &mut dyn FnMut(RescaleRenderElement<TileRenderElement<R>>),
     ) {
-        // The source stays on its original output; only render the ghost there (cross-output
-        // in-place is deferred, see S6.4).
+        // The ghost follows the cursor, so it renders on whichever output the pointer is over
+        // (`data.output` tracks that, including across outputs — S6.4).
         if &data.output != output {
             return;
         }
 
-        let Some(mon) = self.monitor_for_output(output) else {
-            return;
-        };
-        let Some(tile) = mon
-            .workspaces
-            .iter()
-            .find_map(|ws| ws.tiles().find(|tile| tile.window().id() == &data.window_id))
+        // The source tile stays in its home tree, which may be on a *different* monitor than the
+        // one the pointer (and hence the ghost) is now over, so search every workspace for it.
+        let Some(tile) = self
+            .workspaces()
+            .find_map(|(_, _, ws)| ws.tiles().find(|tile| tile.window().id() == &data.window_id))
         else {
             return;
         };

@@ -1213,6 +1213,57 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.swap_tiles(a, b);
     }
 
+    /// The scrolling tile at `(section_idx, flat_leaf_idx)`, for inspecting an in-place swap target.
+    pub(super) fn scrolling_tile(
+        &self,
+        section_idx: usize,
+        flat_leaf_idx: usize,
+    ) -> Option<&Tile<W>> {
+        self.scrolling.tile_at(section_idx, flat_leaf_idx)
+    }
+
+    /// Mutable access to the scrolling tile at `(section_idx, flat_leaf_idx)`, for a cross-workspace
+    /// swap (the two tiles live in different workspaces, so the caller `mem::swap`s across them).
+    pub(super) fn scrolling_tile_mut(
+        &mut self,
+        section_idx: usize,
+        flat_leaf_idx: usize,
+    ) -> Option<&mut Tile<W>> {
+        self.scrolling.tile_mut_at(section_idx, flat_leaf_idx)
+    }
+
+    /// Resettles a tile that just arrived at `slot` via a cross-workspace swap: reconfigure this
+    /// workspace's tiles (scale/options may differ from where the tile came from), resize the
+    /// section so the adopted tile fits its new slot, and migrate the window's output if it changed.
+    pub(super) fn finish_cross_tree_swap(
+        &mut self,
+        slot: (usize, usize),
+        from_output: Option<&Output>,
+    ) {
+        self.update_config(self.base_options.clone());
+        self.scrolling.update_section_tile_sizes(slot.0, true);
+
+        let to = self.output.clone();
+        let scale = self.scale;
+        let transform = self.transform;
+        if let Some(tile) = self.scrolling.tile_mut_at(slot.0, slot.1) {
+            let win = tile.window();
+            match (from_output, to.as_ref()) {
+                (Some(from), Some(to)) if from != to => {
+                    win.output_leave(from);
+                    win.set_preferred_scale_transform(scale, transform);
+                    win.output_enter(to);
+                }
+                (Some(from), None) => win.output_leave(from),
+                (None, Some(to)) => {
+                    win.set_preferred_scale_transform(scale, transform);
+                    win.output_enter(to);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn toggle_section_tabbed_display(&mut self) {
         if self.floating_is_active.get() {
             return;

@@ -4496,6 +4496,36 @@ fn active_window_id(layout: &Layout<TestWindow>) -> Option<usize> {
         .map(|w| *w.id())
 }
 
+/// Helper: locate a window anywhere in the layout (across every output/workspace), returning its
+/// output name and its output-local render position + size. Unlike `window_geo`, this isn't limited
+/// to the active workspace, so it works for cross-output assertions.
+fn window_output_and_geo(
+    layout: &Layout<TestWindow>,
+    id: usize,
+) -> Option<(String, Point<f64, Logical>, Size<f64, Logical>)> {
+    layout.workspaces().find_map(|(mon, _, ws)| {
+        ws.tiles_with_render_positions().find_map(|(tile, pos, _)| {
+            if *tile.window().id() == id {
+                Some((
+                    mon.map(|m| m.output_name().clone()).unwrap_or_default(),
+                    pos,
+                    tile.window().size().to_f64(),
+                ))
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Helper: the pending sizing mode of a window found anywhere in the layout.
+fn window_sizing_mode(layout: &Layout<TestWindow>, id: usize) -> Option<SizingMode> {
+    layout
+        .windows()
+        .find(|(_, w)| *w.id() == id)
+        .map(|(_, w)| w.pending_sizing_mode())
+}
+
 #[test]
 fn split_window_creates_side_by_side_tiles() {
     // SplitWindow + AddWindow should create a main-axis split with two side-by-side tiles.
@@ -5755,6 +5785,144 @@ fn in_place_centre_drop_on_self_is_noop() {
     assert_eq!(window_order(&layout), order_before, "layout order unchanged");
     assert_eq!(window_geo(&layout, 1).unwrap(), p1_before, "window 1 unchanged");
     assert_eq!(window_geo(&layout, 2).unwrap(), p2_before, "window 2 unchanged");
+}
+
+/// Builds two 1280x720 outputs, each holding exactly one normal window: window 1 on `output1`,
+/// window 2 on `output2` (window 2 is added while `output2` is focused so it lands there). Both are
+/// full-size tiles centred on their own output, settled, under the in-place tiling-drag mode.
+fn two_outputs_one_window_each() -> Layout<TestWindow> {
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::AddOutput(2),
+            // Focus output2 so the next window opens there rather than back on output1.
+            Op::FocusOutput(2),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    )
+}
+
+#[test]
+fn in_place_centre_drop_swaps_across_outputs() {
+    // Cross-output in-place centre-drop: dragging window 1 (output1) onto window 2's centre
+    // (output2) must SWAP the two windows across trees — window 1 ends up on output2's workspace and
+    // window 2 on output1's, with focus following the dragged window to output2. This is the only
+    // test that fires an actual cross-output `swap_tiles_cross_workspace`.
+    let mut layout = two_outputs_one_window_each();
+
+    // Self-check the starting layout: one window per output, on the expected output.
+    let (o1, p1, s1) = window_output_and_geo(&layout, 1).unwrap();
+    let (o2, p2, s2) = window_output_and_geo(&layout, 2).unwrap();
+    assert_eq!(o1, "output1", "window 1 starts on output1");
+    assert_eq!(o2, "output2", "window 2 starts on output2");
+    assert_eq!(layout.windows().count(), 2, "two windows total to begin with");
+
+    // Output-local centres of each window (both outputs are 1280x720, so geometry matches).
+    let c1 = (p1.x + s1.w / 2., p1.y + s1.h / 2.);
+    let c2 = (p2.x + s2.w / 2., p2.y + s2.h / 2.);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            // Grab window 1 at its centre on output1.
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: c1.0, py: c1.1 },
+            // Move onto output2, landing on window 2's centre. dx=1280 (>256px threshold) both
+            // crosses the detach threshold to enter in-place mode and represents the pointer being
+            // over the neighbouring output.
+            Op::InteractiveMoveUpdate {
+                window: 1,
+                dx: 1280.,
+                dy: 0.,
+                output_idx: 2,
+                px: c2.0,
+                py: c2.1,
+            },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    // A swap adds/removes nothing: still two windows, one per output.
+    assert_eq!(layout.windows().count(), 2, "no window added or removed by the swap");
+
+    // The two windows exchanged outputs.
+    let (o1_after, _, _) = window_output_and_geo(&layout, 1).unwrap();
+    let (o2_after, _, _) = window_output_and_geo(&layout, 2).unwrap();
+    assert_eq!(o1_after, "output2", "window 1 crossed to output2");
+    assert_eq!(o2_after, "output1", "window 2 crossed to output1");
+
+    // Focus followed the dragged window to its new output.
+    assert_eq!(
+        layout.active_output().unwrap().name(),
+        "output2",
+        "active output followed the drag to output2"
+    );
+    assert_eq!(active_window_id(&layout), Some(1), "dragged window 1 is focused");
+}
+
+#[test]
+fn in_place_centre_drop_onto_maximized_target_does_not_swap() {
+    // A centre-drop swap is only valid between two normal-sized tiles. Dropping a normal window onto
+    // a fullscreen (section-level sizing) target must REFUSE the swap and fall back to the detach
+    // path (which unsets the sizing mode), so the fullscreen flag never rides along to the wrong
+    // window. Uses a single row [1, 2] on one output; window 2 is the fullscreen target.
+    let mut layout = in_place_row();
+
+    // Fullscreen the target (window 2). Fullscreen is section-level, so a swap would strand it.
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::FullscreenWindow(2),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    assert!(
+        window_sizing_mode(&layout, 2).unwrap().is_fullscreen(),
+        "window 2 is fullscreen before the drag"
+    );
+    assert!(
+        window_sizing_mode(&layout, 1).unwrap().is_normal(),
+        "window 1 is normal before the drag"
+    );
+
+    // Drag window 1's centre onto the fullscreen window 2 (occupying the whole output) and release.
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveBegin { window: 1, output_idx: 1, px: 166., py: 360. },
+            Op::InteractiveMoveUpdate { window: 1, dx: 640., dy: 0., output_idx: 1, px: 640., py: 360. },
+            Op::InteractiveMoveEnd { window: 1 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+
+    assert_eq!(tile_count(&layout), 2, "no window added or removed");
+    // The swap was refused and the drop took the detach fallback instead. That path unsets sizing
+    // modes, so BOTH windows are normal afterwards — crucially, window 1 did not inherit window 2's
+    // section-level fullscreen. That is exactly what a bad in-place swap would have done: strand the
+    // fullscreen state on window 1's arriving tile, which trips a layout invariant (verified by
+    // temporarily removing the guard).
+    assert!(
+        window_sizing_mode(&layout, 1).unwrap().is_normal(),
+        "dragged window 1 must not have inherited a fullscreen slot via a bad swap"
+    );
+    assert!(
+        window_sizing_mode(&layout, 2).unwrap().is_normal(),
+        "the detach fallback cleared the fullscreen mode rather than swapping it onto the wrong tile"
+    );
 }
 
 /// Runs the same drag of window 1 onto `(to_x, to_y)` under the given tiling-drag mode and returns

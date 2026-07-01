@@ -2937,6 +2937,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         sec_hi.animate_leaves_if_moved(&prev_hi);
     }
 
+    /// The tile at `(section_idx, flat_leaf_idx)`, if in range. Used to inspect an in-place drag's
+    /// swap target (e.g. its sizing mode) before committing to a swap.
+    pub fn tile_at(&self, section_idx: usize, flat_leaf_idx: usize) -> Option<&Tile<W>> {
+        let section = self.sections.get(section_idx)?;
+        if flat_leaf_idx >= section.tiles_len() {
+            return None;
+        }
+        Some(section.tile(flat_leaf_idx))
+    }
+
+    /// Mutable access to the tile at `(section_idx, flat_leaf_idx)`, if in range. Used by the
+    /// cross-workspace swap to exchange two tiles that live in different `ScrollingSpace`s.
+    pub fn tile_mut_at(&mut self, section_idx: usize, flat_leaf_idx: usize) -> Option<&mut Tile<W>> {
+        let section = self.sections.get_mut(section_idx)?;
+        if flat_leaf_idx >= section.tiles_len() {
+            return None;
+        }
+        Some(section.tile_mut(flat_leaf_idx))
+    }
+
+    /// Resizes the tiles in `section_idx` to fit their slots — the tail of a cross-tree swap, where
+    /// the adopted tile may have come from a differently-sized slot (mirrors the `update_tile_sizes`
+    /// in `swap_tiles`' cross-section path).
+    pub fn update_section_tile_sizes(&mut self, section_idx: usize, animate: bool) {
+        if let Some(section) = self.sections.get_mut(section_idx) {
+            section.update_tile_sizes(animate);
+        }
+    }
+
     pub fn toggle_section_tabbed_display(&mut self) {
         if self.sections.is_empty() {
             return;
