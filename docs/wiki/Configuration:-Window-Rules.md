@@ -32,14 +32,14 @@ window-rule {
     match app-id="Alacritty"
     match is-active=true
     match is-focused=false
-    match is-active-in-column=true
+    match is-active-in-section=true
     match is-floating=true
     match is-window-cast-target=true
     match is-urgent=true
     match at-startup=true
 
     // Properties that apply once upon window opening.
-    default-column-width { proportion 0.75; }
+    default-section-width { proportion 0.75; }
     default-window-height { fixed 500; }
     open-on-output "Some Company CoolMonitor 1234"
     open-on-workspace "chat"
@@ -55,7 +55,7 @@ window-rule {
     block-out-from "screencast"
     // block-out-from "screen-capture"
     variable-refresh-rate true
-    default-column-display "tabbed"
+    default-section-display "tabbed"
     default-floating-position x=100 y=200 relative-to="bottom-left"
     scroll-factor 0.75
 
@@ -232,21 +232,21 @@ window-rule {
 }
 ```
 
-#### `is-active-in-column`
+#### `is-active-in-section`
 
 <sup>Since: 0.1.6</sup>
 
 Can be `true` or `false`.
-Matches the window that is the "active" window in its column.
+Matches the window that is the "active" window in its section.
 
-Contrary to `is-active`, there is always one `is-active-in-column` window in each column.
-It is the window that was last focused in the column, i.e. the one that will gain focus if this column is focused.
+Contrary to `is-active`, there is always one `is-active-in-section` window in each section.
+It is the window that was last focused in the section, i.e. the one that will gain focus if this section is focused.
 
 <sup>Since: 25.01</sup> This rule will match `true` during the initial window opening.
 
 ```kdl
 window-rule {
-    match is-active-in-column=true
+    match is-active-in-section=true
 }
 ```
 
@@ -343,11 +343,11 @@ These properties apply once, when a window first opens.
 
 To be precise, they apply at the point when niri sends the initial configure request to the window.
 
-#### `default-column-width`
+#### `default-section-width`
 
 Set the default width for the new window.
 
-This works for floating windows too, despite the word "column" in the name.
+This works for floating windows too, despite the word "section" in the name.
 
 ```kdl
 // Give Blender and GIMP some guaranteed width on opening.
@@ -358,7 +358,7 @@ window-rule {
     // so we only match the beginning (with ^) and not the end.
     match app-id="^gimp"
 
-    default-column-width { fixed 1200; }
+    default-section-width { fixed 1200; }
 }
 ```
 
@@ -374,7 +374,7 @@ window-rule {
     match app-id="firefox$" title="^Picture-in-Picture$"
 
     open-floating true
-    default-column-width { fixed 480; }
+    default-section-width { fixed 480; }
     default-window-height { fixed 270; }
 }
 ```
@@ -637,7 +637,7 @@ window-rule {
 }
 ```
 
-#### `default-column-display`
+#### `default-section-display`
 
 <sup>Since: 25.02</sup>
 
@@ -655,7 +655,7 @@ For example:
 window-rule {
     match app-id="^evince$"
 
-    default-column-display "tabbed"
+    default-section-display "tabbed"
 }
 ```
 
@@ -707,7 +707,7 @@ window-rule {
     // Half of the screen high.
     default-window-height { proportion 0.5; }
     // 80% of the screen wide.
-    default-column-width { proportion 0.8; }
+    default-section-width { proportion 0.8; }
 }
 ```
 

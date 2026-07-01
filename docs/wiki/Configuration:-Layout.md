@@ -2,25 +2,30 @@
 
 In the `layout {}` section you can change various settings that influence how windows are positioned and sized.
 
+> [!NOTE]
+> niriad renames niri's "column" to "**section**" throughout the config: `center-focused-column` → `center-focused-section`, `always-center-single-column` → `always-center-single-section`, `default-column-display` → `default-section-display`, `preset-column-widths` → `preset-section-widths`, and `default-column-width` → `default-section-width`.
+> A backward-compatibility shim rewrites `column`-named nodes when loading, so old configs keep working, but the canonical names used below are the `section` ones.
+
 Here are the contents of this section at a glance:
 
 ```kdl
 layout {
     gaps 16
     main-axis "horizontal"
-    center-focused-column "never"
-    always-center-single-column
+    tiling-drag "in-place"
+    center-focused-section "never"
+    always-center-single-section
     empty-workspace-above-first
-    default-column-display "tabbed"
+    default-section-display "tabbed"
     background-color "#003300"
 
-    preset-column-widths {
+    preset-section-widths {
         proportion 0.33333
         proportion 0.5
         proportion 0.66667
     }
 
-    default-column-width { proportion 0.5; }
+    default-section-width { proportion 0.5; }
 
     preset-window-heights {
         proportion 0.33333
@@ -67,7 +72,7 @@ layout {
         // off
         on
         hide-when-single-tab
-        place-within-column
+        place-within-section
         gap 5
         width 4
         length total-proportion=1.0
@@ -85,7 +90,9 @@ layout {
     insert-hint {
         // off
         on
-        color "#ffc87f80"
+        color "#7fc8ff80"
+        swap-color "#96f0968c"
+        tab-color "#e1a0ff8c"
         // gradient from="#ffbb6680" to="#ffc88080" angle=45 relative-to="workspace-view"
     }
 
@@ -122,13 +129,13 @@ layout {
 
 Sets the main axis of the scrolling layout.
 
-- `"horizontal"` (the default): columns are laid out from left to right, and the view scrolls horizontally.
-- `"vertical"`: columns are laid out from top to bottom, and the view scrolls vertically.
+- `"horizontal"` (the default): sections are laid out from left to right, and the view scrolls horizontally.
+- `"vertical"`: sections are laid out from top to bottom, and the view scrolls vertically.
 
 This setting also changes what niri considers the main axis for size actions and presets:
 
-- `column width` settings and actions affect the main-axis span of a column.
-- `window height` settings and actions affect the cross-axis span of a window inside a column.
+- `section width` settings and actions affect the main-axis span of a section.
+- `window height` settings and actions affect the cross-axis span of a window inside a section.
 
 So in the default horizontal layout these still correspond to physical width and height, while in vertical layout they correspond to physical height and width respectively.
 
@@ -138,30 +145,43 @@ layout {
 }
 ```
 
-### `center-focused-column`
+### `tiling-drag`
 
-When to center a column when changing focus.
-This can be set to:
+Controls how an interactive *tiling* drag behaves (starting a drag on a tiled window, e.g. with `Mod+MouseLeft`).
 
-- `"never"`: no special centering, focusing an off-screen column will scroll it to the start or end edge of the screen. This is the default.
-- `"always"`, the focused column will always be centered.
-- `"on-overflow"`, focusing a column will center it if it doesn't fit on screen together with the previously focused column.
+- `"in-place"` (the default): sway-style. The window stays in the layout tree during the drag; a drop indicator plus a translucent following ghost show where it will land, and placement is computed by exact cursor hit-testing. A centre-drop swaps the two windows (within or across workspaces and outputs), dropping over an edge splits, and dropping onto a tabbing container's header band adds a tab.
+- `"detach"`: niri's classic behaviour, where past a threshold the window detaches from the layout and follows the cursor.
 
 ```kdl
 layout {
-    center-focused-column "always"
+    tiling-drag "in-place"
 }
 ```
 
-### `always-center-single-column`
+### `center-focused-section`
 
-<sup>Since: 0.1.9</sup>
+When to center a section when changing focus.
+This can be set to:
 
-If set, niri will always center a single column on a workspace, regardless of the `center-focused-column` option.
+- `"never"`: no special centering, focusing an off-screen section will scroll it to the start or end edge of the screen. This is the default.
+- `"always"`, the focused section will always be centered.
+- `"on-overflow"`, focusing a section will center it if it doesn't fit on screen together with the previously focused section.
 
 ```kdl
 layout {
-    always-center-single-column
+    center-focused-section "always"
+}
+```
+
+### `always-center-single-section`
+
+<sup>Since: 0.1.9</sup>
+
+If set, niri will always center a single section on a workspace, regardless of the `center-focused-section` option.
+
+```kdl
+layout {
+    always-center-single-section
 }
 ```
 
@@ -177,30 +197,30 @@ layout {
 }
 ```
 
-### `default-column-display`
+### `default-section-display`
 
 <sup>Since: 25.02</sup>
 
-Sets the default display mode for new columns.
+Sets the default display mode for new sections.
 Can be `normal` or `tabbed`.
 
 ```kdl
-// Make all new columns tabbed by default.
+// Make all new sections tabbed by default.
 layout {
-    default-column-display "tabbed"
+    default-section-display "tabbed"
 
     // You may also want to hide the tab indicator
-    // when there's only a single window in a column.
+    // when there's only a single window in a section.
     tab-indicator {
         hide-when-single-tab
     }
 }
 ```
 
-### `preset-column-widths`
+### `preset-section-widths`
 
-Set the main-axis spans that the `switch-preset-column-width` action (Mod+R) toggles between.
-<sup>Since: 25.08</sup> You can use the `switch-preset-column-width-back` action (Mod+Shift+R) to toggle in reverse.
+Set the main-axis spans that the `switch-preset-section-width` action (Mod+R) toggles between.
+<sup>Since: 25.08</sup> You can use the `switch-preset-section-width-back` action (Mod+Shift+R) to toggle in reverse.
 
 `proportion` sets the span as a fraction of the output along the main axis, taking gaps into account.
 For example, you can perfectly fit four windows sized `proportion 0.25` along the main axis of an output, regardless of the gaps setting.
@@ -211,7 +231,7 @@ The default preset spans are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl
 ```kdl
 layout {
     // Cycle between 1/3, 1/2, 2/3 of the output, and a fixed 1280 logical pixels.
-    preset-column-widths {
+    preset-section-widths {
         proportion 0.33333
         proportion 0.5
         proportion 0.66667
@@ -220,16 +240,16 @@ layout {
 }
 ```
 
-### `default-column-width`
+### `default-section-width`
 
 Set the default main-axis span of new windows.
 
-The syntax is the same as in `preset-column-widths` above.
+The syntax is the same as in `preset-section-widths` above.
 
 ```kdl
 layout {
     // Open new windows sized 1/3 of the output along the main axis.
-    default-column-width { proportion 0.33333; }
+    default-section-width { proportion 0.33333; }
 }
 ```
 
@@ -238,17 +258,17 @@ You can also leave the brackets empty, then the windows themselves will decide t
 ```kdl
 layout {
     // New windows decide their initial main-axis span themselves.
-    default-column-width {}
+    default-section-width {}
 }
 ```
 
 > [!NOTE]
-> `default-column-width {}` causes niri to send an initial configure request with the main-axis span left at 0 and the cross-axis span set normally.
+> `default-section-width {}` causes niri to send an initial configure request with the main-axis span left at 0 and the cross-axis span set normally.
 >
 > In the default horizontal layout this is `(0, H)`. With `main-axis "vertical"`, this becomes `(W, 0)`.
 >
 > This is a bit [unclearly defined](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues/155) in the Wayland protocol, so some clients may misinterpret it.
-> Either way, `default-column-width {}` is most useful for specific windows, in form of a [window rule](./Configuration:-Window-Rules.md#default-column-width) with the same syntax.
+> Either way, `default-section-width {}` is most useful for specific windows, in form of a [window rule](./Configuration:-Window-Rules.md#default-section-width) with the same syntax.
 
 ### `preset-window-heights`
 
@@ -458,14 +478,14 @@ prefer-no-csd
 
 <sup>Since: 25.02</sup>
 
-Controls the appearance of the tab indicator that appears next to columns in tabbed display mode.
+Controls the appearance of the tab indicator that appears next to sections in tabbed display mode.
 
 Set `off` to hide the tab indicator.
 
-Set `hide-when-single-tab` to hide the indicator for tabbed columns that only have a single window.
+Set `hide-when-single-tab` to hide the indicator for tabbed sections that only have a single window.
 
-Set `place-within-column` to put the tab indicator "within" the column, rather than outside.
-This will include it in column sizing and avoid overlaying adjacent columns.
+Set `place-within-section` to put the tab indicator "within" the section, rather than outside.
+This will include it in section sizing and avoid overlaying adjacent sections.
 
 `gap` sets the gap between the tab indicator and the window in logical pixels.
 The gap can be negative, this will put the tab indicator on top of the window.
@@ -495,14 +515,14 @@ Tab colors are picked in this order:
 
 ```kdl
 // Make the tab indicator wider and match the window height,
-// also put it at the top and within the column.
+// also put it at the top and within the section.
 layout {
     tab-indicator {
         width 8
         gap 8
         length total-proportion=1.0
         position "top"
-        place-within-column
+        place-within-section
     }
 }
 ```
@@ -517,12 +537,20 @@ Settings for the window insert position hint during an interactive window move.
 
 `color` and `gradient` let you change the color of the hint and have the same syntax as colors and gradients in border and focus ring.
 
+niriad tints the hint by the kind of drop, so split, swap, and tab-add are obvious at a glance. Each kind has its own color and optional gradient:
+
+- `color` / `gradient`: a split, move, or new-section drop. Default `color` is blue (`#7fc8ff80`).
+- `swap-color` / `swap-gradient`: a swap (a centre-drop during the in-place tiling drag). Default `swap-color` is green (`#96f0968c`).
+- `tab-color` / `tab-gradient`: adding a tab (a drop on a tabbing container's header band). Default `tab-color` is purple (`#e1a0ff8c`).
+
 ```kdl
 layout {
     insert-hint {
         // off
-        color "#ffc87f80"
-        gradient from="#ffbb6680" to="#ffc88080" angle=45 relative-to="workspace-view"
+        color "#7fc8ff80"
+        swap-color "#96f0968c"
+        tab-color "#e1a0ff8c"
+        // gradient from="#ffbb6680" to="#ffc88080" angle=45 relative-to="workspace-view"
     }
 }
 ```

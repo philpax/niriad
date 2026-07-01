@@ -45,11 +45,11 @@ There's [a bug](https://github.com/wezterm/wezterm/issues/4708) in WezTerm that 
 ```kdl
 window-rule {
     match app-id=r#"^org\.wezfurlong\.wezterm$"#
-    default-column-width {}
+    default-section-width {}
 }
 ```
 
-This empty default column width lets WezTerm pick its own initial width which makes it show up properly.
+This empty default section width lets WezTerm pick its own initial width which makes it show up properly.
 
 There's [another bug](https://github.com/wezterm/wezterm/issues/6472) in WezTerm that causes it to choose a wrong size when it's in a tiled state, and prevent resizing it.
 Niri puts windows in the tiled state with [`prefer-no-csd`](./Configuration:-Miscellaneous.md#prefer-no-csd).
