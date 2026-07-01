@@ -113,6 +113,12 @@ layout {
     // Set gaps around windows in logical pixels.
     gaps 16
 
+    // Sway-literal in-place tiling drag: the window stays put while a translucent ghost + a drop
+    // indicator follow the cursor, and a centre-drop swaps the two windows (slots stay, occupants
+    // trade). The other option, "detach", restores niri's classic detach-and-follow drag where the
+    // window is lifted out and follows the cursor.
+    tiling-drag "in-place"
+
     // When to center a section when changing focus, options are:
     // - "never", default behavior, focusing an off-screen section will keep at the left
     //   or right edge of the screen.
@@ -217,6 +223,15 @@ layout {
 
         // inactive-gradient from="#505050" to="#808080" angle=45 relative-to="workspace-view"
     }
+
+    // The interactive-drag drop indicator. niriad tints it by drop kind so split vs swap vs
+    // tab-add are obvious at a glance; the colours below are the (distinct) defaults — uncomment to
+    // customise. Each accepts a "color" and/or a "*-gradient" like the focus ring.
+    // insert-hint {
+    //     color "#7fc8ff80"        // split / move / new section (blue)
+    //     swap-color "#96f0968c"   // swap (centre-drop in the in-place drag) (green)
+    //     tab-color "#e1a0ff8c"    // add a tab (drop on a titlebar) (purple)
+    // }
 
     // You can enable drop shadows for windows.
     shadow {
@@ -392,6 +407,12 @@ window-rule {
     clip-to-geometry true
 }
 
+// niriad ships an i3/sway-style keymap by default. niriad models windows as an
+// orientation-neutral tree: each slot in the scrolling rail is a *section* (what niri calls a
+// "column") holding a tree that can split, tab, or stack, nested arbitrarily. These binds drive it
+// with a keymap you already know: $mod+hjkl focus, $mod+Shift+hjkl move, $mod+b/v split,
+// $mod+s/w/e stacking/tabbed/toggle. The classic niri bindings are preserved (commented out) at the
+// bottom of this block — uncomment them there and comment out the sway-style ones to switch back.
 binds {
     // Keys consist of modifiers separated by + signs, followed by an XKB key name
     // in the end. To find an XKB name for a particular key, you may use a program
@@ -408,7 +429,8 @@ binds {
     Mod+Shift+Slash { show-hotkey-overlay; }
 
     // Suggested binds for running programs: terminal, app launcher, screen locker.
-    Mod+T hotkey-overlay-title="Open a Terminal: alacritty" { spawn "alacritty"; }
+    // (sway: $mod+Return terminal, $mod+d launcher.)
+    Mod+Return hotkey-overlay-title="Open a Terminal: alacritty" { spawn "alacritty"; }
     Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }
     Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }
 
@@ -445,122 +467,53 @@ binds {
     // or do a four-finger swipe up on a touchpad.
     Mod+O repeat=false { toggle-overview; }
 
-    Mod+Q repeat=false { close-window; }
+    // Kill (sway: $mod+Shift+q).
+    Mod+Shift+Q repeat=false { close-window; }
 
-    Mod+Left  { focus-section-left; }
-    Mod+Down  { focus-window-down; }
-    Mod+Up    { focus-window-up; }
-    Mod+Right { focus-section-right; }
-    Mod+H     { focus-section-left; }
-    Mod+J     { focus-window-down; }
-    Mod+K     { focus-window-up; }
-    Mod+L     { focus-section-right; }
+    // --- Focus (sway: $mod+hjkl / arrows) ---
+    // Spatial focus: left/right/up/down always mean the *screen* direction, resolving to the rail
+    // or the within-container axis depending on the monitor's orientation (so it stays correct on a
+    // portrait monitor where the rail runs vertically) — exactly like sway.
+    Mod+H     { focus-left; }
+    Mod+L     { focus-right; }
+    Mod+K     { focus-up; }
+    Mod+J     { focus-down; }
+    Mod+Left  { focus-left; }
+    Mod+Right { focus-right; }
+    Mod+Up    { focus-up; }
+    Mod+Down  { focus-down; }
 
-    Mod+Ctrl+Left  { move-section-left; }
-    Mod+Ctrl+Down  { move-window-down; }
-    Mod+Ctrl+Up    { move-window-up; }
-    Mod+Ctrl+Right { move-section-right; }
-    Mod+Ctrl+H     { move-section-left; }
-    Mod+Ctrl+J     { move-window-down; }
-    Mod+Ctrl+K     { move-window-up; }
-    Mod+Ctrl+L     { move-section-right; }
+    // --- Move (sway: $mod+Shift+hjkl / arrows) ---
+    Mod+Shift+H     { move-left; }
+    Mod+Shift+L     { move-right; }
+    Mod+Shift+K     { move-up; }
+    Mod+Shift+J     { move-down; }
+    Mod+Shift+Left  { move-left; }
+    Mod+Shift+Right { move-right; }
+    Mod+Shift+Up    { move-up; }
+    Mod+Shift+Down  { move-down; }
 
-    // Alternative commands that move across workspaces when reaching
-    // the first or last window in a section.
-    // Mod+J     { focus-window-or-workspace-down; }
-    // Mod+K     { focus-window-or-workspace-up; }
-    // Mod+Ctrl+J     { move-window-down-or-to-workspace-down; }
-    // Mod+Ctrl+K     { move-window-up-or-to-workspace-up; }
+    // --- Container layout (sway: $mod+b/v splith/splitv, $mod+s/w/e stacking/tabbed/toggle) ---
+    // splith/splitv lay the children side-by-side / stacked (all visible); tabbed/stacked show one
+    // at a time (a single tab row / one title row per child). toggle-split-layout flips H<->V.
+    Mod+B { set-section-layout "splith"; }
+    Mod+V { set-section-layout "splitv"; }
+    Mod+S { set-section-layout "stacked"; }
+    Mod+W { set-section-layout "tabbed"; }
+    Mod+E { toggle-split-layout; }
 
-    Mod+Home { focus-section-first; }
-    Mod+End  { focus-section-last; }
-    Mod+Ctrl+Home { move-section-to-first; }
-    Mod+Ctrl+End  { move-section-to-last; }
+    // Within a tabbed/stacked container, reorder the focused tab (sway has no default, handy here).
+    Mod+Shift+BracketLeft  { move-tab-left; }
+    Mod+Shift+BracketRight { move-tab-right; }
 
-    Mod+Shift+Left  { focus-monitor-left; }
-    Mod+Shift+Down  { focus-monitor-down; }
-    Mod+Shift+Up    { focus-monitor-up; }
-    Mod+Shift+Right { focus-monitor-right; }
-    Mod+Shift+H     { focus-monitor-left; }
-    Mod+Shift+J     { focus-monitor-down; }
-    Mod+Shift+K     { focus-monitor-up; }
-    Mod+Shift+L     { focus-monitor-right; }
+    // --- Fullscreen / floating (sway: $mod+f, $mod+Shift+space, $mod+space) ---
+    Mod+F             { fullscreen-window; }
+    Mod+Shift+Space   { toggle-window-floating; }
+    Mod+Space         { switch-focus-between-floating-and-tiling; }
 
-    Mod+Shift+Ctrl+Left  { move-section-to-monitor-left; }
-    Mod+Shift+Ctrl+Down  { move-section-to-monitor-down; }
-    Mod+Shift+Ctrl+Up    { move-section-to-monitor-up; }
-    Mod+Shift+Ctrl+Right { move-section-to-monitor-right; }
-    Mod+Shift+Ctrl+H     { move-section-to-monitor-left; }
-    Mod+Shift+Ctrl+J     { move-section-to-monitor-down; }
-    Mod+Shift+Ctrl+K     { move-section-to-monitor-up; }
-    Mod+Shift+Ctrl+L     { move-section-to-monitor-right; }
-
-    // Alternatively, there are commands to move just a single window:
-    // Mod+Shift+Ctrl+Left  { move-window-to-monitor-left; }
-    // ...
-
-    // And you can also move a whole workspace to another monitor:
-    // Mod+Shift+Ctrl+Left  { move-workspace-to-monitor-left; }
-    // ...
-
-    Mod+Page_Down      { focus-workspace-down; }
-    Mod+Page_Up        { focus-workspace-up; }
-    Mod+U              { focus-workspace-down; }
-    Mod+I              { focus-workspace-up; }
-    Mod+Ctrl+Page_Down { move-section-to-workspace-down; }
-    Mod+Ctrl+Page_Up   { move-section-to-workspace-up; }
-    Mod+Ctrl+U         { move-section-to-workspace-down; }
-    Mod+Ctrl+I         { move-section-to-workspace-up; }
-
-    // Alternatively, there are commands to move just a single window:
-    // Mod+Ctrl+Page_Down { move-window-to-workspace-down; }
-    // ...
-
-    Mod+Shift+Page_Down { move-workspace-down; }
-    Mod+Shift+Page_Up   { move-workspace-up; }
-    Mod+Shift+U         { move-workspace-down; }
-    Mod+Shift+I         { move-workspace-up; }
-
-    // You can bind mouse wheel scroll ticks using the following syntax.
-    // These binds will change direction based on the natural-scroll setting.
-    //
-    // To avoid scrolling through workspaces really fast, you can use
-    // the cooldown-ms property. The bind will be rate-limited to this value.
-    // You can set a cooldown on any bind, but it's most useful for the wheel.
-    Mod+WheelScrollDown      cooldown-ms=150 { focus-workspace-down; }
-    Mod+WheelScrollUp        cooldown-ms=150 { focus-workspace-up; }
-    Mod+Ctrl+WheelScrollDown cooldown-ms=150 { move-section-to-workspace-down; }
-    Mod+Ctrl+WheelScrollUp   cooldown-ms=150 { move-section-to-workspace-up; }
-
-    Mod+WheelScrollRight      { focus-section-right; }
-    Mod+WheelScrollLeft       { focus-section-left; }
-    Mod+Ctrl+WheelScrollRight { move-section-right; }
-    Mod+Ctrl+WheelScrollLeft  { move-section-left; }
-
-    // Usually scrolling up and down with Shift in applications results in
-    // horizontal scrolling; these binds replicate that.
-    Mod+Shift+WheelScrollDown      { focus-section-right; }
-    Mod+Shift+WheelScrollUp        { focus-section-left; }
-    Mod+Ctrl+Shift+WheelScrollDown { move-section-right; }
-    Mod+Ctrl+Shift+WheelScrollUp   { move-section-left; }
-
-    // Similarly, you can bind touchpad scroll "ticks".
-    // Touchpad scrolling is continuous, so for these binds it is split into
-    // discrete intervals.
-    // These binds are also affected by touchpad's natural-scroll, so these
-    // example binds are "inverted", since we have natural-scroll enabled for
-    // touchpads by default.
-    // Mod+TouchpadScrollDown { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02+"; }
-    // Mod+TouchpadScrollUp   { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02-"; }
-
-    // You can refer to workspaces by index. However, keep in mind that
-    // niri is a dynamic workspace system, so these commands are kind of
-    // "best effort". Trying to refer to a workspace index bigger than
-    // the current workspace count will instead refer to the bottommost
-    // (empty) workspace.
-    //
-    // For example, with 2 workspaces + 1 empty, indices 3, 4, 5 and so on
-    // will all refer to the 3rd workspace.
+    // --- Workspaces (sway: $mod+1..9 switch, $mod+Shift+1..9 move) ---
+    // niri is a dynamic workspace system, so these commands are "best effort": referring to an
+    // index bigger than the current workspace count refers to the bottommost (empty) workspace.
     Mod+1 { focus-workspace 1; }
     Mod+2 { focus-workspace 2; }
     Mod+3 { focus-workspace 3; }
@@ -570,111 +523,44 @@ binds {
     Mod+7 { focus-workspace 7; }
     Mod+8 { focus-workspace 8; }
     Mod+9 { focus-workspace 9; }
-    Mod+Ctrl+1 { move-section-to-workspace 1; }
-    Mod+Ctrl+2 { move-section-to-workspace 2; }
-    Mod+Ctrl+3 { move-section-to-workspace 3; }
-    Mod+Ctrl+4 { move-section-to-workspace 4; }
-    Mod+Ctrl+5 { move-section-to-workspace 5; }
-    Mod+Ctrl+6 { move-section-to-workspace 6; }
-    Mod+Ctrl+7 { move-section-to-workspace 7; }
-    Mod+Ctrl+8 { move-section-to-workspace 8; }
-    Mod+Ctrl+9 { move-section-to-workspace 9; }
+    Mod+Shift+1 { move-section-to-workspace 1; }
+    Mod+Shift+2 { move-section-to-workspace 2; }
+    Mod+Shift+3 { move-section-to-workspace 3; }
+    Mod+Shift+4 { move-section-to-workspace 4; }
+    Mod+Shift+5 { move-section-to-workspace 5; }
+    Mod+Shift+6 { move-section-to-workspace 6; }
+    Mod+Shift+7 { move-section-to-workspace 7; }
+    Mod+Shift+8 { move-section-to-workspace 8; }
+    Mod+Shift+9 { move-section-to-workspace 9; }
 
-    // Alternatively, there are commands to move just a single window:
-    // Mod+Ctrl+1 { move-window-to-workspace 1; }
+    // niri's rail extends beyond a single screen — page through sections/workspaces and outputs.
+    Mod+Page_Down { focus-workspace-down; }
+    Mod+Page_Up   { focus-workspace-up; }
+    Mod+Ctrl+H    { focus-monitor-left; }
+    Mod+Ctrl+L    { focus-monitor-right; }
+    Mod+Ctrl+K    { focus-monitor-up; }
+    Mod+Ctrl+J    { focus-monitor-down; }
+    Mod+Ctrl+Shift+H { move-section-to-monitor-left; }
+    Mod+Ctrl+Shift+L { move-section-to-monitor-right; }
 
-    // Switches focus between the current and the previous workspace.
-    // Mod+Tab { focus-workspace-previous; }
+    // Scroll the rail with the wheel. The cooldown-ms property rate-limits the bind so you don't
+    // fly through workspaces; it can be applied to any bind, but it's most useful for the wheel.
+    Mod+WheelScrollDown      cooldown-ms=150 { focus-workspace-down; }
+    Mod+WheelScrollUp        cooldown-ms=150 { focus-workspace-up; }
+    Mod+WheelScrollRight { focus-section-right; }
+    Mod+WheelScrollLeft  { focus-section-left; }
 
-    // The following binds move the focused window in and out of a section.
-    // If the window is alone, they will consume it into the nearby section to the side.
-    // If the window is already in a section, they will expel it out.
-    Mod+BracketLeft  { consume-or-expel-window-left; }
-    Mod+BracketRight { consume-or-expel-window-right; }
-
-    // Consume one window from the right to the bottom of the focused section.
-    Mod+Comma  { consume-window-into-section; }
-    // Expel the bottom window from the focused section to the right.
-    Mod+Period { expel-window-from-section; }
-
-    // Split the focused window: the next window opened will be placed side-by-side.
-    Mod+Shift+S { split-window; }
-    // Consume a window from an adjacent section into a split with the focused window.
-    Mod+Shift+Comma { consume-window-into-split; }
-
-    // Cycle through widths set in preset-section-widths.
-    Mod+R { switch-preset-section-width; }
-    // Cycling through the presets in reverse order is also possible.
-    Mod+Shift+R { switch-preset-section-width-back; }
-
-    Mod+Ctrl+Shift+R { switch-preset-window-height; }
-    Mod+Ctrl+R { reset-window-height; }
-
-    Mod+F { maximize-section; }
-    Mod+Shift+F { fullscreen-window; }
-
-    // While maximize-section leaves gaps and borders around the window,
-    // maximize-window-to-edges doesn't: the window expands to the edges of the screen.
-    // This bind corresponds to normal window maximizing,
-    // e.g. by double-clicking on the titlebar.
-    Mod+M { maximize-window-to-edges; }
-
-    // Expand the focused section to space not taken up by other fully visible sections.
-    // Makes the section "fill the rest of the space".
-    Mod+Ctrl+F { expand-section-to-available-width; }
-
-    Mod+C { center-section; }
-
-    // Center all fully visible sections on screen.
-    Mod+Ctrl+C { center-visible-sections; }
-
-    // Finer width adjustments.
-    // This command can also:
-    // * set width in pixels: "1000"
-    // * adjust width in pixels: "-5" or "+5"
-    // * set width as a percentage of screen width: "25%"
-    // * adjust width as a percentage of screen width: "-10%" or "+10%"
-    // Pixel sizes use logical, or scaled, pixels. I.e. on an output with scale 2.0,
-    // set-section-width "100" will make the section occupy 200 physical screen pixels.
-    Mod+Minus { set-section-width "-10%"; }
-    Mod+Equal { set-section-width "+10%"; }
-
-    // Finer height adjustments when in section with other windows.
+    // Sizing (sway: $mod+r resize mode; niri uses preset widths + fine adjustment).
+    // Finer adjustments can also: set width in pixels ("1000"), adjust in pixels ("-5"/"+5"),
+    // set a percentage ("25%") or adjust a percentage ("-10%"/"+10%"). Pixel sizes are logical,
+    // so on scale 2.0 set-section-width "100" occupies 200 physical pixels.
+    Mod+R       { switch-preset-section-width; }
+    Mod+Ctrl+R  { reset-window-height; }
+    Mod+Minus       { set-section-width "-10%"; }
+    Mod+Equal       { set-section-width "+10%"; }
     Mod+Shift+Minus { set-window-height "-10%"; }
     Mod+Shift+Equal { set-window-height "+10%"; }
-
-    // Move the focused window between the floating and the tiling layout.
-    Mod+V       { toggle-window-floating; }
-    Mod+Shift+V { switch-focus-between-floating-and-tiling; }
-
-    // Toggle tabbed section display mode.
-    // Windows in this section will appear as vertical tabs,
-    // rather than stacked on top of each other.
-    Mod+W { toggle-section-tabbed-display; }
-
-    // Toggle tabbed display at any tree level (generalized).
-    Mod+Shift+W { toggle-tabbed; }
-    // Move the focused tab left/right within its tabbed container.
-    Mod+Shift+BracketLeft { move-tab-left; }
-    Mod+Shift+BracketRight { move-tab-right; }
-
-    // Sway-style container layouts: set the layout of the container holding the focused window.
-    // splith/splitv lay the children side-by-side / stacked (all visible); tabbed/stacked show one
-    // at a time (a single tab row / one title row per child). toggle-split-layout flips H<->V.
-    // See resources/config-niriad.kdl for a full sway-themed keymap.
-    // Mod+B { set-section-layout "splith"; }
-    // Mod+V { set-section-layout "splitv"; }
-    // Mod+S { set-section-layout "stacked"; }
-    // Mod+Shift+W { set-section-layout "tabbed"; }
-    // Mod+E { toggle-split-layout; }
-
-    // Actions to switch layouts.
-    // Note: if you uncomment these, make sure you do NOT have
-    // a matching layout switch hotkey configured in xkb options above.
-    // Having both at once on the same hotkey will break the switching,
-    // since it will switch twice upon pressing the hotkey (once by xkb, once by niri).
-    // Mod+Space       { switch-layout "next"; }
-    // Mod+Shift+Space { switch-layout "prev"; }
+    Mod+C { center-section; }
 
     Print { screenshot; }
     Ctrl+Print { screenshot-screen; }
@@ -691,10 +577,123 @@ binds {
     Mod+Escape allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }
 
     // The quit action will show a confirmation dialog to avoid accidental exits.
+    // (sway: $mod+Shift+e exit.)
     Mod+Shift+E { quit; }
     Ctrl+Alt+Delete { quit; }
 
     // Powers off the monitors. To turn them back on, do any input like
     // moving the mouse or pressing any other key.
     Mod+Shift+P { power-off-monitors; }
+
+    // --- Classic niri bindings (uncomment to use instead of the sway-style ones above) ---
+    // These are niri's stock keybinds. If you prefer them, uncomment this block and comment out
+    // the conflicting sway-style binds above (focus/move/layout/workspace/monitor/close/etc.).
+    //
+    // Mod+Q repeat=false { close-window; }
+    //
+    // Mod+Left  { focus-section-left; }
+    // Mod+Down  { focus-window-down; }
+    // Mod+Up    { focus-window-up; }
+    // Mod+Right { focus-section-right; }
+    // Mod+H     { focus-section-left; }
+    // Mod+J     { focus-window-down; }
+    // Mod+K     { focus-window-up; }
+    // Mod+L     { focus-section-right; }
+    //
+    // Mod+Ctrl+Left  { move-section-left; }
+    // Mod+Ctrl+Down  { move-window-down; }
+    // Mod+Ctrl+Up    { move-window-up; }
+    // Mod+Ctrl+Right { move-section-right; }
+    // Mod+Ctrl+H     { move-section-left; }
+    // Mod+Ctrl+J     { move-window-down; }
+    // Mod+Ctrl+K     { move-window-up; }
+    // Mod+Ctrl+L     { move-section-right; }
+    //
+    // Alternative commands that move across workspaces when reaching
+    // the first or last window in a section.
+    // Mod+J     { focus-window-or-workspace-down; }
+    // Mod+K     { focus-window-or-workspace-up; }
+    // Mod+Ctrl+J     { move-window-down-or-to-workspace-down; }
+    // Mod+Ctrl+K     { move-window-up-or-to-workspace-up; }
+    //
+    // Mod+Home { focus-section-first; }
+    // Mod+End  { focus-section-last; }
+    // Mod+Ctrl+Home { move-section-to-first; }
+    // Mod+Ctrl+End  { move-section-to-last; }
+    //
+    // Mod+Shift+Left  { focus-monitor-left; }
+    // Mod+Shift+Down  { focus-monitor-down; }
+    // Mod+Shift+Up    { focus-monitor-up; }
+    // Mod+Shift+Right { focus-monitor-right; }
+    // Mod+Shift+H     { focus-monitor-left; }
+    // Mod+Shift+J     { focus-monitor-down; }
+    // Mod+Shift+K     { focus-monitor-up; }
+    // Mod+Shift+L     { focus-monitor-right; }
+    //
+    // Mod+Shift+Ctrl+Left  { move-section-to-monitor-left; }
+    // Mod+Shift+Ctrl+Down  { move-section-to-monitor-down; }
+    // Mod+Shift+Ctrl+Up    { move-section-to-monitor-up; }
+    // Mod+Shift+Ctrl+Right { move-section-to-monitor-right; }
+    // Mod+Shift+Ctrl+H     { move-section-to-monitor-left; }
+    // Mod+Shift+Ctrl+J     { move-section-to-monitor-down; }
+    // Mod+Shift+Ctrl+K     { move-section-to-monitor-up; }
+    // Mod+Shift+Ctrl+L     { move-section-to-monitor-right; }
+    //
+    // Mod+U              { focus-workspace-down; }
+    // Mod+I              { focus-workspace-up; }
+    // Mod+Ctrl+Page_Down { move-section-to-workspace-down; }
+    // Mod+Ctrl+Page_Up   { move-section-to-workspace-up; }
+    // Mod+Ctrl+U         { move-section-to-workspace-down; }
+    // Mod+Ctrl+I         { move-section-to-workspace-up; }
+    //
+    // Mod+Shift+Page_Down { move-workspace-down; }
+    // Mod+Shift+Page_Up   { move-workspace-up; }
+    // Mod+Shift+U         { move-workspace-down; }
+    // Mod+Shift+I         { move-workspace-up; }
+    //
+    // Mod+Ctrl+WheelScrollDown cooldown-ms=150 { move-section-to-workspace-down; }
+    // Mod+Ctrl+WheelScrollUp   cooldown-ms=150 { move-section-to-workspace-up; }
+    // Mod+Ctrl+WheelScrollRight { move-section-right; }
+    // Mod+Ctrl+WheelScrollLeft  { move-section-left; }
+    // Mod+Shift+WheelScrollDown      { focus-section-right; }
+    // Mod+Shift+WheelScrollUp        { focus-section-left; }
+    // Mod+Ctrl+Shift+WheelScrollDown { move-section-right; }
+    // Mod+Ctrl+Shift+WheelScrollUp   { move-section-left; }
+    //
+    // Mod+Ctrl+1 { move-section-to-workspace 1; }
+    // Mod+Ctrl+2 { move-section-to-workspace 2; }
+    // Mod+Ctrl+3 { move-section-to-workspace 3; }
+    // Mod+Ctrl+4 { move-section-to-workspace 4; }
+    // Mod+Ctrl+5 { move-section-to-workspace 5; }
+    // Mod+Ctrl+6 { move-section-to-workspace 6; }
+    // Mod+Ctrl+7 { move-section-to-workspace 7; }
+    // Mod+Ctrl+8 { move-section-to-workspace 8; }
+    // Mod+Ctrl+9 { move-section-to-workspace 9; }
+    //
+    // Switches focus between the current and the previous workspace.
+    // Mod+Tab { focus-workspace-previous; }
+    //
+    // The following binds move the focused window in and out of a section.
+    // If the window is alone, they will consume it into the nearby section to the side.
+    // If the window is already in a section, they will expel it out.
+    // Mod+BracketLeft  { consume-or-expel-window-left; }
+    // Mod+BracketRight { consume-or-expel-window-right; }
+    // Mod+Comma  { consume-window-into-section; }
+    // Mod+Period { expel-window-from-section; }
+    // Mod+Shift+S { split-window; }
+    // Mod+Shift+Comma { consume-window-into-split; }
+    //
+    // Mod+Shift+R { switch-preset-section-width-back; }
+    // Mod+Ctrl+Shift+R { switch-preset-window-height; }
+    //
+    // Mod+F { maximize-section; }
+    // Mod+Shift+F { fullscreen-window; }
+    // Mod+M { maximize-window-to-edges; }
+    // Mod+Ctrl+F { expand-section-to-available-width; }
+    // Mod+Ctrl+C { center-visible-sections; }
+    //
+    // Mod+V       { toggle-window-floating; }
+    // Mod+Shift+V { switch-focus-between-floating-and-tiling; }
+    // Mod+W { toggle-section-tabbed-display; }
+    // Mod+Shift+W { toggle-tabbed; }
 }
