@@ -1515,8 +1515,23 @@ mod tests {
                             },
                         },
                     ),
+                    swap_color: Color {
+                        r: 0.5882353,
+                        g: 0.9411765,
+                        b: 0.5882353,
+                        a: 0.54901963,
+                    },
+                    swap_gradient: None,
+                    tab_color: Color {
+                        r: 0.88235295,
+                        g: 0.627451,
+                        b: 1.0,
+                        a: 0.54901963,
+                    },
+                    tab_gradient: None,
                 },
                 main_axis: Vertical,
+                tiling_drag: InPlace,
                 preset_section_widths: [
                     Proportion(
                         0.25,
