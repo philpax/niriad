@@ -5904,6 +5904,100 @@ fn in_place_centre_drop_swaps_across_outputs() {
     assert_eq!(active_window_id(&layout), Some(1), "dragged window 1 is focused");
 }
 
+/// Helper: fetch the `Output` handle with the given name from the layout.
+fn output_named(layout: &Layout<TestWindow>, name: &str) -> Output {
+    layout
+        .outputs()
+        .find(|o| o.name() == name)
+        .unwrap_or_else(|| panic!("output {name} not found"))
+        .clone()
+}
+
+#[test]
+fn focus_screen_right_crosses_to_adjacent_output() {
+    // Spatial focus at the tree edge crosses to the physically-adjacent output. output1 holds a
+    // single window (window 1), so focusing right from it hits the tree edge and crosses to output2.
+    let mut layout = two_outputs_one_window_each();
+    let out1 = output_named(&layout, "output1");
+    let out2 = output_named(&layout, "output2");
+
+    layout.focus_output(&out1);
+    assert_eq!(layout.active_output().unwrap().name(), "output1", "starting on output1");
+    assert_eq!(active_window_id(&layout), Some(1), "window 1 is focused to start");
+
+    let crossed = layout.focus_screen_right_or_output(&out2);
+    assert!(crossed, "at the tree edge, focus crosses to the neighbour output");
+    assert_eq!(
+        layout.active_output().unwrap().name(),
+        "output2",
+        "focus crossed to output2"
+    );
+    assert_eq!(active_window_id(&layout), Some(2), "output2's window is now focused");
+}
+
+#[test]
+fn move_screen_right_carries_window_to_adjacent_output() {
+    // A spatial move at the tree edge carries the window across to the adjacent output. window 1 is
+    // alone on output1, so moving it right hits the edge and hands it to output2 via move_to_output.
+    let mut layout = two_outputs_one_window_each();
+    let out1 = output_named(&layout, "output1");
+    let out2 = output_named(&layout, "output2");
+
+    layout.focus_output(&out1);
+    assert_eq!(window_output_and_geo(&layout, 1).unwrap().0, "output1", "window 1 starts on output1");
+
+    let crossed = layout.move_screen_right_or_to_output(&out2);
+    assert!(crossed, "at the tree edge, the move carries the window to the neighbour output");
+    assert_eq!(
+        window_output_and_geo(&layout, 1).unwrap().0,
+        "output2",
+        "window 1 crossed to output2"
+    );
+    assert_eq!(
+        layout.active_output().unwrap().name(),
+        "output2",
+        "active output followed the moved window"
+    );
+    // The pre-existing window on output2 is untouched.
+    assert_eq!(window_output_and_geo(&layout, 2).unwrap().0, "output2", "window 2 stayed on output2");
+}
+
+#[test]
+fn focus_screen_left_stays_when_interior_neighbour_exists() {
+    // Negative case: when NOT at the tree edge, spatial focus stays on the source output. output1
+    // holds two side-by-side windows [1, 2]; focusing left from window 2 lands on the interior
+    // neighbour (window 1) and does not cross to output2.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::InPlace;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::AddOutput(2),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let out2 = output_named(&layout, "output2");
+
+    // Active window is window 2 (the right tile); its left neighbour (window 1) is interior.
+    assert_eq!(layout.active_output().unwrap().name(), "output1", "starting on output1");
+    assert_eq!(active_window_id(&layout), Some(2), "window 2 is focused to start");
+
+    let crossed = layout.focus_screen_left_or_output(&out2);
+    assert!(!crossed, "an interior neighbour exists, so focus stays put");
+    assert_eq!(
+        layout.active_output().unwrap().name(),
+        "output1",
+        "focus stayed on output1"
+    );
+    assert_eq!(active_window_id(&layout), Some(1), "focus moved to the interior neighbour");
+}
+
 #[test]
 fn in_place_centre_drop_onto_maximized_target_does_not_swap() {
     // A centre-drop swap is only valid between two normal-sized tiles. Dropping a normal window onto
