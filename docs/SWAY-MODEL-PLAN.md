@@ -121,10 +121,14 @@ green (build + tests + clippy + fuzzer).
     the drag.
 
 ### Known limitations / follow-ups
-- Spatial focus/move stops at a screen edge rather than crossing to the adjacent output (sway
-  crosses). The strip still scrolls; only directional edge-crossing is missing.
-- The new `move-*` actions don't special-case the screenshot UI (the older `move-column-*` do), so
-  pressing them with the screenshot selector open moves a window instead of nudging the selection.
+- ~~Spatial focus/move stops at a screen edge rather than crossing to the adjacent output.~~
+  **Fixed:** the `focus-*`/`move-*` handlers now cross to the physical-neighbour output when already
+  at the tree edge (`Layout::{focus,move}_screen_*_or_output` bridge the workspace edge-signal to the
+  existing `output_*_of` + `focus_output`/`move_to_output` primitives; move-across carries the window
+  via `move_to_output`).
+- ~~The new `move-*` actions don't special-case the screenshot UI (the older `move-column-*` do).~~
+  **Fixed:** the four spatial `Move*` arms nudge the screenshot selection along the matching physical
+  axis (`PhysicalAxis::Width`/`Height`) when the selector is open.
 - ~~A tabbed/stacked root with a nested non-leaf child takes its per-tab title/size from one leaf.~~
   **Fixed:** `Section::tab_children` now computes each tab from its *direct child* — the union
   bounding box of all leaves under it (size) and, for a group child, the sway/i3 tree
@@ -205,5 +209,21 @@ Stages (each builds/tests/reviews/commits):
   `InsertPosition` — no per-frame reconfig. Configurable via new `swap-color`/`swap-gradient` and
   `tab-color`/`tab-gradient` keys in the `insert-hint` block (distinct defaults, so zero-config), with
   a documented example in `config-niriad.kdl`.
-- **S6.4 — cross-output / cross-workspace** in-place (cross-tree move + swap) and the float-toggle
-  handoff to the existing `Moving` flow.
+- **S6.4 — done.** Cross-output / cross-workspace in-place. The ghost follows the cursor across
+  outputs (`render_in_place_ghost` searches every workspace for the source tile). A centre-drop over
+  a tile in *another* workspace/output now performs a true cross-tree swap: the two leaf `Tile`s
+  trade slots in place (`Layout::swap_tiles_cross_workspace` gets two disjoint `&mut Workspace` via
+  `split_at_mut` across monitors/workspaces, `mem::swap`s the tiles, then `Workspace::finish_cross_tree_swap`
+  resettles each — reconfig for the destination scale/options, resize the section, migrate the
+  window's output). Focus follows the dragged window (`activate_window`). The float toggle is the one
+  hand-off to detach-and-follow (`interactive_move_inplace_to_floating` → shared `detach_inplace_into_move`
+  → the existing `Moving` float path; one-way). Fullscreen/maximized windows can't be swapped in place
+  (that state is section-level): in-place is gated on `is_normal_sizing` at drag start, and the release
+  refuses a swap when either the (mid-drag-fullscreened) source or the target tile is non-normal,
+  falling back to the detach apply (which unsets those modes). Adversarially reviewed — the
+  `split_at_mut`/`mem::swap` is sound (no aliasing, no half-swap), the fullscreen gap it found is
+  fixed, and a cross-output swap test + a maximized-target-fallback test back it up.
+  - *Default flipped:* `tiling-drag` now defaults to `"in-place"` (was `"detach"`).
+  - *Cosmetic follow-ups (deferred):* a cross-tree swap teleports the two tiles (no slide animation,
+    unlike the same-workspace swap); the cross-output ghost resamples its texture at the render
+    output's scale when the source's home output has a different scale (logical geometry is correct).
