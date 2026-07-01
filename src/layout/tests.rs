@@ -5322,13 +5322,18 @@ fn wide_window(id: usize) -> TestWindowParams {
 /// Builds a row (col 0: Main[1,2]) + window 3 in col 1, drags window 3 onto col 0 at the given
 /// cursor and drops it, then returns the settled window geometries (1, 2, 3).
 fn drag_window3_onto_row(px: f64, py: f64) -> [Point<f64, Logical>; 3] {
-    let mut layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::AddWindow { params: wide_window(3) },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::AddWindow { params: wide_window(3) },
+        ],
+    );
     check_ops_on_layout(
         &mut layout,
         [
@@ -5353,16 +5358,21 @@ fn drag_onto_a_tabbed_section_body_adds_a_tab() {
     use super::monitor::InsertPosition;
     // Tabbed[1,2]; a drop in its body reports InsertTab into the section (sway: drop on the tabs/
     // content → new tab), which add_tile_as_tab applies by joining the existing tab group.
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::SetLayout(super::tile_node::Layout::Tabbed),
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SetLayout(super::tile_node::Layout::Tabbed),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
     assert!(
@@ -5378,16 +5388,21 @@ fn drag_over_tab_header_adds_tab_over_content_uses_region_map() {
     // Fully-tabbed root: Tabbed[1, 2]. The titlebar band at the top adds a tab; below it, the
     // content follows the precise per-window region map (edge → split the visible window, centre →
     // tab in detach mode).
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::SetLayout(super::tile_node::Layout::Tabbed),
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SetLayout(super::tile_node::Layout::Tabbed),
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
@@ -5426,19 +5441,24 @@ fn drag_over_nested_tabbing_header_adds_tab_over_content_uses_region_map() {
     // visible tab. The nested container reserves its own titlebar band; a drop there adds a tab to
     // it, while a drop over its content follows the per-window region map on the visible leaf (3 =
     // flat index 2).
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
-        Op::AddWindow { params: wide_window(3) },
-        Op::ToggleTabbed, // Cross[2,3] -> Stacked[2,3]; window 3 stays visible.
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::Communicate(3),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(3) },
+            Op::ToggleTabbed, // Cross[2,3] -> Stacked[2,3]; window 3 stays visible.
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
@@ -5528,21 +5548,26 @@ fn drop_in_a_nested_row_targets_the_window_under_the_cursor() {
     use super::monitor::InsertPosition;
     // Cross[1, 2, Main[3,4]] — a vertical stack whose bottom child is a side-by-side row.
     // Windows: 1 at y≈16, 2 at y≈251, the row (3 left / 4 right) at y≈486..704.
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
-        Op::AddWindow { params: wide_window(2) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
-        Op::AddWindow { params: wide_window(3) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(4) },
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::Communicate(3),
-        Op::Communicate(4),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(3) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(4) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::Communicate(4),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     assert_eq!(window_order(&layout), vec![1, 2, 3, 4]);
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
@@ -5576,15 +5601,20 @@ fn drag_into_row_targets_the_tile_under_the_cursor() {
 
     // A horizontal row of two wide windows: window 1 spans x≈[16,316], window 2 x≈[332,632],
     // both full height. (See dimensions verified interactively.)
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 
@@ -5625,15 +5655,20 @@ fn drag_into_tile_regions_split_at_edges_and_tab_at_centre() {
     // A horizontal row [1 | 2]. The tile interior is a sway-style region map: the left/right
     // edge-ward regions place the window side-by-side (Main); the centre groups into tabs in the
     // default (detach) mode (the in-place mode swaps there instead — see the Swap-region test).
-    let layout = check_ops([
-        Op::AddOutput(1),
-        Op::AddWindow { params: wide_window(1) },
-        Op::SplitWindow(niri_ipc::SplitDirection::Main),
-        Op::AddWindow { params: wide_window(2) },
-        Op::Communicate(1),
-        Op::Communicate(2),
-        Op::AdvanceAnimations { msec_delta: 1000 },
-    ]);
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
     let ws = layout.active_workspace().unwrap();
     let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
 

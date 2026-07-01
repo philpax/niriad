@@ -708,7 +708,9 @@ fn state_change_doesnt_break_use_window_size() {
 
 #[test]
 fn interactive_move_restores_floating_size_when_set_to_floating() {
-    let (mut f, id, surface) = set_up();
+    let mut config = Config::default();
+    config.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let (mut f, id, surface) = set_up_with_config(config);
 
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);

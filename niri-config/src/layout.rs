@@ -40,9 +40,10 @@ impl Default for Layout {
             tab_header: TabHeaderConfig::default(),
             insert_hint: InsertHint::default(),
             main_axis: MainAxis::Horizontal,
-            // Staged: the in-place drag state machine (S6.2) isn't wired up yet, so default to the
-            // current detach-and-follow behaviour. Flips to InPlace once in-place lands.
-            tiling_drag: TilingDrag::Detach,
+            // Default to the sway-style in-place drag: the window stays in the tree during a tiling
+            // drag, so a centre-drop swaps. `TilingDrag::Detach` restores niri's classic
+            // detach-and-follow.
+            tiling_drag: TilingDrag::InPlace,
             preset_section_widths: vec![
                 PresetSize::Proportion(1. / 3.),
                 PresetSize::Proportion(0.5),
