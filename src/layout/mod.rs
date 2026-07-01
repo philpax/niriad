@@ -5138,6 +5138,10 @@ impl<W: LayoutElement> Layout<W> {
         ws.set_fullscreen(&window_id, false);
         ws.set_maximized(&window_id, false);
 
+        // Preserve the source workspace's per-workspace layout override, matching the classic
+        // Starting→Moving detach path in `interactive_move_update`.
+        let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
+
         let RemovedTile {
             mut tile,
             width,
@@ -5167,7 +5171,7 @@ impl<W: LayoutElement> Layout<W> {
             is_floating,
             pointer_ratio_within_window: data.pointer_ratio_within_window,
             output_config,
-            workspace_config: None,
+            workspace_config,
         };
 
         if let Some((tile_pos, zoom)) = tile_pos {
