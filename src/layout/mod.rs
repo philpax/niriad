@@ -2089,6 +2089,108 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    // Screen-direction focus/move that cross to the adjacent output when already at the tree edge
+    // on the current monitor (sway crosses outputs; the plain `*_screen_*` variants stop at the
+    // edge). The in-tree step is orientation-resolved (mirrors `focus_screen_*`/`move_screen_*`),
+    // but the output is a physical neighbour supplied by the caller. Each returns whether it
+    // crossed to `output` (false = it stayed on this monitor), so the caller can warp the cursor.
+
+    pub fn focus_screen_left_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_left()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_up()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_right_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_right()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_down()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_up_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_up()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_left()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_down_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_down()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_right()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn move_screen_left_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_left()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_up()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_right_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_right()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_down()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_up_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_up()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_left()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_down_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_down()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_right()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
     pub fn focus_right(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

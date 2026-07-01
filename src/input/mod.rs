@@ -1170,48 +1170,142 @@ impl State {
                 }
             }
             Action::FocusLeft => {
-                self.niri.layout.focus_screen_left();
-                self.maybe_warp_cursor_to_focus();
+                if let Some(output) = self.niri.output_left() {
+                    if self.niri.layout.focus_screen_left_or_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                } else {
+                    self.niri.layout.focus_screen_left();
+                    self.maybe_warp_cursor_to_focus();
+                }
                 self.niri.layer_shell_on_demand_focus = None;
                 self.niri.queue_redraw_all();
             }
             Action::FocusRight => {
-                self.niri.layout.focus_screen_right();
-                self.maybe_warp_cursor_to_focus();
+                if let Some(output) = self.niri.output_right() {
+                    if self.niri.layout.focus_screen_right_or_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                } else {
+                    self.niri.layout.focus_screen_right();
+                    self.maybe_warp_cursor_to_focus();
+                }
                 self.niri.layer_shell_on_demand_focus = None;
                 self.niri.queue_redraw_all();
             }
             Action::FocusUp => {
-                self.niri.layout.focus_screen_up();
-                self.maybe_warp_cursor_to_focus();
+                if let Some(output) = self.niri.output_up() {
+                    if self.niri.layout.focus_screen_up_or_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                } else {
+                    self.niri.layout.focus_screen_up();
+                    self.maybe_warp_cursor_to_focus();
+                }
                 self.niri.layer_shell_on_demand_focus = None;
                 self.niri.queue_redraw_all();
             }
             Action::FocusDown => {
-                self.niri.layout.focus_screen_down();
-                self.maybe_warp_cursor_to_focus();
+                if let Some(output) = self.niri.output_down() {
+                    if self.niri.layout.focus_screen_down_or_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                } else {
+                    self.niri.layout.focus_screen_down();
+                    self.maybe_warp_cursor_to_focus();
+                }
                 self.niri.layer_shell_on_demand_focus = None;
                 self.niri.queue_redraw_all();
             }
             Action::MoveLeft => {
-                self.niri.layout.move_screen_left();
-                self.maybe_warp_cursor_to_focus();
-                self.niri.queue_redraw_all();
+                if self.niri.screenshot_ui.is_open() {
+                    // Spatial moves are physical screen directions, so nudge the screenshot
+                    // selection along the matching physical axis rather than moving a window.
+                    self.apply_screenshot_move(PhysicalAxis::Width, false);
+                } else if let Some(output) = self.niri.output_left() {
+                    if self.niri.layout.move_screen_left_or_to_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                    self.niri.queue_redraw_all();
+                } else {
+                    self.niri.layout.move_screen_left();
+                    self.maybe_warp_cursor_to_focus();
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::MoveRight => {
-                self.niri.layout.move_screen_right();
-                self.maybe_warp_cursor_to_focus();
-                self.niri.queue_redraw_all();
+                if self.niri.screenshot_ui.is_open() {
+                    self.apply_screenshot_move(PhysicalAxis::Width, true);
+                } else if let Some(output) = self.niri.output_right() {
+                    if self.niri.layout.move_screen_right_or_to_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                    self.niri.queue_redraw_all();
+                } else {
+                    self.niri.layout.move_screen_right();
+                    self.maybe_warp_cursor_to_focus();
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::MoveUp => {
-                self.niri.layout.move_screen_up();
-                self.maybe_warp_cursor_to_focus();
-                self.niri.queue_redraw_all();
+                if self.niri.screenshot_ui.is_open() {
+                    self.apply_screenshot_move(PhysicalAxis::Height, false);
+                } else if let Some(output) = self.niri.output_up() {
+                    if self.niri.layout.move_screen_up_or_to_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                    self.niri.queue_redraw_all();
+                } else {
+                    self.niri.layout.move_screen_up();
+                    self.maybe_warp_cursor_to_focus();
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::MoveDown => {
-                self.niri.layout.move_screen_down();
-                self.maybe_warp_cursor_to_focus();
-                self.niri.queue_redraw_all();
+                if self.niri.screenshot_ui.is_open() {
+                    self.apply_screenshot_move(PhysicalAxis::Height, true);
+                } else if let Some(output) = self.niri.output_down() {
+                    if self.niri.layout.move_screen_down_or_to_output(&output)
+                        && !self.maybe_warp_cursor_to_focus_centered()
+                    {
+                        self.move_cursor_to_output(&output);
+                    } else {
+                        self.maybe_warp_cursor_to_focus();
+                    }
+                    self.niri.queue_redraw_all();
+                } else {
+                    self.niri.layout.move_screen_down();
+                    self.maybe_warp_cursor_to_focus();
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::FocusSectionLeft => {
                 self.niri.layout.focus_left();
