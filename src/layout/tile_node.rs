@@ -921,12 +921,19 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Updates config for all tiles in this subtree.
+    ///
+    /// `refresh_leaf_data` controls whether each leaf slot's cached `data` is refreshed from the
+    /// tile's committed size. That is correct for the flat sizing path (whose `data` mirrors the
+    /// tiles), but must be `false` for the recursive path, where `data.size` holds the *intended*
+    /// span used for positioning — overwriting it with the committed size would clobber the layout
+    /// until the next `request_sizes`.
     pub fn update_config_tiles(
         &mut self,
         tile_view_size: Size<f64, Logical>,
         scale: f64,
         options: Rc<Options>,
         axis: AxisMap,
+        refresh_leaf_data: bool,
     ) {
         match self {
             TileNode::Leaf(tile) => {
@@ -934,10 +941,18 @@ impl<W: LayoutElement> TileNode<W> {
             }
             TileNode::Internal { children, data, .. } => {
                 for (child, d) in zip(children, data) {
-                    child.update_config_tiles(tile_view_size, scale, options.clone(), axis);
-                    // Update data for leaf children.
-                    if let TileNode::Leaf(tile) = child {
-                        d.update(tile, axis);
+                    child.update_config_tiles(
+                        tile_view_size,
+                        scale,
+                        options.clone(),
+                        axis,
+                        refresh_leaf_data,
+                    );
+                    // Update data for leaf children (flat path only).
+                    if refresh_leaf_data {
+                        if let TileNode::Leaf(tile) = child {
+                            d.update(tile, axis);
+                        }
                     }
                 }
             }

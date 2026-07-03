@@ -5740,8 +5740,20 @@ impl<W: LayoutElement> Section<W> {
             update_sizes = true;
         }
 
-        // Update config for all tiles recursively (including nested splits).
-        self.root.update_config_tiles(tile_view_size, scale, options.clone(), axis);
+        // A scale change reconfigures every tile (physical-pixel rounding shifts sizes), so a
+        // relayout is needed — the old trigger list omitted it.
+        if self.scale != scale {
+            update_sizes = true;
+        }
+
+        // Update config for all tiles recursively (including nested splits). Only the flat path
+        // (no nested structure, non-Main-split root) may refresh leaf `data` from committed tile
+        // sizes; on the recursive path `data.size` holds intended spans, restored by the relayout
+        // below (`update_tile_sizes` -> `request_sizes`) whenever `update_sizes` is set.
+        let refresh_leaf_data = !self.root.has_nested_children()
+            && !matches!(&self.root, TileNode::Internal { layout: Layout::SplitH, .. });
+        self.root
+            .update_config_tiles(tile_view_size, scale, options.clone(), axis, refresh_leaf_data);
 
         // Re-derive the Stacked flag: update_config can recreate the header (on a tab-style flip),
         // which would otherwise reset it to a single-row Tabbed.
