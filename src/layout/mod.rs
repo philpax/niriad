@@ -5822,6 +5822,11 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
                 !ws.is_floating(window_id)
             });
+        } else if let Some(InteractiveMoveState::InPlace(_)) = &self.interactive_move {
+            // In-place (sway) tiling drags keep the source in the layout tree and are always
+            // tiled/scrolling by nature, so they must keep the view-lock / edge-scroll gestures
+            // alive exactly like the `Moving` tiled case does.
+            ongoing_scrolling_dnd.get_or_insert(true);
         }
 
         match &mut self.monitor_set {
