@@ -7175,11 +7175,22 @@ impl<W: LayoutElement> Section<W> {
         // Weights are invariant to multiplication: a section with weights 2, 2, 1 is equivalent to
         // a section with weights 4, 4, 2. So we find the median window height and use that as 1.
         let mut sorted = heights.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        // NaN heights should never reach here, but a `partial_cmp().unwrap()` would panic if one did;
+        // treat them as equal rather than crash.
+        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let median = sorted[sorted.len() / 2];
 
         for (data, height) in self.data_mut().iter_mut().zip(heights) {
-            let weight = height / median;
+            // A freshly-wrapped subtree slot starts at zero size before its first relayout, so the
+            // median (or an individual height) can be zero — `0. / 0.` is NaN, and a NaN weight
+            // cached here can later panic a `partial_cmp().unwrap()` elsewhere. Fall back to a
+            // neutral weight in any degenerate/non-finite case.
+            let weight = if median > 0. && height.is_finite() {
+                height / median
+            } else {
+                1.
+            };
+            let weight = if weight.is_finite() { weight } else { 1. };
             data.span = ChildSpan::Auto { weight };
         }
     }

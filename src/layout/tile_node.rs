@@ -543,6 +543,20 @@ impl<W: LayoutElement> TileNode<W> {
                     active_idx,
                     children.len()
                 );
+                // No span anywhere in the tree may be NaN/infinite: a degenerate weight (e.g. a
+                // 0./0. from a zero median in `convert_heights_to_auto`) would later panic a
+                // `partial_cmp().unwrap()`.
+                for d in data.iter() {
+                    match d.span {
+                        ChildSpan::Auto { weight } => {
+                            assert!(weight.is_finite(), "auto span weight must be finite, got {weight}")
+                        }
+                        ChildSpan::Fixed(span) => {
+                            assert!(span.is_finite(), "fixed span must be finite, got {span}")
+                        }
+                        ChildSpan::Preset(_) => {}
+                    }
+                }
                 if children.len() == 1 {
                     assert!(
                         matches!(children[0], TileNode::Leaf(_)),

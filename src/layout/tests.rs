@@ -4909,6 +4909,33 @@ fn tabbing_a_resized_row_does_not_force_a_bogus_height() {
 }
 
 #[test]
+fn height_conversion_keeps_finite_weights() {
+    // `convert_heights_to_auto` divides each slot height by the median; a degenerate (zero /
+    // non-finite) median or height would yield a NaN weight, which `verify_invariants` (run after
+    // every op below) now rejects. Stress the conversion path with varied and tiny heights across a
+    // nested tree and confirm every weight stays finite.
+    check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        // Pin one to a tiny fixed height, then convert everything back to auto (SetWindowHeight on an
+        // auto leaf runs `convert_heights_to_auto` first).
+        Op::SetWindowHeight { id: Some(2), change: SizeChange::SetFixed(1) },
+        Op::SetWindowHeight { id: Some(1), change: SizeChange::SetProportion(90.) },
+        Op::ResetWindowHeight { id: Some(1) },
+        Op::SetWindowHeight { id: Some(3), change: SizeChange::AdjustFixed(-100000) },
+        Op::ResetWindowHeight { id: Some(2) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+}
+
+#[test]
 fn nested_height_resize_ignores_horizontal_siblings_min() {
     // In SplitH[1, SplitV[2, 3]], resizing window 2's height competes for cross space only with its
     // cross sibling (window 3), not with window 1, which sits beside the whole vertical split and
