@@ -3091,6 +3091,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
+        // Un-tabbing can leave the node a same-family plain split of its parent (e.g. a tabbed leaf
+        // under a SplitV root un-tabs to a SplitV directly inside SplitV), violating the merge
+        // invariant. Normalize as `set_active_layout` does.
+        col.root.simplify();
+        col.collapse_redundant_root_wrapper();
+
         col.update_tile_sizes(true);
     }
 
@@ -7183,6 +7189,13 @@ impl<W: LayoutElement> Section<W> {
 
         // Now switch the display mode for real.
         self.set_display_mode(display);
+
+        // Un-tabbing the root can expose a same-family split directly inside another (e.g.
+        // Stacked[a, V[b,c]] → SplitV[a, V[b,c]]); merge it away to keep the tree canonical. The
+        // animation passes above already captured leaf order/positions, and simplify preserves
+        // depth-first leaf order, so doing this after them is safe.
+        self.root.simplify();
+        self.collapse_redundant_root_wrapper();
 
         // Animate the appearance of the tab indicator.
         if display == SectionDisplay::Tabbed {

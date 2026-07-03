@@ -6977,3 +6977,78 @@ fn cross_section_swap_removes_the_focused_target_leaf() {
     }
 }
 
+
+#[test]
+fn set_section_display_normal_simplifies_untabbed_root() {
+    // Bug 6b: Stacked[1, V[2,3]] with the root's prev_split = SplitV. Setting the display back to
+    // Normal un-tabs the root to SplitV, which then directly contains the inner SplitV. The un-tab
+    // must simplify (merge to V[1,2,3]); otherwise the same-family nesting trips verify_structure.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SetLayout(super::tile_node::Layout::Stacked),
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SetSectionDisplay(SectionDisplay::Normal),
+    ]);
+
+    assert_eq!(
+        window_order(&layout),
+        vec![1, 2, 3],
+        "the un-tabbed root merged its same-family nesting into a flat V[1,2,3]"
+    );
+}
+
+#[test]
+fn toggle_tabbed_untab_of_nested_born_tab_simplifies() {
+    // Bug 6a: a tab born via a centre drop defaults its prev_split to SplitV. Dropping window 3 onto
+    // window 2's centre (detach mode) builds V[1, Tabbed[2,3]]. Un-tabbing that nested tab with
+    // ToggleTabbed goes through toggle_tabbed's nested branch and yields SplitV directly inside the
+    // root SplitV — which must be simplified to V[1,2,3], or verify_structure asserts.
+    let mut options = Options::default();
+    options.layout.tiling_drag = niri_config::TilingDrag::Detach;
+    let mut layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: wide_window(3) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+            // Detach window 3 and lift it away from its slot.
+            Op::InteractiveMoveBegin { window: 3, output_idx: 1, px: 640., py: 600. },
+            Op::InteractiveMoveUpdate { window: 3, dx: 0., dy: -400., output_idx: 1, px: 640., py: 200. },
+        ],
+    );
+
+    // With window 3 detached, drop it on the centre of window 2 to form a born tab group.
+    let (p2, s2) = window_geo(&layout, 2).unwrap();
+    let (cx, cy) = (p2.x + s2.w / 2., p2.y + s2.h / 2.);
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::InteractiveMoveUpdate { window: 3, dx: 0., dy: 0., output_idx: 1, px: cx, py: cy },
+            Op::InteractiveMoveEnd { window: 3 },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+            // Un-tab the nested born tab group.
+            Op::ToggleTabbed,
+        ],
+    );
+
+    assert_eq!(
+        window_order(&layout),
+        vec![1, 2, 3],
+        "un-tabbing the nested born tab merged into a flat V[1,2,3]"
+    );
+}
+
