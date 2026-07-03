@@ -1239,12 +1239,30 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .unwrap_or_default()
         };
 
-        let gap_threshold = self.options.layout.gaps * 2.;
+        // Gap band per axis. Normally `gaps * 2`, but clamped so that:
+        //  - a tile always keeps an interior region (at least its centre third) even when it is
+        //    smaller than ~4*gaps on that axis (otherwise swap/split/tab zones become unreachable);
+        //  - the band keeps a small minimum width when `gaps == 0`, so the gap-insert zones
+        //    (new-section / new-row) are reachable off the exact boundary pixel rather than never.
+        // Both clamps are no-ops in the normal case (reasonable gaps, tiles larger than ~4*gaps).
+        const MIN_GAP_BAND: f64 = 6.;
+        let gaps = self.options.layout.gaps;
+        // Clamp to a valid leaf: in a tabbed section `closest_tile_idx` can be one past the last
+        // leaf (the "below the active tab" case), which has no size of its own.
+        let close_idx = closest_tile_idx.min(col.root.leaf_count().saturating_sub(1));
+        let close_size = leaf_size(close_idx);
+        let gap_band = |tile_dim: f64| {
+            let band = if gaps == 0. { MIN_GAP_BAND } else { gaps * 2. };
+            // Never eat more than a third per side, so the centre third always stays interior.
+            band.min((tile_dim / 3.).max(0.))
+        };
+        let main_threshold = gap_band(close_size.w);
+        let cross_threshold = gap_band(close_size.h);
 
         // If the pointer is far from both gaps, it's in a tile interior; otherwise it's near a gap
         // and inserts a new section (side gap) or a new row above/below (top/bottom gap). The gap
         // branches keep a tabbed/stacked or nested section escapable.
-        if main_dist > gap_threshold && cross_dist > gap_threshold {
+        if main_dist > main_threshold && cross_dist > cross_threshold {
             // Hit-test the *visible* leaf under the pointer: a vertical stack disambiguates by cross
             // (y), a horizontal row by main (x). The hidden tabs of a tabbing container share the
             // visible tab's rect, so require the hit leaf to be visible — otherwise a centre-drop
