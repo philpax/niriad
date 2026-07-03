@@ -6841,3 +6841,42 @@ fn remove_leaf_that_flattens_nesting_keeps_the_active_window() {
     );
 }
 
+
+#[test]
+fn set_window_width_resizes_nested_main_split_child() {
+    // Bug 2: root H[1, V[2,3]]. Resizing window 3's width used to index the root's `data` with the
+    // flat leaf index 2 (len-2 Vec) and panic. It must instead resize the nearest Main-split
+    // ancestor's child slot — here the whole V[2,3] column — so windows 2 and 3 (sharing the column)
+    // both change width together and window 1 gets the rest.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(3) },
+        // Grow window 3's column to 75% of the working area.
+        Op::SetWindowWidth { id: Some(3), change: SizeChange::SetProportion(75.) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    let (_, s1) = window_geo(&layout, 1).unwrap();
+    let (_, s2) = window_geo(&layout, 2).unwrap();
+    let (_, s3) = window_geo(&layout, 3).unwrap();
+    assert!(
+        (s2.w - s3.w).abs() < 1.,
+        "windows 2 and 3 share the resized column, so their widths match: {} vs {}",
+        s2.w,
+        s3.w
+    );
+    assert!(
+        s3.w > s1.w + 50.,
+        "the resized column (2/3) must be wider than window 1: col={}, win1={}",
+        s3.w,
+        s1.w
+    );
+}
+

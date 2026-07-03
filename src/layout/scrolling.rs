@@ -3728,13 +3728,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         let col = &mut self.sections[col_idx];
-        // If the section root is a Main-axis split, resize the child's span, not the section width.
-        if matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. }) {
-            let tile_idx = tile_idx.unwrap_or_else(|| col.active_tile_idx());
-            col.set_split_child_width(change, tile_idx, true);
-        } else {
-            col.set_section_width(change, tile_idx, true);
-        }
+        // Resize the leaf's main-axis span within its nearest Main-axis split; with no such split
+        // ancestor `set_split_child_width` falls back to resizing the whole section width. Pass a
+        // flat leaf index (the active leaf when unspecified), which is what it expects.
+        let tile_idx = tile_idx.unwrap_or_else(|| col.active_leaf_idx());
+        col.set_split_child_width(change, tile_idx, true);
 
         // The section width may have changed; keep the cached section data in sync.
         cancel_resize_for_section(&mut self.interactive_resize, &mut self.sections[col_idx]);
@@ -4621,13 +4619,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
 
             let window_width = (resize.original_window_size.w + dx).round() as i32;
-            // If the tile lives in a Main-axis split, resize the boundary with its sibling rather
-            // than the whole section (mirrors `set_window_width`).
-            if matches!(&col.root, TileNode::Internal { layout: Layout::SplitH, .. }) {
-                col.set_split_child_width(SizeChange::SetFixed(window_width), tile_idx, false);
-            } else {
-                col.set_section_width(SizeChange::SetFixed(window_width), Some(tile_idx), false);
-            }
+            // Resize the boundary with the sibling in the tile's nearest Main-axis split (at any
+            // nesting depth); with no such split ancestor this falls back to the whole section
+            // width. `tile_idx` is already a flat leaf index.
+            col.set_split_child_width(SizeChange::SetFixed(window_width), tile_idx, false);
         }
 
         if resize.data.edges.intersects(ResizeEdge::TOP_BOTTOM) {
@@ -5127,12 +5122,42 @@ impl<W: LayoutElement> Section<W> {
         }
     }
 
-    /// Resizes a child's main-axis span within a Main-axis split root.
+    /// Resizes the main-axis span of the leaf at flat index `tile_idx` by resizing the appropriate
+    /// child slot of the nearest Main-axis (`SplitH`) ancestor split — the width analogue of
+    /// [`set_window_height`]'s cross-axis walk. If the leaf has no `SplitH` ancestor, its "width" is
+    /// the whole section's main extent, so the section width is resized instead.
     fn set_split_child_width(&mut self, change: SizeChange, tile_idx: usize, animate: bool) {
-        let current_span = match &self.root {
-            TileNode::Internal { layout, data, .. } if layout.is_split() => data[tile_idx].size.w,
-            _ => return,
+        let Some(path) = self.root.path_for_leaf_index(tile_idx) else {
+            return;
         };
+
+        // Walk from the root down the leaf's path to the *nearest* (deepest) `SplitH` ancestor. The
+        // slot we resize is that split's child on the path. With no such ancestor a horizontal
+        // resize is meaningless at the tile level: the leaf already spans the section's main extent,
+        // so resize the whole section instead.
+        let child_path = {
+            let mut target_len = None;
+            for k in 0..path.len() {
+                if matches!(
+                    self.root.node_at(&path[..k]),
+                    TileNode::Internal { layout: Layout::SplitH, .. }
+                ) {
+                    target_len = Some(k + 1);
+                }
+            }
+            match target_len {
+                Some(len) => path[..len].to_vec(),
+                None => {
+                    self.set_section_width(change, Some(tile_idx), animate);
+                    return;
+                }
+            }
+        };
+
+        let (child_idx, parent_path) = child_path.split_last().unwrap();
+        let child_idx = *child_idx;
+
+        let current_span = self.root.leaf_data(&child_path).map(|d| d.size.w).unwrap_or(0.);
 
         let new_span = match change {
             SizeChange::SetFixed(fixed) => f64::from(fixed).clamp(1., 100000.),
@@ -5148,15 +5173,15 @@ impl<W: LayoutElement> Section<W> {
             }
         };
 
-        // Set the resized child to the new fixed span, and convert the others to Auto with a
-        // weight proportional to their current span so they keep their relative proportions when
-        // the remaining space is redistributed. (Weights are relative, so the raw span works as
-        // the weight directly.)
-        if let TileNode::Internal { layout, data, .. } = &mut self.root {
-            if layout.is_split() {
-                data[tile_idx].span = ChildSpan::Fixed(new_span);
+        // Set the resized child to the new fixed span, and convert its siblings within the same
+        // split to Auto with a weight proportional to their current span so they keep their relative
+        // proportions when the remaining space is redistributed. (Weights are relative, so the raw
+        // span works as the weight directly.)
+        if let TileNode::Internal { layout, data, .. } = self.root.node_at_mut(parent_path) {
+            if *layout == Layout::SplitH {
+                data[child_idx].span = ChildSpan::Fixed(new_span);
                 for (i, d) in data.iter_mut().enumerate() {
-                    if i != tile_idx {
+                    if i != child_idx {
                         let weight = if d.size.w > 0. { d.size.w } else { 1. };
                         d.span = ChildSpan::Auto { weight };
                     }
