@@ -618,6 +618,27 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Ensures every currently-visible leaf in this subtree animates back to opaque. A leaf is
+    /// visible unless a `Tabbed`/`Stacked` ancestor *within this subtree* shows a different tab, so a
+    /// plain split reveals all of its leaves while a tabbing container reveals only its active tab.
+    pub fn ensure_visible_leaves_animate_to_1(&mut self) {
+        match self {
+            TileNode::Leaf(tile) => tile.ensure_alpha_animates_to_1(),
+            TileNode::Internal { layout, children, active_idx, .. } => {
+                if layout.is_tabbing() {
+                    let idx = (*active_idx).min(children.len().saturating_sub(1));
+                    if let Some(child) = children.get_mut(idx) {
+                        child.ensure_visible_leaves_animate_to_1();
+                    }
+                } else {
+                    for child in children.iter_mut() {
+                        child.ensure_visible_leaves_animate_to_1();
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns the active leaf (mutable).
     pub fn active_leaf_mut(&mut self) -> &mut Tile<W> {
         match self {
@@ -742,8 +763,11 @@ impl<W: LayoutElement> TileNode<W> {
                 // Also recurse if there's more path.
                 let child_changed = children[path[0]].activate_path(&path[1..]);
                 if changed {
-                    // Ensure the newly activated leaf animates to opaque.
-                    children[path[0]].active_leaf_mut().ensure_alpha_animates_to_1();
+                    // The newly-activated child becomes visible. If it is a split, *all* of its
+                    // visible leaves become visible at once — not just the one on the active path —
+                    // so every one of them must animate back to opaque, or a leaf whose tab was
+                    // previously hidden stays mid fade-out while on screen.
+                    children[path[0]].ensure_visible_leaves_animate_to_1();
                 }
                 changed || child_changed
             }

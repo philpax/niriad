@@ -4639,6 +4639,32 @@ fn toggle_tabbed_hides_inactive_tiles() {
 }
 
 #[test]
+fn activating_split_tab_reopaques_all_its_leaves() {
+    // Tabbed[1, SplitH[2, 3]]: activating the split tab makes *both* of its leaves visible at once.
+    // Both must animate back to opaque, not just the one on the active path — otherwise a leaf whose
+    // tab was previously hidden stays mid fade-out while on screen (which also trips the
+    // visible-tile alpha invariant). `check_ops` verifies invariants after every op, so a stale
+    // fade-out on window 2 would panic here.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(1),
+        Op::ToggleTabbed,
+        // Activate the split tab (whose active leaf is window 3); window 2 is its other visible leaf.
+        Op::FocusWindow(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert_eq!(window_visible(&layout, 2), Some(true), "the split tab's other leaf is visible");
+    assert_eq!(window_visible(&layout, 3), Some(true), "the split tab's active leaf is visible");
+    assert_eq!(window_visible(&layout, 1), Some(false), "the inactive tab stays hidden");
+}
+
+#[test]
 fn spatial_focus_resolves_screen_direction_per_orientation() {
     // On a landscape monitor the strip runs horizontally, so screen-left moves between sections.
     let mut h = check_ops([
