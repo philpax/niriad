@@ -3140,6 +3140,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let col = &self.sections[self.active_section_idx];
+
+        // Lone-window section (root is a Leaf): there is no container to re-lay, so `set_layout`
+        // would be a silent no-op. For the two plain-split layouts, mirror sway's splith/splitv,
+        // which on a lone window arm the direction the *next* window opens in — here that's the
+        // section's pending split (same mechanism as `split-window`, including its toggle/clear
+        // rules). Tabbing layouts (tabbed/stacked) still no-op on a lone window.
+        if col.tiles_len() == 1 && new_layout.is_split() {
+            self.split_window(Some(new_layout.axis()));
+            return;
+        }
+
         let path = col.root.active_path();
         let parent_len = path.len().saturating_sub(1);
         let parent_path = path[..parent_len].to_vec();
@@ -4874,6 +4885,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     #[cfg(test)]
     pub fn active_section_idx(&self) -> usize {
         self.active_section_idx
+    }
+
+    /// Test introspection: the pending split direction armed on the section at `idx` (if any).
+    #[cfg(test)]
+    pub(super) fn section_pending_split(&self, idx: usize) -> Option<SplitAxis> {
+        self.sections.get(idx).and_then(|s| s.pending_split_direction)
+    }
+
+    /// Test introspection: number of sections in the strip.
+    #[cfg(test)]
+    pub(super) fn section_count(&self) -> usize {
+        self.sections.len()
     }
 
     /// Test introspection: per-tab `(union geometry, label)` for the tabbing node at `path` in the

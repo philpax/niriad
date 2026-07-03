@@ -4518,6 +4518,20 @@ fn tile_count(layout: &Layout<TestWindow>) -> usize {
     layout.active_workspace().unwrap().tiles().count()
 }
 
+/// Helper: number of scrolling sections in the active workspace.
+fn section_count(layout: &Layout<TestWindow>) -> usize {
+    layout.active_workspace().unwrap().scrolling().section_count()
+}
+
+/// Helper: pending split direction armed on the section at `idx` in the active workspace.
+fn section_pending_split(layout: &Layout<TestWindow>, idx: usize) -> Option<SplitAxis> {
+    layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .section_pending_split(idx)
+}
+
 /// Helper: whether the window with the given id is currently rendered (visible). Returns None if
 /// the window isn't present.
 fn window_visible(layout: &Layout<TestWindow>, id: usize) -> Option<bool> {
@@ -4609,6 +4623,49 @@ fn consume_window_into_split_places_side_by_side() {
     let (pos1, _) = window_geo(&layout, 1).unwrap();
     let (pos2, _) = window_geo(&layout, 2).unwrap();
     assert_ne!(pos1.x, pos2.x, "consumed window should be side by side");
+}
+
+#[test]
+fn set_section_layout_arms_split_on_lone_window() {
+    use super::tile_node::Layout;
+
+    // On a lone window there is no container to re-lay, so `set-section-layout splith/splitv`
+    // arms the pending split (sway's splith/splitv) — the next window opens beside this one.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetLayout(Layout::SplitH),
+    ]);
+    assert_eq!(section_pending_split(&layout, 0), Some(SplitAxis::Main));
+
+    // splitv arms the cross axis.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetLayout(Layout::SplitV),
+    ]);
+    assert_eq!(section_pending_split(&layout, 0), Some(SplitAxis::Cross));
+
+    // Tabbing layouts still no-op on a lone window (nothing armed).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetLayout(Layout::Tabbed),
+    ]);
+    assert_eq!(section_pending_split(&layout, 0), None);
+
+    // The armed split fires on the next window: both windows share one section, side by side.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SetLayout(Layout::SplitH),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+    ]);
+    assert_eq!(section_count(&layout), 1, "both windows share one section");
+    assert_eq!(tile_count(&layout), 2);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(p1.x, p2.x, "opened side by side");
 }
 
 #[test]

@@ -496,6 +496,8 @@ binds {
     // --- Container layout (sway: $mod+b/v splith/splitv, $mod+s/w/e stacking/tabbed/toggle) ---
     // splith/splitv lay the children side-by-side / stacked (all visible); tabbed/stacked show one
     // at a time (a single tab row / one title row per child). toggle-split-layout flips H<->V.
+    // On a lone window splith/splitv have no container to re-lay, so (like sway) they arm the
+    // direction the next window opens in — the same pending split as split-window.
     Mod+B { set-section-layout "splith"; }
     Mod+V { set-section-layout "splitv"; }
     Mod+S { set-section-layout "stacked"; }
