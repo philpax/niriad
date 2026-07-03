@@ -6951,7 +6951,11 @@ impl<W: LayoutElement> Section<W> {
         };
 
         let preset = self.options.layout.preset_section_widths[preset_idx];
-        self.set_section_width(SizeChange::from(preset), Some(tile_idx), true);
+        // Route through the same nearest-`SplitH`-ancestor logic as Mod+Minus/Equal
+        // (`set_window_width`): when the active leaf sits in a nested horizontal split, apply the
+        // preset to that slot (as a proportion of the section); otherwise `set_split_child_width`
+        // falls back to resizing the whole section, matching the previous section-level behavior.
+        self.set_split_child_width(SizeChange::from(preset), tile_idx, true);
 
         self.preset_width_idx = Some(preset_idx);
     }

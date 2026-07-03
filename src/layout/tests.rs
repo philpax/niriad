@@ -4799,6 +4799,39 @@ fn expel_from_section_expels_the_focused_leaf() {
 }
 
 #[test]
+fn preset_section_width_resizes_the_nested_slot() {
+    // In a nested SplitH row [1 | 2], switch-preset-section-width resizes the active *slot* (the
+    // same nearest-SplitH-ancestor routing as Mod+Minus/Equal), not the whole section: the two
+    // side-by-side windows end up with different widths instead of shrinking together as an even
+    // split (which the old section-level behavior produced).
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let (_, s1) = window_geo(&layout, 1).unwrap();
+    let (_, s2) = window_geo(&layout, 2).unwrap();
+    assert_eq!(s1.w, s2.w, "starts as an even split");
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::SwitchPresetSectionWidth,
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let (_, s1) = window_geo(&layout, 1).unwrap();
+    let (_, s2) = window_geo(&layout, 2).unwrap();
+    assert_ne!(s1.w, s2.w, "the preset resized just the active slot, not the whole section");
+}
+
+#[test]
 fn toggle_tabbed_hides_inactive_tiles() {
     // Build a real two-window section (cross split), then tab it. ToggleTabbed should show only the
     // active tile and hide the rest.
