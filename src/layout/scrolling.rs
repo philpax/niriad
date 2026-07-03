@@ -2791,6 +2791,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let target_tile_idx = self.sections[target_section_idx].active_leaf_idx();
         let source_section_drained = self.sections[source_section_idx].tiles_len() == 1;
 
+        // Capture the two windows' identities up front. Insertions can reshape the target tree
+        // (e.g. `add_tile_at` wraps a SplitH root in a new Cross split, so the target tile's flat
+        // index does *not* simply shift by one), so we re-resolve positions by window id afterward
+        // instead of trusting index arithmetic.
+        let source_window = self.sections[source_section_idx]
+            .tile(source_tile_idx)
+            .window()
+            .id()
+            .clone();
+        let target_window = self.sections[target_section_idx]
+            .tile(target_tile_idx)
+            .window()
+            .id()
+            .clone();
+
         // capture the original positions of the tiles
         let (mut source_pt, mut target_pt) = (
             self.sections[source_section_idx].render_offset()
@@ -2829,11 +2844,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 false,
             );
 
+            // Re-resolve the original target tile by identity: after inserting the source tile the
+            // target's flat index may be unchanged (SplitH-root wrap) or shifted, so `+ 1` is wrong.
+            let target_flat_idx = self.sections[adjusted_target_section_idx]
+                .position(&target_window)
+                .expect("target window still present after inserting the source tile");
             let RemovedTile {
                 tile: target_tile, ..
             } = self.remove_tile_by_idx(
                 adjusted_target_section_idx,
-                target_tile_idx + 1,
+                target_flat_idx,
                 transaction.clone(),
                 None,
             );
@@ -2859,16 +2879,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        // update the active tile in the modified sections
-        self.sections[source_section_idx].set_active_tile_idx(source_tile_idx);
-        self.sections[target_section_idx].set_active_tile_idx(target_tile_idx);
+        // Activate the swapped-in window in each section by identity — `set_active_tile_idx` writes
+        // the root `active_idx` directly with no bounds check, so feeding it a flat leaf index can
+        // put it out of range and panic later. After the swap the source section holds the target
+        // window and vice versa.
+        self.sections[source_section_idx].activate_window(&target_window);
+        self.sections[target_section_idx].activate_window(&source_window);
 
-        // Animations
+        // Animations. Re-resolve each moved tile's flat index by identity (the tree may have been
+        // reshaped by the insertions).
+        let src_in_target = self.sections[target_section_idx]
+            .position(&source_window)
+            .expect("source window present in the target section after the swap");
         self.sections[target_section_idx]
-            .tile_mut(target_tile_idx)
+            .tile_mut(src_in_target)
             .animate_move_from(source_pt - target_pt);
         self.sections[target_section_idx]
-            .tile_mut(target_tile_idx)
+            .tile_mut(src_in_target)
             .ensure_alpha_animates_to_1();
 
         // FIXME: this stop_move_animations() causes the target tile animation to "reset" when
@@ -2876,14 +2903,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // tile down when adding the target tile above it. This code needs to be written in some
         // other way not to trigger that animation, or to cancel it properly, so that swap doesn't
         // cancel all ongoing target tile animations.
+        let tgt_in_source = self.sections[source_section_idx]
+            .position(&target_window)
+            .expect("target window present in the source section after the swap");
         self.sections[source_section_idx]
-            .tile_mut(source_tile_idx)
+            .tile_mut(tgt_in_source)
             .stop_move_animations();
         self.sections[source_section_idx]
-            .tile_mut(source_tile_idx)
+            .tile_mut(tgt_in_source)
             .animate_move_from(target_pt - source_pt);
         self.sections[source_section_idx]
-            .tile_mut(source_tile_idx)
+            .tile_mut(tgt_in_source)
             .ensure_alpha_animates_to_1();
 
         self.activate_section(target_section_idx);

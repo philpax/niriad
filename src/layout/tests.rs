@@ -6925,3 +6925,55 @@ fn root_tab_hit_maps_group_tab_to_its_representative_leaf() {
     );
 }
 
+
+/// Helper: window ids grouped by section (left-to-right), each section in tree/leaf order.
+fn section_window_groups(layout: &Layout<TestWindow>) -> Vec<Vec<usize>> {
+    layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .sections()
+        .map(|s| s.tiles().map(|(t, _)| *t.window().id()).collect())
+        .collect()
+}
+
+#[test]
+fn cross_section_swap_removes_the_focused_target_leaf() {
+    // Bug 4: target section (left) = H[1,2,3,4] with window 4 active; source section (right) = a
+    // single focused window 5. Swapping left must exchange window 5 with the target's *active*
+    // window (4) — not eject a tile via `target_tile_idx + 1` (a SplitH-root wrap doesn't shift the
+    // target's flat index) and not write an out-of-range root active_idx via
+    // `set_active_tile_idx(flat)`.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(4) },
+        // A fresh single-window section to the right, which stays focused.
+        Op::AddWindow { params: TestWindowParams::new(5) },
+        Op::SwapWindowInDirection(ScrollDirection::Left),
+    ]);
+
+    let groups = section_window_groups(&layout);
+    assert_eq!(
+        groups.iter().map(Vec::len).sum::<usize>(),
+        5,
+        "no window lost in the swap: {groups:?}"
+    );
+    assert!(
+        groups.iter().any(|g| g == &[4]),
+        "the target's active window (4) is swapped out into its own section: {groups:?}"
+    );
+    let grouped = groups.iter().find(|g| g.len() > 1).expect("a multi-window section remains");
+    for id in [1, 2, 3, 5] {
+        assert!(
+            grouped.contains(&id),
+            "window {id} stays in the grouped section (4 was the one swapped out): {groups:?}"
+        );
+    }
+}
+
