@@ -4935,6 +4935,53 @@ fn tabbing_a_resized_row_does_not_force_a_bogus_height() {
 }
 
 #[test]
+fn resize_commit_slides_the_tiles_below() {
+    // A vertical section [1 / 2 / 3]: an animated height resize of window 1, once the client acks
+    // it, slides the tiles below (2 and 3) into their new positions rather than teleporting them.
+    // This exercises the per-leaf delta path in `update_window` (which replaced the flat-index loop
+    // — the flat loop would move leaves beside the resized one in a nested tree, but here every leaf
+    // below genuinely shares the cross axis, so all of them should slide).
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(1),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    // Everything settled: no tile is mid-slide.
+    assert_eq!(window_render_offset(&layout, 2).unwrap().y, 0.);
+    assert_eq!(window_render_offset(&layout, 3).unwrap().y, 0.);
+
+    // Animated height resize of window 1, then the client acks it: `update_window` fires on commit.
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::SetWindowHeight { id: Some(1), change: SizeChange::SetFixed(150) },
+            Op::Communicate(1),
+        ],
+    );
+
+    // The tiles below slid to follow the resize (nonzero cross-axis render offset).
+    assert_ne!(
+        window_render_offset(&layout, 2).unwrap().y,
+        0.,
+        "window 2 (below window 1) slides to follow the resize"
+    );
+    assert_ne!(
+        window_render_offset(&layout, 3).unwrap().y,
+        0.,
+        "window 3 (below window 1) slides to follow the resize"
+    );
+}
+
+#[test]
 fn fullscreen_tabbed_root_with_split_active_tab_expels() {
     // Tabbed[1, SplitH[2, 3]] with the split as the active tab. Fullscreening window 3 must not
     // fullscreen the whole section (which would size every leaf full-screen while the split tab

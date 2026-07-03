@@ -6178,8 +6178,10 @@ impl<W: LayoutElement> Section<W> {
             .path_for_leaf_index(tile_idx)
             .unwrap_or_else(|| panic!("update_window: tile index {tile_idx} out of bounds"));
 
-        // Get the previous height and update the tile's data at the correct tree level.
-        let prev_height = self.root.leaf_data(&path).map(|d| d.size.h).unwrap_or(0.);
+        // Capture on-screen leaf positions (keyed by id) *before* folding the resize into the
+        // layout, so we can animate exactly the leaves whose cross-axis position actually changes.
+        // A client resize is async and fires outside user ops, so getting this right matters.
+        let prev_positions = self.leaf_positions_by_id();
 
         self.tile_mut(tile_idx).update_window();
         // Update data for this leaf at the correct tree level.
@@ -6191,49 +6193,52 @@ impl<W: LayoutElement> Section<W> {
             .is_some_and(|data| data.edges.contains(crate::utils::ResizeEdge::LEFT));
         self.root.update_leaf_data(&path, tile_size, resizing_by_start);
 
-        let new_height = self.root.leaf_data(&path).map(|d| d.size.h).unwrap_or(0.);
-        let offset = prev_height - new_height;
-
-        let is_tabbed = self.is_tabbed();
-
-        // Move windows below in tandem with resizing.
+        // Move the other windows in tandem with the resize.
         //
         // FIXME: in always-centering mode, window resizing will affect the offsets of all other
         // windows in the section, so they should all be animated. How should this interact with
         // animated vs. non-animated resizes? For example, an animated +20 resize followed by two
         // non-animated -10 resizes.
-        if !is_tabbed && offset != 0. {
-            let has_resize_anim = self.tile(tile_idx).resize_animation().is_some();
-            let resize_anim_config = self.options.animations.window_resize.anim;
-            let tiles_len = self.tiles_len();
+        if self.is_tabbed() {
+            // Tabs share a position — nothing shifts.
+            return;
+        }
+
+        let has_resize_anim = self.tile(tile_idx).resize_animation().is_some();
+        let resize_anim_config = self.options.animations.window_resize.anim;
+        let resized_id = self.tile(tile_idx).window().id().clone();
+
+        // New positions after the resize is folded in (leaf_layout reads the updated `data.size`).
+        // Animate each leaf by its *actual* cross-axis delta — not by "everything below in flat
+        // order moves by the height delta", which would spuriously animate leaves beside the
+        // resized one (other rows/subtrees, hidden tabs) and double-offset genuinely-below leaves.
+        let new_positions = self.leaf_positions_by_id();
+        for (tile, _) in self.root.leaves_mut() {
+            let id = tile.window().id();
+            if id == &resized_id {
+                // The resized leaf's own motion is its resize animation, not a move.
+                continue;
+            }
+            let (Some(prev), Some(new)) = (
+                prev_positions.iter().find(|(i, _)| i == id).map(|(_, p)| p.y),
+                new_positions.iter().find(|(i, _)| i == id).map(|(_, p)| p.y),
+            ) else {
+                continue;
+            };
+            let offset = prev - new;
+            if offset == 0. {
+                continue;
+            }
             if has_resize_anim {
-                // If there's a resize animation (that may have just started in
-                // tile.update_window()), then the apparent size change is smooth with no sudden
-                // jumps. This corresponds to adding a cross-axis animation to tiles below.
-                for i in (tile_idx + 1)..tiles_len {
-                    self.tile_mut(i).animate_move_y_from_with_config(
-                        offset,
-                        resize_anim_config,
-                    );
-                }
+                // A resize animation makes the size change smooth with no sudden jumps, so add a
+                // matching cross-axis move animation to the leaf.
+                tile.animate_move_y_from_with_config(offset, resize_anim_config);
             } else {
-                // There's no resize animation, but the offset is nonzero. This could happen for
-                // example:
-                // - if the window resized on its own, which we don't animate
-                // - if the window resized by less than 10 px (the resize threshold)
-                //
-                // The latter case could also cancel an ongoing resize animation.
-                //
-                // Now, stationary tiles below shouldn't react to this offset change in any way,
-                // i.e. their apparent cross-axis position should jump together with the resize.
-                // However, tiles below that are already animating a cross-axis movement should
-                // offset their animations to avoid the jump.
-                //
-                // Notably, this is necessary to fix the animation jump when resizing height back
-                // and forth in quick succession (in a way that cancels the resize animation).
-                for i in (tile_idx + 1)..self.tiles_len() {
-                    self.tile_mut(i).offset_move_y_anim_current(offset);
-                }
+                // No resize animation but a nonzero shift (a self-resize, a sub-threshold resize, or
+                // a cancelled resize animation): a stationary leaf should jump together with the
+                // resize, but a leaf already animating a cross-axis move offsets its animation to
+                // avoid a jump (fixes the jump when resizing height back and forth quickly).
+                tile.offset_move_y_anim_current(offset);
             }
         }
     }
