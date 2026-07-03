@@ -4247,19 +4247,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let view_off = main_space_vec(-self.view_main_pos());
         let section_mains: Vec<f64> = self.section_main_positions().collect();
 
-        // First pass: find which section's tab bar is under the pointer.
+        // First pass: find which section's tab bar is under the pointer. The bar is drawn in the
+        // reserved header band *outside* the content rect (above it for Top, below for Bottom — see
+        // `TabBar::update_render_elements`), NOT at `tab_indicator_area()` which starts at
+        // `tiles_origin()` (already shifted past the band). Hit-test that reserved band, mirroring
+        // how `header_band_target` / the click hit-test locate the drawn header.
         let mut target_col_idx = None;
         for (col_idx, col) in self.sections.iter().enumerate() {
             if !col.is_tabbed() || !col.sizing_mode().is_normal() {
                 continue;
             }
+            let Some(header) = col.tab_header() else {
+                continue;
+            };
+            let count = col.root.child_count();
+            let extra = header.extra_size(count, scale);
+            if extra.w <= 0. && extra.h <= 0. {
+                continue;
+            }
+            let offset = header.content_offset(count, scale);
+            let content = col.tab_indicator_area();
+            let band = Rectangle::new(content.loc - offset, content.size + extra);
+
             let section_main = section_mains[col_idx];
             let section_offset = main_space_vec(section_main);
             let section_render_offset = col.render_offset();
             let section_pos = view_off + section_offset + section_render_offset;
             let section_pos = section_pos.to_physical_precise_round(scale).to_logical(scale);
-            let area = col.tab_indicator_area();
-            if area.contains(pos_in - section_pos) {
+            let local = pos_in - section_pos;
+            if band.contains(local) && !content.contains(local) {
                 target_col_idx = Some(col_idx);
                 break;
             }
