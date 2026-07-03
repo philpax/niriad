@@ -5385,18 +5385,33 @@ impl<W: LayoutElement> Section<W> {
 
         let current_span = self.root.leaf_data(&child_path).map(|d| d.size.w).unwrap_or(0.);
 
+        // FIXME: fix overflows then remove limits.
+        const MAX_MAIN_SPAN: f64 = 100000.;
+
         let new_span = match change {
-            SizeChange::SetFixed(fixed) => f64::from(fixed).clamp(1., 100000.),
+            SizeChange::SetFixed(fixed) => f64::from(fixed),
             SizeChange::SetProportion(proportion) => {
                 let available = self.working_area.size.w - self.options.layout.gaps;
                 available * (proportion / 100.)
             }
-            SizeChange::AdjustFixed(delta) => (current_span + f64::from(delta)).clamp(1., 100000.),
+            SizeChange::AdjustFixed(delta) => current_span + f64::from(delta),
             SizeChange::AdjustProportion(delta) => {
                 let available = self.working_area.size.w - self.options.layout.gaps;
                 let current_proportion = if available == 0. { 1. } else { current_span / available };
                 available * (current_proportion + delta / 100.)
             }
+        };
+
+        // Clamp to a finite, sane range, mirroring `set_section_width`'s overflow guard. An extreme
+        // proportion (or a degenerate working area) can push the product to ±inf or NaN, which would
+        // poison the split's stored `ChildSpan::Fixed` and later trip the span-finiteness invariant
+        // in `verify_structure`.
+        let new_span = if new_span.is_finite() {
+            new_span.clamp(1., MAX_MAIN_SPAN)
+        } else if new_span > 0. {
+            MAX_MAIN_SPAN
+        } else {
+            1.
         };
 
         // Set the resized child to the new fixed span, and convert its siblings within the same

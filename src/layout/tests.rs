@@ -1998,6 +1998,26 @@ fn check_ops(ops: impl IntoIterator<Item = Op>) -> Layout<TestWindow> {
     layout
 }
 
+#[test]
+fn set_section_width_extreme_proportion_stays_finite() {
+    // Regression (found by the fuzzer): setting a section width via a huge `SetProportion` on a
+    // horizontal-split section routed through `set_split_child_width`, whose proportion branch
+    // multiplied `available * proportion` with no clamp. The product overflowed to a non-finite
+    // value, which was stored as the split child's `ChildSpan::Fixed` and then tripped the
+    // "fixed span must be finite" invariant in `TileNode::verify_structure`.
+    check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ConsumeWindowIntoSplit,
+        Op::SetSectionWidth(SizeChange::SetProportion(5.227088264534165e307)),
+    ]);
+}
+
 #[track_caller]
 fn check_ops_with_options(
     options: Options,
