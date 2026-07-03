@@ -3198,6 +3198,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.root.simplify();
         col.collapse_redundant_root_wrapper();
 
+        // Leaving a tabbing layout re-reveals the previously-hidden tabs. Any of them that was mid
+        // fade-out (alpha animating to 0) is now visible, which would violate "visible tiles can
+        // animate alpha only to 1", so animate every now-visible leaf back to opaque. This mirrors
+        // the reopaque done when a split tab is newly activated; it only touches leaves that are
+        // visible under the new layout, so it's a no-op for the tabs that stay hidden.
+        if was_tabbing && !new_layout.is_tabbing() {
+            self.sections[self.active_section_idx]
+                .root
+                .ensure_visible_leaves_animate_to_1();
+        }
+
         // A non-tabbed multi-tile section can't stay fullscreen/maximized.
         let col = &self.sections[self.active_section_idx];
         if !col.is_tabbed() && col.tiles_len() > 1 {

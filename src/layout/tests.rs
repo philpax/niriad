@@ -2018,6 +2018,27 @@ fn set_section_width_extreme_proportion_stays_finite() {
     ]);
 }
 
+#[test]
+fn toggle_split_layout_out_of_tabbed_reopaques_revealed_tabs() {
+    // Regression (found by the fuzzer): a tabbed section fades its inactive tabs out (alpha → 0).
+    // `toggle_split_layout` converts the tabbed container back to a plain split, which re-reveals
+    // those tabs, but `set_active_layout` only reopaqued when *entering* a tabbing layout, not when
+    // leaving one. That left a now-visible tile still animating alpha to 0, tripping the
+    // "visible tiles can animate alpha only to 1" invariant.
+    check_ops([
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ConsumeOrExpelWindowLeft { id: None },
+        Op::SetSectionDisplay(SectionDisplay::Tabbed),
+        Op::ToggleSplitLayout,
+    ]);
+}
+
 #[track_caller]
 fn check_ops_with_options(
     options: Options,
