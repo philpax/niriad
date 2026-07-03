@@ -28,9 +28,9 @@ binds {
 }
 ```
 
-All other binds remain the same: switch tabs with `focus-window-down/up`, add or remove windows with `consume-window-into-section`/`expel-window-from-section`, and so on.
+All other binds remain the same: switch tabs with `focus-window-down`/`focus-window-up` (tabbing containers navigate along the cross axis). You can add or remove windows with `consume-window-into-section` / `expel-window-from-section` — these are **not bound by default**; add binds for them yourself if you want them (see the commented "classic niri" block in the default config). `expel-window-from-section` expels the *focused* window from the section.
 
-Unlike plain splits, tabbed and stacked sections can go full-screen with multiple windows.
+Unlike plain splits, tabbed and stacked sections can go full-screen with multiple windows (the section stays intact; only the active tab is shown).
 
 ### Tab indicator
 

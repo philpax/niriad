@@ -431,7 +431,7 @@ niriad models each section as a recursive tree of windows that can be split, tab
 On top of niri's classic column/window actions, it adds *spatial* directional actions that always mean the **screen** direction and resolve through the tree, crossing to the adjacent output when you reach the edge of the layout.
 
 - `focus-left`, `focus-right`, `focus-up`, `focus-down`: move keyboard focus in a screen direction.
-- `move-left`, `move-right`, `move-up`, `move-down`: move the focused window in a screen direction.
+- `move-left`, `move-right`, `move-up`, `move-down`: move the focused window in a screen direction. These **swap** the focused window's subtree with its adjacent sibling at the nearest axis ancestor — they never reparent it into a different container. With no sibling in that direction inside the current section, the movement falls through to moving the whole section along the strip. To restructure the tree (reparent a window), use the in-place drag or `expel-window-from-section` / `consume-window-into-split`.
 
 ```kdl
 binds {
@@ -468,6 +468,8 @@ binds {
 }
 ```
 
+On a **lone window** there is no container to re-lay: `splith`/`splitv` instead arm a pending split in that direction (identical to [`split-window`](#split-window)), so the next window opens beside this one, mirroring sway. `tabbed`/`stacked` have no effect on a lone window.
+
 #### `toggle-split-layout`
 
 Flip the container holding the focused window between the `splith` and `splitv` layouts.
@@ -491,9 +493,11 @@ binds {
 
 #### `split-window`
 
-Split the focused window into a new nested container.
-The argument is optional and selects the split direction: `main` (side-by-side, along the layout's main axis) or `cross` (stacked, along the cross axis).
-With no argument, niri picks a direction automatically.
+Arm a pending split on the focused section: the **next new window** opened there is placed beside the focused window in a split, instead of opening as its own section (the default). New windows open as a new section unless a split is armed.
+
+The argument is optional and selects the split direction: `main` (side-by-side, along the layout's main axis) or `cross` (stacked, along the cross axis). With no argument, the direction defaults to `main`.
+
+Re-arming the same direction toggles it off; arming a different direction switches. The pending split is cleared if you move focus to another section, workspace, or output before opening a window, and it is *preserved* (not consumed) by `consume-window-into-section`, which appends the pulled-in window. There is no on-screen indicator for an armed split yet.
 
 ```kdl
 binds {
@@ -516,8 +520,8 @@ binds {
 
 #### `consume-window-into-section`, `expel-window-from-section`
 
-Move the focused window into the neighbouring section, or expel it back out into its own section.
-(These are the `section`-renamed equivalents of niri's `consume-window-into-column` / `expel-window-from-column`.)
+Move a window into the neighbouring section, or expel the **focused** window back out into its own section.
+(These are the `section`-renamed equivalents of niri's `consume-window-into-column` / `expel-window-from-column`.) They are **not bound by default** — the binds below live in the commented "classic niri" block of the default config.
 
 ```kdl
 binds {

@@ -29,9 +29,10 @@ pub enum SplitAxis {
 ///
 /// The four layouts fall into two *families* by axis: `SplitH`/`Tabbed` are the horizontal family
 /// (main axis), `SplitV`/`Stacked` the vertical family (cross axis). Within a family, the split
-/// shows all children while the tabbing layout shows one at a time — so for navigation a `Tabbed`
-/// container behaves like `SplitH` and a `Stacked` one like `SplitV` (focusing "right" cycles tabs,
-/// "down" cycles stacked entries).
+/// shows all children while the tabbing layout shows one at a time. The family governs how a
+/// tabbing container is sized and what plain split it un-tabs to — *not* how you focus through it:
+/// focus navigation through a tabbing container (both `Tabbed` and `Stacked`) is cross-axis, so
+/// focusing up/down cycles its tabs. (Focusing "right" does not cycle tabs.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// Children side by side along the main axis, all visible (sway `L_HORIZ`).
