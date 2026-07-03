@@ -387,6 +387,66 @@ fn arbitrary_scale() -> impl Strategy<Value = f64> {
     prop_oneof![Just(1.), Just(1.5), Just(2.),]
 }
 
+fn arbitrary_output_mode() -> impl Strategy<Value = (i32, i32)> {
+    prop_oneof![
+        Just((1280, 720)),
+        Just((1920, 1080)),
+        Just((800, 600)),
+        Just((2560, 1440)),
+    ]
+}
+
+/// A band of a target tile that a biased interactive-move/DnD drop can aim for. Uniformly-random
+/// pointer coordinates almost never land in the narrow header / split-edge / centre-swap zones, so
+/// these ops compute a point *relative to a real tile's current render geometry* to exercise
+/// `InsertPosition::{InSplit, InsertTab, Swap}`, `add_tile_as_tab`, and the cross-tree swap path.
+#[derive(Debug, Clone, Copy)]
+enum DropZone {
+    /// Tile centre — a same-tree in-place move or a cross-tree swap.
+    Center,
+    /// Very top of the tile — the tab-bar header band (`InsertTab` / `add_tile_as_tab`).
+    Header,
+    /// Interior near the left/right/top/bottom edge — split-edge insertion (`InSplit`).
+    LeftEdge,
+    RightEdge,
+    TopEdge,
+    BottomEdge,
+}
+
+fn arbitrary_drop_zone() -> impl Strategy<Value = DropZone> {
+    prop_oneof![
+        Just(DropZone::Center),
+        Just(DropZone::Header),
+        Just(DropZone::LeftEdge),
+        Just(DropZone::RightEdge),
+        Just(DropZone::TopEdge),
+        Just(DropZone::BottomEdge),
+    ]
+}
+
+/// Resolve a `(target window, zone)` pair to the output and the output-local pointer position that
+/// aims at that band of the target tile, using the target's current render geometry. Returns `None`
+/// if the target window isn't in the layout.
+fn drop_point_for_window(
+    layout: &Layout<TestWindow>,
+    target: usize,
+    zone: DropZone,
+) -> Option<(Output, Point<f64, Logical>)> {
+    let (output_name, pos, size) = window_output_and_geo(layout, target)?;
+    let output = layout.outputs().find(|o| o.name() == output_name).cloned()?;
+
+    let (fx, fy) = match zone {
+        DropZone::Center => (0.5, 0.5),
+        DropZone::Header => (0.5, 0.02),
+        DropZone::LeftEdge => (0.08, 0.5),
+        DropZone::RightEdge => (0.92, 0.5),
+        DropZone::TopEdge => (0.5, 0.2),
+        DropZone::BottomEdge => (0.5, 0.8),
+    };
+    let point = Point::from((pos.x + size.w * fx, pos.y + size.h * fy));
+    Some((output, point))
+}
+
 fn arbitrary_msec_delta() -> impl Strategy<Value = i32> {
     prop_oneof![
         1 => Just(-1000),
@@ -789,6 +849,45 @@ enum Op {
     UpdateConfig {
         #[proptest(strategy = "arbitrary_layout_part().prop_map(Box::new)")]
         layout_config: Box<niri_config::LayoutPart>,
+    },
+    /// Change the fractional scale of an existing output, driving the relayout-on-scale path.
+    SetOutputScale {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "arbitrary_scale()")]
+        scale: f64,
+    },
+    /// Change the resolution (mode) of an existing output, driving the working-area/relayout path.
+    SetOutputMode {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "arbitrary_output_mode()")]
+        size: (i32, i32),
+    },
+    /// Flip the active section between a horizontal and a vertical split (`toggle_split_layout`).
+    ToggleSplitLayout,
+    /// Windowed maximize / unmaximize a window in place (`set_maximized`), incl. on nested trees.
+    SetMaximized {
+        #[proptest(strategy = "1..=5usize")]
+        window: usize,
+        maximize: bool,
+    },
+    /// Interactive-move pointer update whose position is biased onto a real tile's drop band, so the
+    /// eventual `InteractiveMoveEnd` lands on `InSplit` / `InsertTab` / `Swap` / a cross-tree swap.
+    InteractiveMoveUpdateToWindow {
+        #[proptest(strategy = "1..=5usize")]
+        window: usize,
+        #[proptest(strategy = "1..=5usize")]
+        target: usize,
+        #[proptest(strategy = "arbitrary_drop_zone()")]
+        zone: DropZone,
+    },
+    /// DnD pointer update biased onto a real tile's drop band (same band computation as above).
+    DndUpdateToWindow {
+        #[proptest(strategy = "1..=5usize")]
+        target: usize,
+        #[proptest(strategy = "arbitrary_drop_zone()")]
+        zone: DropZone,
     },
 }
 
@@ -1680,6 +1779,69 @@ impl Op {
                 };
 
                 layout.update_options(options);
+            }
+            Op::SetOutputScale { id, scale } => {
+                let name = format!("output{id}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+
+                // Mirror the compositor's `output_resized` path: mutate the output's scale, then
+                // let the layout re-read it (which re-adjusts scale-dependent options and relayouts).
+                output.change_current_state(
+                    None,
+                    None,
+                    Some(smithay::output::Scale::Fractional(scale)),
+                    None,
+                );
+                layout.update_output_size(&output);
+            }
+            Op::SetOutputMode { id, size } => {
+                let name = format!("output{id}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+
+                output.change_current_state(
+                    Some(Mode {
+                        size: Size::from(size),
+                        refresh: 60000,
+                    }),
+                    None,
+                    None,
+                    None,
+                );
+                layout.update_output_size(&output);
+            }
+            Op::ToggleSplitLayout => layout.toggle_split_layout(),
+            Op::SetMaximized { window, maximize } => {
+                if !layout.has_window(&window) {
+                    return;
+                }
+                layout.set_maximized(&window, maximize);
+            }
+            Op::InteractiveMoveUpdateToWindow {
+                window,
+                target,
+                zone,
+            } => {
+                let Some((output, point)) = drop_point_for_window(layout, target, zone) else {
+                    return;
+                };
+                // A sizeable delta ensures the Starting→Moving threshold is crossed so the drop band
+                // under `point` is actually evaluated.
+                layout.interactive_move_update(
+                    &window,
+                    Point::from((500., 500.)),
+                    output,
+                    point,
+                );
+            }
+            Op::DndUpdateToWindow { target, zone } => {
+                let Some((output, point)) = drop_point_for_window(layout, target, zone) else {
+                    return;
+                };
+                layout.dnd_update(output, point);
             }
         }
     }
