@@ -2629,7 +2629,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let source_tile_idx = source_section.tiles_len() - 1;
+        // Expel the focused leaf (sway/niri users expect the focused window to leave), not the last
+        // one. Identical to the old behavior in the single-leaf case (guarded above).
+        let source_tile_idx = source_section.active_leaf_idx();
 
         let mut move_offset = main_space_vec(source_section.render_offset().x);
         let prev_off = source_section.tile_offset(source_tile_idx);

@@ -4775,6 +4775,30 @@ fn consume_into_section_preserves_pending_split() {
 }
 
 #[test]
+fn expel_from_section_expels_the_focused_leaf() {
+    // A 3-tile cross section [1/2/3]; focus the middle window and expel it — the focused window
+    // leaves into its own section, the other two stay together.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(2),
+        Op::ExpelWindowFromSection,
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    assert_eq!(section_count(&layout), 2, "the focused window left into a new section");
+    assert_eq!(tile_count(&layout), 3);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    let (p3, _) = window_geo(&layout, 3).unwrap();
+    assert_eq!(p1.x, p3.x, "windows 1 and 3 stay in the same section");
+    assert_ne!(p2.x, p1.x, "window 2 was expelled to its own section");
+}
+
+#[test]
 fn toggle_tabbed_hides_inactive_tiles() {
     // Build a real two-window section (cross split), then tab it. ToggleTabbed should show only the
     // active tile and hide the rest.
