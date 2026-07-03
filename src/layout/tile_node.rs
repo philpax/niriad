@@ -1646,7 +1646,7 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Returns the minimum cross-axis span of this subtree (used for layout clamping).
-    fn min_cross_span_subtree(&self, axis: AxisMap) -> f64 {
+    pub(super) fn min_cross_span_subtree(&self, axis: AxisMap) -> f64 {
         match self {
             TileNode::Leaf(tile) => {
                 axis.size_in(tile.min_size_nonfullscreen()).h

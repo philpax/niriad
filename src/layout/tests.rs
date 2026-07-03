@@ -4909,6 +4909,41 @@ fn tabbing_a_resized_row_does_not_force_a_bogus_height() {
 }
 
 #[test]
+fn nested_height_resize_ignores_horizontal_siblings_min() {
+    // In SplitH[1, SplitV[2, 3]], resizing window 2's height competes for cross space only with its
+    // cross sibling (window 3), not with window 1, which sits beside the whole vertical split and
+    // gets the full cross extent independently. A large min *height* on window 1 must therefore not
+    // restrict how tall window 2 can be made. (Regression: the clamp used to sum every leaf flat.)
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams {
+                // Window 1: a big minimum height, but it's a horizontal sibling of the split.
+                min_max_size: (Size::from((0, 500)), Size::from((0, 0))),
+                ..TestWindowParams::new(1)
+            },
+        },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::SetWindowHeight { id: Some(2), change: SizeChange::SetFixed(400) },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    let (_, size2) = window_geo(&layout, 2).unwrap();
+    assert!(
+        (size2.h - 400.).abs() <= 5.,
+        "window 2 should reach its requested height ~400 (its only cross competitor is window 3); \
+         got {} — a horizontal sibling's min height must not clamp it",
+        size2.h
+    );
+}
+
+#[test]
 fn stacked_active_child_fills_below_header_no_bottom_loss() {
     use super::tile_node::Layout;
 

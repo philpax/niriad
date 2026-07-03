@@ -7017,16 +7017,27 @@ impl<W: LayoutElement> Section<W> {
             }
         };
 
-        // Clamp the height according to other windows' min sizes, or simply to working area height.
+        // Clamp the height according to the min sizes of the windows that actually compete with the
+        // resized slot for cross-axis space — its siblings within the nearest cross-arranging
+        // ancestor, which is the same node the resize routes to (`path`'s parent). Summing every leaf
+        // in the section flat over-restricts nested trees, since horizontal siblings in other
+        // subtrees don't share this cross axis at all.
         let min_cross_span_taken = if self.is_tabbed() {
             0.
         } else {
-            self.tiles_enumerated()
-                .filter(|(idx, _)| *idx != tile_idx)
-                .map(|(_, tile)| {
-                    f64::max(1., self.map_size_in(tile.min_size_nonfullscreen()).h) + gaps
-                })
-                .sum::<f64>()
+            let (child_idx, parent_path) = path.split_last().unwrap();
+            match self.root.node_at(parent_path) {
+                // A tabbing ancestor overlaps its children (one shown at a time), so they don't
+                // compete for cross-axis space.
+                TileNode::Internal { layout, .. } if layout.is_tabbing() => 0.,
+                TileNode::Internal { children, .. } => children
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i != child_idx)
+                    .map(|(_, c)| f64::max(1., c.min_cross_span_subtree(self.axis())) + gaps)
+                    .sum::<f64>(),
+                TileNode::Leaf(_) => 0.,
+            }
         };
         let cross_span_left =
             work_area_cross_span - extra_cross_span - gaps - min_cross_span_taken - gaps;
