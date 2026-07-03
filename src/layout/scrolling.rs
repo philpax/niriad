@@ -4009,10 +4009,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let mut col = &mut self.sections[col_idx];
         let is_tabbed = col.is_tabbed();
+        // A tabbed root whose active tab is a nested split would overlap several full-size windows;
+        // expel the target instead (see `active_tab_is_nested`). The common all-leaf tabbed root is
+        // unaffected.
+        let active_tab_nested = col.active_tab_is_nested();
 
         cancel_resize_for_section(&mut self.interactive_resize, col);
 
-        if is_fullscreen && (col.tiles_len() > 1 && !is_tabbed) {
+        if is_fullscreen && ((col.tiles_len() > 1 && !is_tabbed) || active_tab_nested) {
             // This wasn't the only window in its section; extract it into a separate section.
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
@@ -4039,10 +4043,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let mut col = &mut self.sections[col_idx];
         let is_tabbed = col.is_tabbed();
+        // Same overlap hazard as fullscreen: a tabbed root whose active tab is a nested split.
+        let active_tab_nested = col.active_tab_is_nested();
 
         cancel_resize_for_section(&mut self.interactive_resize, col);
 
-        if maximize && (col.tiles_len() > 1 && !is_tabbed) {
+        if maximize && ((col.tiles_len() > 1 && !is_tabbed) || active_tab_nested) {
             // This wasn't the only window in its section; extract it into a separate section.
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
@@ -5165,6 +5171,21 @@ impl<W: LayoutElement> Section<W> {
     fn set_display_mode(&mut self, display: SectionDisplay) {
         self.root
             .set_display(display, self.options.layout.tab_header.clone());
+    }
+
+    /// Whether the section root is a tabbing container whose *active tab* is a nested split (not a
+    /// single leaf). Fullscreening or maximizing such a section would size every leaf to the full
+    /// area while the split tab renders its leaves at their tree positions — several full-size
+    /// windows overlapping — so the caller expels the target window into its own section instead.
+    fn active_tab_is_nested(&self) -> bool {
+        match &self.root {
+            TileNode::Internal { layout, children, active_idx, .. } if layout.is_tabbing() => {
+                children
+                    .get(*active_idx)
+                    .is_some_and(|c| !matches!(c, TileNode::Leaf(_)))
+            }
+            _ => false,
+        }
     }
 
     /// Inserts a tile at the given index, creating a new leaf child with auto span.

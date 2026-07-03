@@ -4935,6 +4935,46 @@ fn tabbing_a_resized_row_does_not_force_a_bogus_height() {
 }
 
 #[test]
+fn fullscreen_tabbed_root_with_split_active_tab_expels() {
+    // Tabbed[1, SplitH[2, 3]] with the split as the active tab. Fullscreening window 3 must not
+    // fullscreen the whole section (which would size every leaf full-screen while the split tab
+    // renders 2 and 3 side by side — overlapping full-size windows). Instead window 3 is expelled
+    // into its own section and fullscreened there; windows 1 and 2 stay put and un-fullscreened.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        // Focus window 1 so ToggleTabbed toggles the root (its parent), giving Tabbed[1, SplitH[2,3]].
+        Op::FocusWindow(1),
+        Op::ToggleTabbed,
+        // Activate the split tab (its most-recently-focused leaf, window 3).
+        Op::FocusWindow(3),
+        Op::SetFullscreenWindow { window: 3, is_fullscreen: true },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+
+    assert!(
+        window_sizing_mode(&layout, 3).unwrap().is_fullscreen(),
+        "the fullscreened window should be fullscreen"
+    );
+    assert!(
+        !window_sizing_mode(&layout, 1).unwrap().is_fullscreen(),
+        "window 1 must not be dragged into fullscreen by the section"
+    );
+    assert!(
+        !window_sizing_mode(&layout, 2).unwrap().is_fullscreen(),
+        "window 2 must not be dragged into fullscreen by the section"
+    );
+    assert_eq!(tile_count(&layout), 3, "no window should be lost by the expel");
+}
+
+#[test]
 fn height_conversion_keeps_finite_weights() {
     // `convert_heights_to_auto` divides each slot height by the median; a degenerate (zero /
     // non-finite) median or height would yield a NaN weight, which `verify_invariants` (run after
