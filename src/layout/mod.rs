@@ -3274,6 +3274,19 @@ impl<W: LayoutElement> Layout<W> {
 
         let _span = tracy_client::span!("Layout::update_insert_hint::in_place");
 
+        // Whether the source window is still normal-sized (a client can request
+        // fullscreen/maximized mid-drag). A `Swap` only resolves in the release path when both the
+        // source and the target slot are normal-sized; otherwise it degrades to the detach apply
+        // (a tab-add). Mirror that gate here so the hint shows what the drop would actually do.
+        let source_normal = self
+            .workspaces()
+            .find(|(_, _, ws)| ws.has_window(&window_id))
+            .and_then(|(_, _, ws)| {
+                ws.scrolling_position_of(&window_id)
+                    .and_then(|(sec, leaf)| ws.scrolling_tile(sec, leaf))
+            })
+            .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+
         let Some(mon) = self.monitor_for_output_mut(&drag_output) else {
             return;
         };
@@ -3286,12 +3299,22 @@ impl<W: LayoutElement> Layout<W> {
                     return;
                 };
                 let pos_within_workspace = (pointer - geo.loc).downscale(zoom);
-                let position = ws.scrolling_insert_position(pos_within_workspace);
+                let mut position = ws.scrolling_insert_position(pos_within_workspace);
 
                 // Suppress the self-highlight: a centre-drop on the source's own slot is a no-op.
                 if let InsertPosition::Swap(sec, leaf) = position {
                     if ws.scrolling_position_of(&window_id) == Some((sec, leaf)) {
                         return;
+                    }
+
+                    // If the swap won't actually happen (source or target not normal-sized), the
+                    // release degrades to the detach apply, which tab-adds onto the target. Show a
+                    // Tab hint instead of a misleading Swap hint.
+                    let target_normal = ws
+                        .scrolling_tile(sec, leaf)
+                        .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                    if !(source_normal && target_normal) {
+                        position = InsertPosition::InsertTab(sec, leaf);
                     }
                 }
 
