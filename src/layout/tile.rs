@@ -1570,6 +1570,18 @@ impl<W: LayoutElement> Tile<W> {
 
         assert_eq!(self.sizing_mode, self.window.sizing_mode());
 
+        // A fullscreen/maximize restore anchor points at a *neighbor* window to re-split beside on
+        // return to normal sizing. It may legitimately dangle (the neighbor closed — the restore
+        // path falls back to leaving the window a stray section), but it must never reference this
+        // tile's own window: that would be a self-referential restore, i.e. a bookkeeping bug.
+        if let Some(restore) = &self.fullscreen_restore {
+            assert_ne!(
+                &restore.neighbor,
+                self.window.id(),
+                "a tile's fullscreen restore anchor must not reference its own window"
+            );
+        }
+
         let scale = self.scale;
         let size = self.tile_size();
         let rounded = size.to_physical_precise_round(scale).to_logical(scale);

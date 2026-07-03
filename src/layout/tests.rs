@@ -1685,11 +1685,147 @@ impl Op {
     }
 }
 
+/// Whole-layout sorted list of window ids (across every output/workspace, including a window that's
+/// mid interactive-move). Window ids are globally unique, so this doubles as a multiset: a duplicate
+/// entry means the same tile leaked into two places, and a missing/extra entry means a window was
+/// lost or conjured. The identity-conservation layer of the fuzzer relies on both facts.
+fn all_window_ids(layout: &Layout<TestWindow>) -> Vec<usize> {
+    let mut ids: Vec<usize> = layout.windows().map(|(_, w)| *w.id()).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Whether the globally-focused window id is deterministically predictable right now. `focus()` is
+/// intercepted by an in-progress interactive move (it reports the moving tile), and an ongoing
+/// workspace-switch gesture can hold the shown workspace mid-swipe, so we only assert focus
+/// identity when neither is happening.
+fn focus_is_predictable(layout: &Layout<TestWindow>) -> bool {
+    if layout.interactive_move.is_some() {
+        return false;
+    }
+    match &layout.monitor_set {
+        MonitorSet::Normal { monitors, .. } => {
+            monitors.iter().all(|m| m.workspace_switch.is_none())
+        }
+        MonitorSet::NoOutputs { .. } => false,
+    }
+}
+
+/// How an op is predicted to affect the set of window ids in the layout. Ops whose window-identity
+/// effect is implementation-defined (most of them) fall back to `Conserve`.
+enum IdentityExpect {
+    /// The id set must be exactly preserved (no window lost, duplicated, or created).
+    Conserve,
+    /// The op may add exactly `id` (or no-op, e.g. the id already existed / the target wasn't
+    /// found), but must not remove or duplicate anything.
+    MaybeAdd(usize),
+    /// The op may remove exactly `id` (or no-op, if it wasn't present), but must not add or
+    /// duplicate anything.
+    MaybeRemove(usize),
+}
+
+/// Predicted window-identity effect of an op, captured *before* it runs and checked afterwards.
+/// This is the cheap identity layer that catches "wrong window removed / focus silently changed /
+/// window duplicated or lost during a move-or-swap" bugs that structural invariants miss.
+struct IdentityCheck {
+    before: Vec<usize>,
+    expect: IdentityExpect,
+    /// If set, the globally-focused window id must equal this after the op (focus-by-id).
+    expect_focus: Option<usize>,
+}
+
+impl IdentityCheck {
+    fn capture(op: &Op, layout: &Layout<TestWindow>) -> Self {
+        let before = all_window_ids(layout);
+
+        // The only ops that may change the id set are the explicit add/close ops. Every other op
+        // (focus, move, swap, split, tab, resize, fullscreen, cross-output/-workspace moves, config
+        // updates, gestures, …) must preserve it exactly.
+        let expect = match op {
+            Op::AddWindow { params }
+            | Op::AddWindowNextTo { params, .. }
+            | Op::AddWindowToNamedWorkspace { params, .. } => IdentityExpect::MaybeAdd(params.id),
+            Op::CloseWindow(id) => IdentityExpect::MaybeRemove(*id),
+            _ => IdentityExpect::Conserve,
+        };
+
+        // Focus-by-id: `activate_window(id)` focuses exactly that window when it exists and focus is
+        // currently predictable.
+        let expect_focus = match op {
+            Op::FocusWindow(id) if before.contains(id) && focus_is_predictable(layout) => Some(*id),
+            _ => None,
+        };
+
+        Self {
+            before,
+            expect,
+            expect_focus,
+        }
+    }
+
+    #[track_caller]
+    fn verify(&self, op: &Op, layout: &Layout<TestWindow>) {
+        let after = all_window_ids(layout);
+
+        // No window id may appear twice anywhere in the layout (the list is sorted).
+        for pair in after.windows(2) {
+            assert_ne!(
+                pair[0], pair[1],
+                "window id {} present twice after {op:?}",
+                pair[0]
+            );
+        }
+
+        match self.expect {
+            IdentityExpect::Conserve => assert_eq!(
+                self.before, after,
+                "{op:?} must preserve the exact set of window ids"
+            ),
+            IdentityExpect::MaybeAdd(id) => {
+                for prev in &self.before {
+                    assert!(after.contains(prev), "{op:?} lost window {prev}");
+                }
+                for now in &after {
+                    assert!(
+                        self.before.contains(now) || *now == id,
+                        "{op:?} introduced unexpected window {now}"
+                    );
+                }
+            }
+            IdentityExpect::MaybeRemove(id) => {
+                for now in &after {
+                    assert!(
+                        self.before.contains(now),
+                        "{op:?} introduced unexpected window {now}"
+                    );
+                }
+                for prev in &self.before {
+                    assert!(
+                        after.contains(prev) || *prev == id,
+                        "{op:?} removed unexpected window {prev}"
+                    );
+                }
+            }
+        }
+
+        if let Some(id) = self.expect_focus {
+            assert_eq!(
+                layout.focus().map(|w| *w.id()),
+                Some(id),
+                "{op:?} (focus-by-id) must focus exactly that window"
+            );
+        }
+    }
+}
+
 #[track_caller]
 fn check_ops_on_layout(layout: &mut Layout<TestWindow>, ops: impl IntoIterator<Item = Op>) {
     for op in ops {
+        let check = IdentityCheck::capture(&op, layout);
+        let op_dbg = op.clone();
         op.apply(layout);
         layout.verify_invariants();
+        check.verify(&op_dbg, layout);
     }
 }
 
