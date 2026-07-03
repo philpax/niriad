@@ -4808,6 +4808,107 @@ fn stacked_layout_reserves_a_row_per_tab_and_shows_one() {
 }
 
 #[test]
+fn set_window_height_converges_across_flat_and_nested() {
+    // A fixed window height must resolve to the same *window* size whether the leaf lives in a flat
+    // cross section (flat sizing path) or inside a nested split (recursive sizing path). Both store
+    // the span as a *tile* span, so the decoration delta is accounted for exactly once, at the
+    // storage site — the nested case previously sized the tile to the window span and came out short
+    // by the border delta.
+    let mut options = Options::default();
+    options.layout.border.off = false;
+    options.layout.border.width = 2.;
+
+    // Flat: a plain cross section [1 / 2]. Resize window 1 to a fixed height.
+    let flat = check_ops_with_options(
+        options.clone(),
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: TestWindowParams::new(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: TestWindowParams::new(2) },
+            Op::SetWindowHeight { id: Some(1), change: SizeChange::SetFixed(300) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let (_, flat_size) = window_geo(&flat, 1).unwrap();
+
+    // Nested: a main split whose second child is a nested cross split [2 / 3]. The root is a Main
+    // split, so the section is laid out by the recursive path. Resize window 2 (inside the nested
+    // cross split) to the same fixed height.
+    let nested = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: TestWindowParams::new(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: TestWindowParams::new(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: TestWindowParams::new(3) },
+            Op::SetWindowHeight { id: Some(2), change: SizeChange::SetFixed(300) },
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::Communicate(3),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ],
+    );
+    let (_, nested_size) = window_geo(&nested, 2).unwrap();
+
+    assert!(
+        (flat_size.h - 300.).abs() <= 1.,
+        "flat window height should resolve to ~300, got {}",
+        flat_size.h
+    );
+    assert!(
+        (nested_size.h - flat_size.h).abs() <= 1.,
+        "nested window height {} should match the flat one {}",
+        nested_size.h,
+        flat_size.h
+    );
+}
+
+#[test]
+fn tabbing_a_resized_row_does_not_force_a_bogus_height() {
+    // A horizontal row sizes its children along the main axis (a fixed child is a *width*). Tabbing
+    // it flips the resize axis to cross (a fixed child would be a *height*), so any leftover fixed
+    // width must be reset to Auto rather than silently reinterpreted as a height. Otherwise the
+    // tabbed windows get forced to a bogus height derived from the old width.
+    let build = |resize: bool| {
+        let mut ops = vec![
+            Op::AddOutput(1),
+            Op::AddWindow { params: wide_window(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: wide_window(2) },
+        ];
+        if resize {
+            // Pin window 1 to a fixed *width* within the row.
+            ops.push(Op::SetWindowWidth { id: Some(1), change: SizeChange::SetFixed(400) });
+        }
+        ops.extend([
+            Op::ToggleTabbed,
+            Op::Communicate(1),
+            Op::Communicate(2),
+            Op::AdvanceAnimations { msec_delta: 1000 },
+        ]);
+        check_ops(ops)
+    };
+
+    let control = build(false);
+    let resized = build(true);
+
+    let (_, control_size) = window_geo(&control, 1).unwrap();
+    let (_, resized_size) = window_geo(&resized, 1).unwrap();
+    assert!(
+        (resized_size.h - control_size.h).abs() <= 1.,
+        "a width-resized row that is tabbed must get the same (full) height as an un-resized one \
+         (control h={}, resized h={})",
+        control_size.h,
+        resized_size.h
+    );
+}
+
+#[test]
 fn stacked_active_child_fills_below_header_no_bottom_loss() {
     use super::tile_node::Layout;
 

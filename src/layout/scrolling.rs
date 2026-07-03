@@ -6381,21 +6381,20 @@ impl<W: LayoutElement> Section<W> {
             .tiles_and_data()
             .map(|(tile, data)| match data.span {
                 auto @ ChildSpan::Auto { .. } => auto,
-                ChildSpan::Fixed(window_cross_span) => {
-                    let mut window_cross_span = window_cross_span.round().max(1.);
-                    if let Some(max_cross_span) = max_non_auto_window_cross_span {
-                        window_cross_span = f64::min(window_cross_span, max_cross_span);
+                ChildSpan::Fixed(tile_cross_span) => {
+                    // `Fixed` stores a *tile* cross span (SplitChildData's contract). Clamp it to the
+                    // available cross space: either the shared cap when another window is non-auto
+                    // (computed as a window span above, converted here into tile space) or, failing
+                    // that, the working-area cross span.
+                    let mut tile_cross_span = tile_cross_span.round().max(1.);
+                    let cap = if let Some(max_cross_span) = max_non_auto_window_cross_span {
+                        self.tile_cross_span_for_window_cross_span(tile, max_cross_span)
                     } else {
-                        // In any case, clamp to the working area cross span.
-                        let max_cross_span = self
-                            .window_cross_span_for_tile_cross_span(tile, max_tile_cross_span)
-                            .round();
-                        window_cross_span = f64::min(window_cross_span, max_cross_span);
-                    }
+                        max_tile_cross_span
+                    };
+                    tile_cross_span = f64::min(tile_cross_span, cap);
 
-                    ChildSpan::Fixed(
-                        self.tile_cross_span_for_window_cross_span(tile, window_cross_span),
-                    )
+                    ChildSpan::Fixed(tile_cross_span)
                 }
                 ChildSpan::Preset(idx) => {
                     let preset = self.options.layout.preset_window_heights[idx];
@@ -6976,14 +6975,18 @@ impl<W: LayoutElement> Section<W> {
 
         let current_height = self.root.leaf_data(&path).map(|d| d.span).unwrap_or(ChildSpan::Auto { weight: 1. });
         let tile = self.tile(tile_idx);
-        let current_window_cross_span = match current_height {
+        // `ChildSpan::Fixed` stores a *tile* cross span (SplitChildData's contract), so recover the
+        // window span from it rather than treating the stored value as a window span.
+        let (current_window_cross_span, current_tile_cross_span) = match current_height {
             ChildSpan::Auto { .. } | ChildSpan::Preset(_) => {
-                self.map_size_in(tile.window_size()).h
+                let w = self.map_size_in(tile.window_size()).h;
+                (w, self.tile_cross_span_for_window_cross_span(tile, w))
             }
-            ChildSpan::Fixed(window_cross_span) => window_cross_span,
+            ChildSpan::Fixed(tile_cross_span) => (
+                self.window_cross_span_for_tile_cross_span(tile, tile_cross_span),
+                tile_cross_span,
+            ),
         };
-        let current_tile_cross_span =
-            self.tile_cross_span_for_window_cross_span(tile, current_window_cross_span);
 
         let work_area_cross_span = self.working_area.size.h;
         let gaps = self.options.layout.gaps;
@@ -7045,13 +7048,20 @@ impl<W: LayoutElement> Section<W> {
             new_window_cross_span = f64::max(new_window_cross_span, f64::from(min_h));
         }
 
+        // Store a *tile* cross span (SplitChildData's contract), converting the resolved window span
+        // here at the storage site where this leaf's decoration delta is known. The recursive path
+        // (`request_sizes`) and the flat path both consume `Fixed` as a tile span, so a nested
+        // (recursive-path) section now converges to the same window size as a flat one.
+        let new_window_cross_span = new_window_cross_span.clamp(1., MAX_CROSS_SPAN);
+        let new_tile_cross_span =
+            self.tile_cross_span_for_window_cross_span(self.tile(tile_idx), new_window_cross_span);
         self.root.update_leaf_data(
             &path,
             self.tile(tile_idx).tile_size(),
             false, // resizing_by_start not relevant here
         );
         // Update the span specifically.
-        self.root.update_leaf_span(&path, ChildSpan::Fixed(new_window_cross_span.clamp(1., MAX_CROSS_SPAN)));
+        self.root.update_leaf_span(&path, ChildSpan::Fixed(new_tile_cross_span));
         self.is_pending_maximized = false;
         self.update_tile_sizes(animate);
     }

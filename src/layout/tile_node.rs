@@ -54,6 +54,21 @@ impl Layout {
         }
     }
 
+    /// The axis along which a per-child `Fixed`/`Preset` span is measured for this layout.
+    ///
+    /// This differs from [`axis`](Self::axis) for tabbing layouts: only `SplitH` sizes its children
+    /// along the *main* axis (a fixed child is a width). `SplitV`, `Tabbed`, and `Stacked` all size
+    /// their children along the *cross* axis (a fixed child is a height) — a `Tabbed` group navigates
+    /// like a row but its per-tab spans are cross spans in the flat layout path. When a container's
+    /// resize axis flips, any stored span was measured along the *old* axis and must be reset rather
+    /// than silently reinterpreted.
+    pub fn resize_axis(self) -> SplitAxis {
+        match self {
+            Layout::SplitH => SplitAxis::Main,
+            Layout::SplitV | Layout::Tabbed | Layout::Stacked => SplitAxis::Cross,
+        }
+    }
+
     /// Whether this is a "tabbing" layout (Tabbed/Stacked): one child visible at a time, with a
     /// titlebar header.
     pub fn is_tabbing(self) -> bool {
@@ -90,6 +105,18 @@ impl Layout {
 
 /// Path from a section root to a leaf, as a sequence of child indices.
 pub type TilePath = Vec<usize>;
+
+/// Resets every child slot's span to `Auto` when a container's [resize axis](Layout::resize_axis)
+/// changes between `old` and `new`. A stored `Fixed`/`Preset` span is measured along the old axis;
+/// after a flip it would be silently reinterpreted along the new one (e.g. a fixed *width* becoming a
+/// fixed *height* when a horizontal row is tabbed), so reset instead.
+fn reset_spans_on_axis_flip(old: Layout, new: Layout, data: &mut [SplitChildData]) {
+    if old.resize_axis() != new.resize_axis() {
+        for d in data.iter_mut() {
+            d.span = ChildSpan::auto_1();
+        }
+    }
+}
 
 /// How a child's span is determined along its parent split's axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1114,10 +1141,11 @@ impl<W: LayoutElement> TileNode<W> {
     /// layout (`prev_split`) so un-tabbing returns to it (a tabbed section un-tabs to a section, a
     /// tabbed row to a row).
     pub fn toggle_tabbed(&mut self, tab_header_config: niri_config::TabHeaderConfig) {
-        let TileNode::Internal { layout, tab_header, prev_split, .. } = self else {
+        let TileNode::Internal { layout, tab_header, prev_split, data, .. } = self else {
             // Can't toggle a leaf; this should be handled at the section level.
             return;
         };
+        let old_layout = *layout;
         if layout.is_tabbing() {
             *layout = *prev_split;
             *tab_header = None;
@@ -1136,18 +1164,20 @@ impl<W: LayoutElement> TileNode<W> {
             header.set_stacked(tabbing == Layout::Stacked);
             *tab_header = Some(header);
         }
+        reset_spans_on_axis_flip(old_layout, *layout, data);
     }
 
     /// Sets this node's layout directly, creating/dropping the tab header as needed and remembering
     /// the previous split layout when entering a tabbing layout (inspired by sway's layout command:
     /// a flag flip on an existing container). No-op for a leaf.
     pub fn set_layout(&mut self, new: Layout, tab_header_config: niri_config::TabHeaderConfig) {
-        let TileNode::Internal { layout, tab_header, prev_split, .. } = self else {
+        let TileNode::Internal { layout, tab_header, prev_split, data, .. } = self else {
             return;
         };
         if *layout == new {
             return;
         }
+        let old_layout = *layout;
         if layout.is_split() {
             *prev_split = *layout;
         }
@@ -1162,6 +1192,7 @@ impl<W: LayoutElement> TileNode<W> {
         } else {
             *tab_header = None;
         }
+        reset_spans_on_axis_flip(old_layout, new, data);
     }
 
     /// Sets the display mode to tabbed or normal.
