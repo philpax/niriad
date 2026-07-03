@@ -4832,6 +4832,90 @@ fn preset_section_width_resizes_the_nested_slot() {
 }
 
 #[test]
+fn fullscreen_restores_beside_its_neighbor() {
+    // A side-by-side row [1 | 2]; fullscreening window 2 expels it into its own section.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: true },
+    ]);
+    assert_eq!(section_count(&layout), 2, "fullscreen expels window 2 into its own section");
+
+    // Unfullscreening restores it beside its neighbor in one section.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: true },
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: false },
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    assert_eq!(section_count(&layout), 1, "unfullscreen restores window 2 into the section");
+    assert_eq!(tile_count(&layout), 2);
+    let (p1, _) = window_geo(&layout, 1).unwrap();
+    let (p2, _) = window_geo(&layout, 2).unwrap();
+    assert_ne!(p1.x, p2.x, "restored side by side with its neighbor");
+}
+
+#[test]
+fn fullscreen_falls_back_when_neighbor_closed() {
+    // If the neighbor is gone by unfullscreen time, fall back to the stray-section behavior.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: true },
+        Op::CloseWindow(1),
+        Op::SetFullscreenWindow { window: 2, is_fullscreen: false },
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    assert_eq!(tile_count(&layout), 1);
+    assert_eq!(section_count(&layout), 1, "no neighbor -> window 2 stays a stray section");
+}
+
+#[test]
+fn fullscreen_restores_into_a_nested_tab_group() {
+    // Tabbed[1, SplitH[2, 3]]: fullscreening window 3 (inside the nested split under a tabbed root)
+    // expels it, and unfullscreen restores it beside window 2 inside the group.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(1),
+        Op::ToggleTabbed,
+        Op::FocusWindow(3),
+        Op::SetFullscreenWindow { window: 3, is_fullscreen: true },
+    ]);
+    assert_eq!(section_count(&layout), 2, "the nested-split tab is expelled to fullscreen");
+
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(1),
+        Op::ToggleTabbed,
+        Op::FocusWindow(3),
+        Op::SetFullscreenWindow { window: 3, is_fullscreen: true },
+        Op::SetFullscreenWindow { window: 3, is_fullscreen: false },
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    assert_eq!(section_count(&layout), 1, "unfullscreen returns window 3 into the group");
+    assert_eq!(tile_count(&layout), 3);
+}
+
+#[test]
 fn toggle_tabbed_hides_inactive_tiles() {
     // Build a real two-window section (cross split), then tab it. ToggleTabbed should show only the
     // active tile and hide the rest.

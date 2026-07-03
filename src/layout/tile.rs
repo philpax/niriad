@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
+use super::tile_node::SplitAxis;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
     SizeFrac, RESIZE_ANIMATION_THRESHOLD,
@@ -34,6 +35,19 @@ use crate::utils::transaction::Transaction;
 use crate::utils::{
     baba_is_float_offset, round_logical_in_physical, round_logical_in_physical_max1,
 };
+
+/// Anchor for restoring a window to its origin container after it was expelled to go
+/// fullscreen/maximized. `neighbor` is a window that shared the origin section; on restore the tile
+/// is re-split beside it along `axis`, on the side recorded by `before`.
+#[derive(Debug, Clone)]
+pub struct FullscreenRestore<Id> {
+    /// A window that shared the origin section; the restore target.
+    pub neighbor: Id,
+    /// Whether the restored window sat before (left/above) `neighbor` in the origin container.
+    pub before: bool,
+    /// The split axis of the restored window's origin container.
+    pub axis: SplitAxis,
+}
 
 /// Toplevel window with decorations.
 #[derive(Debug)]
@@ -61,6 +75,12 @@ pub struct Tile<W: LayoutElement> {
 
     /// Whether the tile should float upon unfullscreening.
     pub(super) restore_to_floating: bool,
+
+    /// Where this window came from when it was expelled into its own section to go
+    /// fullscreen/maximized (see `ScrollingSpace::set_fullscreen`). On unfullscreen/unmaximize back
+    /// to normal sizing, it's reinserted beside `neighbor` if that window still lives in the same
+    /// workspace; otherwise the anchor is dropped and the window stays a stray section.
+    pub(super) fullscreen_restore: Option<FullscreenRestore<W::Id>>,
 
     /// The size that the window should assume when going floating.
     ///
@@ -196,6 +216,7 @@ impl<W: LayoutElement> Tile<W> {
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
             restore_to_floating: false,
+            fullscreen_restore: None,
             floating_window_size: None,
             floating_pos: None,
             floating_preset_width_idx: None,

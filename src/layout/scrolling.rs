@@ -15,7 +15,7 @@ use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabHeader, TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tab_bar::TabBarRenderElement;
-use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
+use super::tile::{FullscreenRestore, Tile, TileRenderElement, TileRenderSnapshot};
 use super::tile_node::{ChildSpan, Layout, SplitAxis, SplitChildData, TileNode, TilePath};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
@@ -4039,7 +4039,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        let mut col = &mut self.sections[col_idx];
+        let col = &mut self.sections[col_idx];
         let is_tabbed = col.is_tabbed();
         // A tabbed root whose active tab is a nested split would overlap several full-size windows;
         // expel the target instead (see `active_tab_is_nested`). The common all-leaf tabbed root is
@@ -4049,17 +4049,65 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         cancel_resize_for_section(&mut self.interactive_resize, col);
 
         if is_fullscreen && ((col.tiles_len() > 1 && !is_tabbed) || active_tab_nested) {
-            // This wasn't the only window in its section; extract it into a separate section.
+            // This wasn't the only window in its section; extract it into a separate section, but
+            // remember its origin so unfullscreen can restore it in place (sway behavior).
+            let anchor = self.sections[col_idx].fullscreen_restore_anchor(window);
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
-            col = &mut self.sections[col_idx];
+            if let (Some(anchor), Some(leaf)) = (anchor, self.sections[col_idx].position(window)) {
+                self.sections[col_idx].tile_mut(leaf).fullscreen_restore = Some(anchor);
+            }
         }
 
-        col.set_fullscreen(is_fullscreen);
+        self.sections[col_idx].set_fullscreen(is_fullscreen);
+
+        // Unfullscreening back to normal sizing: put the window back at (or near) its origin.
+        if !is_fullscreen && self.sections[col_idx].sizing_mode().is_normal() {
+            self.try_fullscreen_restore(col_idx);
+        }
 
         // With place_within_section, the tab indicator changes the section size immediately.
 
         true
+    }
+
+    /// If the (lone-leaf, normal-sizing) section at `f_col` holds a window that was expelled to go
+    /// fullscreen/maximized, reinsert it beside its recorded neighbor along the origin axis — but
+    /// only if that neighbor still lives in this workspace in a normal-sizing section. Otherwise the
+    /// anchor is dropped and the window stays a stray section (never restores across workspaces,
+    /// never panics).
+    fn try_fullscreen_restore(&mut self, f_col: usize) {
+        let section = &self.sections[f_col];
+        if section.tiles_len() != 1 {
+            return;
+        }
+        let Some(anchor) = section.tile(0).fullscreen_restore.clone() else {
+            return;
+        };
+
+        let neighbor_loc = self.sections.iter().enumerate().find_map(|(c, col)| {
+            (c != f_col)
+                .then(|| col.position(&anchor.neighbor).map(|leaf| (c, leaf)))
+                .flatten()
+        });
+
+        let Some((n_col, n_leaf)) = neighbor_loc else {
+            // Neighbor closed or moved away: keep the stray section, drop the anchor.
+            self.sections[f_col].tile_mut(0).fullscreen_restore = None;
+            return;
+        };
+
+        if !self.sections[n_col].pending_sizing_mode().is_normal() {
+            self.sections[f_col].tile_mut(0).fullscreen_restore = None;
+            return;
+        }
+
+        // Pull the window out of its lone section (dropping `f_col`) and re-split it beside the
+        // neighbor. Removing `f_col` shifts later indices down by one.
+        let mut removed = self.remove_tile_by_idx(f_col, 0, Transaction::new(), None);
+        removed.tile.fullscreen_restore = None;
+        let n_col = if f_col < n_col { n_col - 1 } else { n_col };
+        self.add_tile_to_split(n_col, n_leaf, anchor.axis, !anchor.before, removed.tile, true);
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) -> bool {
@@ -4073,7 +4121,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         }
 
-        let mut col = &mut self.sections[col_idx];
+        let col = &mut self.sections[col_idx];
         let is_tabbed = col.is_tabbed();
         // Same overlap hazard as fullscreen: a tabbed root whose active tab is a nested split.
         let active_tab_nested = col.active_tab_is_nested();
@@ -4081,13 +4129,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         cancel_resize_for_section(&mut self.interactive_resize, col);
 
         if maximize && ((col.tiles_len() > 1 && !is_tabbed) || active_tab_nested) {
-            // This wasn't the only window in its section; extract it into a separate section.
+            // This wasn't the only window in its section; extract it into a separate section, but
+            // remember its origin so unmaximize can restore it in place (sway behavior).
+            let anchor = self.sections[col_idx].fullscreen_restore_anchor(window);
             self.consume_or_expel_window_right(Some(window));
             col_idx += 1;
-            col = &mut self.sections[col_idx];
+            if let (Some(anchor), Some(leaf)) = (anchor, self.sections[col_idx].position(window)) {
+                self.sections[col_idx].tile_mut(leaf).fullscreen_restore = Some(anchor);
+            }
         }
 
-        col.set_maximized(maximize);
+        self.sections[col_idx].set_maximized(maximize);
+
+        // Unmaximizing back to normal sizing: put the window back at (or near) its origin.
+        if !maximize && self.sections[col_idx].sizing_mode().is_normal() {
+            self.try_fullscreen_restore(col_idx);
+        }
 
         // With place_within_section, the tab indicator changes the section size immediately.
 
@@ -6123,6 +6180,29 @@ impl<W: LayoutElement> Section<W> {
     pub fn position(&self, window: &W::Id) -> Option<usize> {
         self.tiles_enumerated()
             .find_map(|(idx, tile)| (tile.window().id() == window).then_some(idx))
+    }
+
+    /// Computes the restore anchor for `window` before it's expelled into its own section to go
+    /// fullscreen/maximized: a flat-adjacent neighbor leaf (a concrete, stable window id), the side
+    /// `window` sat on relative to it, and `window`'s immediate parent-container axis. Reinserting
+    /// the window into a split with that neighbor along this axis lands it back at (or near) its
+    /// origin. Returns `None` for a lone-leaf section (nothing to restore into).
+    fn fullscreen_restore_anchor(&self, window: &W::Id) -> Option<FullscreenRestore<W::Id>> {
+        let idx = self.position(window)?;
+        if self.tiles_len() < 2 {
+            return None;
+        }
+
+        let path = self.root.path_for_leaf_index(idx)?;
+        let parent = &path[..path.len().saturating_sub(1)];
+        let axis = self.root.node_at(parent).layout()?.axis();
+
+        // Anchor to the flat-adjacent leaf: the one before `window`, or the one after if `window` is
+        // first (in which case `window` sat *before* its neighbor).
+        let (neighbor_idx, before) = if idx > 0 { (idx - 1, false) } else { (idx + 1, true) };
+        let neighbor = self.tile(neighbor_idx).window().id().clone();
+
+        Some(FullscreenRestore { neighbor, before, axis })
     }
 
     /// Activates the leaf at flat-leaf index `idx`, setting `active_idx` at every level along its
