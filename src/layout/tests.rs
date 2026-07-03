@@ -4669,6 +4669,112 @@ fn set_section_layout_arms_split_on_lone_window() {
 }
 
 #[test]
+fn split_window_toggles_and_switches_direction() {
+    // Re-arming the same direction toggles it off.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+    ]);
+    assert_eq!(section_pending_split(&layout, 0), None, "same direction toggles off");
+
+    // A different direction switches to it.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+    ]);
+    assert_eq!(
+        section_pending_split(&layout, 0),
+        Some(SplitAxis::Cross),
+        "different direction switches"
+    );
+
+    // Toggled off means the next window opens as a new section, not a split.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+    ]);
+    assert_eq!(section_count(&layout), 2, "no pending split -> new section");
+}
+
+#[test]
+fn pending_split_clears_when_focus_leaves_section() {
+    // Two sections; arm a split on the left one, then focus the right one: the left's pending
+    // split clears (it shouldn't catch a window opened after you've moved on).
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) }, // section 0
+        Op::AddWindow { params: TestWindowParams::new(2) }, // section 1 (active)
+        Op::FocusSectionLeft,                               // focus section 0
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),    // arm section 0
+    ]);
+    assert_eq!(section_pending_split(&layout, 0), Some(SplitAxis::Main));
+
+    check_ops_on_layout(&mut layout, [Op::FocusSectionRight]);
+    assert_eq!(
+        section_pending_split(&layout, 0),
+        None,
+        "focus leaving the section clears its pending split"
+    );
+
+    // The refresh backstop clears it when the workspace/output loses focus.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::Refresh { is_active: false },
+    ]);
+    assert_eq!(
+        section_pending_split(&layout, 0),
+        None,
+        "losing focus clears the pending split"
+    );
+}
+
+#[test]
+fn consume_into_section_preserves_pending_split() {
+    // A pending split is aimed at the next NEW window, so pulling a neighbor in via
+    // consume-window-into-section must NOT consume it — it survives and fires on the next AddWindow.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) }, // section 0
+        Op::AddWindow { params: TestWindowParams::new(2) }, // section 1
+        Op::FocusSectionLeft,                               // focus section 0
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),    // arm section 0
+        Op::ConsumeWindowIntoSection,                       // pull window 2 into section 0
+    ]);
+    assert_eq!(section_count(&layout), 1);
+    assert_eq!(
+        section_pending_split(&layout, 0),
+        Some(SplitAxis::Main),
+        "consume preserves the pending split"
+    );
+
+    // The next new window fires it (and clears it).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::FocusSectionLeft,
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::ConsumeWindowIntoSection,
+        Op::AddWindow { params: TestWindowParams::new(3) },
+    ]);
+    assert_eq!(section_count(&layout), 1);
+    assert_eq!(
+        section_pending_split(&layout, 0),
+        None,
+        "the next new window consumes the preserved pending split"
+    );
+}
+
+#[test]
 fn toggle_tabbed_hides_inactive_tiles() {
     // Build a real two-window section (cross split), then tab it. ToggleTabbed should show only the
     // active tile and hide the rest.

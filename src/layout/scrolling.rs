@@ -1135,6 +1135,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         );
 
         if self.active_section_idx != idx {
+            // Focus is leaving this section; a split armed here (via split-window / set-section-
+            // layout on a lone window) shouldn't survive to catch a window opened after you've
+            // moved on. This is the centralized within-workspace section-focus change; cross-
+            // workspace/output focus loss is cleared in `refresh`.
+            if let Some(old) = self.sections.get_mut(self.active_section_idx) {
+                old.pending_split_direction = None;
+            }
+
             self.active_section_idx = idx;
 
             // A different section was activated; reset the flag.
@@ -2592,7 +2600,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_off = self.sections[source_section_idx].tile_offset(0);
 
         let removed = self.remove_tile_by_idx(source_section_idx, 0, Transaction::new(), None);
+        // A pending split is aimed at the next *new* window, not one pulled in from a neighbor:
+        // preserve it across the consume (the consumed tile is appended, not split with) so it
+        // still fires for the window you open next.
+        let saved_pending = self.sections[target_section_idx].pending_split_direction.take();
         self.add_tile_to_section(target_section_idx, None, removed.tile, false);
+        self.sections[target_section_idx].pending_split_direction = saved_pending;
 
         let target_section = &mut self.sections[target_section_idx];
         move_offset += prev_off - target_section.tile_offset(target_section.tiles_len() - 1);
@@ -2650,7 +2663,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let direction = direction.unwrap_or(SplitAxis::Main);
         let col = &mut self.sections[self.active_section_idx];
-        col.pending_split_direction = Some(direction);
+        // Re-arming the same direction toggles it back off (sway-like toggle feel); a different
+        // direction switches to it.
+        col.pending_split_direction = if col.pending_split_direction == Some(direction) {
+            None
+        } else {
+            Some(direction)
+        };
     }
 
     /// Consumes a window from an adjacent section into a split with the focused window.
@@ -4774,7 +4793,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        let active_section_idx = self.active_section_idx;
         for (col_idx, col) in self.sections.iter_mut().enumerate() {
+            // A pending split (armed on the active section) is cleared once this section is no
+            // longer the focused workspace's active section — this backstops the within-workspace
+            // clear in `activate_section` for workspace/output focus loss, where `is_focused` drops.
+            if col.pending_split_direction.is_some()
+                && !(is_focused && col_idx == active_section_idx)
+            {
+                col.pending_split_direction = None;
+            }
+
             let mut col_resize_data = None;
             if let Some(resize) = &self.interactive_resize {
                 if col.contains(&resize.window) {
