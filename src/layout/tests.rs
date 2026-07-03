@@ -7052,3 +7052,52 @@ fn toggle_tabbed_untab_of_nested_born_tab_simplifies() {
     );
 }
 
+
+/// Helper: the `pending_activated` flag of a window (what `set_activated` writes).
+fn window_pending_activated(layout: &Layout<TestWindow>, id: usize) -> bool {
+    layout
+        .windows()
+        .find(|(_, w)| *w.id() == id)
+        .unwrap()
+        .1
+         .0
+        .pending_activated
+        .get()
+}
+
+#[test]
+fn refresh_activates_the_focused_nested_leaf() {
+    // Bug 7a: root V[1, H[2,3]] with window 3 active (root child index 1, flat leaf index 2). With
+    // deactivate_unfocused_windows, refresh must mark the actually-focused leaf (3) active — not the
+    // tile sitting at the root-child index (window 2).
+    let options = Options {
+        deactivate_unfocused_windows: true,
+        ..Options::default()
+    };
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            Op::AddWindow { params: TestWindowParams::new(1) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+            Op::AddWindow { params: TestWindowParams::new(2) },
+            Op::SplitWindow(niri_ipc::SplitDirection::Main),
+            Op::AddWindow { params: TestWindowParams::new(3) },
+            Op::Refresh { is_active: true },
+        ],
+    );
+
+    assert!(
+        window_pending_activated(&layout, 3),
+        "the focused nested leaf (3) must be activated"
+    );
+    assert!(
+        !window_pending_activated(&layout, 2),
+        "its sibling (2, at the root-child index) must not be activated"
+    );
+    assert!(
+        !window_pending_activated(&layout, 1),
+        "the other section leaf (1) must not be activated"
+    );
+}
+

@@ -2037,8 +2037,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &self.sections[col_idx];
         let removing_last = col.tiles_len() == 1;
 
-        // Skip closing animation for invisible tiles in a tabbed section.
-        if col.is_tabbed() && tile_idx != col.active_tile_idx() {
+        // Skip the closing animation for currently-invisible tiles (a hidden background tab). Use
+        // per-leaf visibility rather than comparing to the root-child `active_tile_idx`: a split
+        // that is itself a tab shows several leaves at once, and a nested active leaf has a flat
+        // index unrelated to the root child index.
+        if !col.root.leaf_visibility().get(tile_idx).copied().unwrap_or(true) {
             return;
         }
 
@@ -2048,13 +2051,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let offset = if removing_last {
                 self.section_main_pos(col_idx + 1) - self.section_main_pos(col_idx)
             } else {
+                // `data()` is indexed by root child, so exclude the removed leaf's *root child*
+                // (mapping the flat `tile_idx` through the tree) rather than comparing a flat index
+                // to a root-child index.
+                let removed_root_child = col.leaf_idx_to_root_child(tile_idx);
                 self.sections[col_idx].width()
                     - col
                         .data()
                         .iter()
                         .enumerate()
                         .filter_map(|(idx, data)| {
-                            (idx != tile_idx).then_some(NotNan::new(data.size.w).unwrap())
+                            (idx != removed_root_child).then_some(NotNan::new(data.size.w).unwrap())
                         })
                         .max()
                         .map(NotNan::into_inner)
@@ -4747,11 +4754,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     })
             };
 
-            let active_tile_idx = col.active_tile_idx();
+            let active_leaf_idx = col.active_leaf_idx();
             for (tile_idx, tile) in col.tiles_enumerated_mut() {
                 let win = tile.window_mut();
 
-                let active_in_section = active_tile_idx == tile_idx;
+                // Compare against the *flat* active leaf index, not the root-child `active_tile_idx`
+                // (they differ once the section is nested), so the actually-focused leaf is the one
+                // marked active — otherwise a sibling gets activated and the focused window
+                // deactivated under `deactivate_unfocused_windows`.
+                let active_in_section = active_leaf_idx == tile_idx;
                 win.set_active_in_section(active_in_section);
                 win.set_floating(false);
 
@@ -6208,12 +6219,14 @@ impl<W: LayoutElement> Section<W> {
         let axis = self.axis();
         let sizing_mode = self.pending_sizing_mode();
         if matches!(sizing_mode, SizingMode::Fullscreen | SizingMode::Maximized) {
-            let active_tile_idx = self.active_tile_idx();
+            // Flat active leaf index: `tiles_enumerated_mut` yields flat indices, so the root-child
+            // `active_tile_idx` would pick the wrong leaf in a nested (tabbed) fullscreen section.
+            let active_leaf_idx = self.active_leaf_idx();
             let is_tabbed = self.is_tabbed();
             let parent_area_size = axis.size_out(self.parent_area.size);
             for (tile_idx, tile) in self.tiles_enumerated_mut() {
                 // In tabbed mode, only the visible window participates in the transaction.
-                let is_active = tile_idx == active_tile_idx;
+                let is_active = tile_idx == active_leaf_idx;
                 let transaction = if is_tabbed && !is_active {
                     None
                 } else {
