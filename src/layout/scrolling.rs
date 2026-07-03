@@ -3545,7 +3545,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // Adjust for place-within-section tab indicator.
                 let origin_x = col.tiles_origin().x;
                 let extra_w = if is_tabbed && col.sizing_mode().is_normal() {
-                    col.tab_header().unwrap().extra_size(col.tiles_len(), col.scale).w
+                    // One header row/tab per direct root child (matches the renderer), not per flat
+                    // leaf — a Stacked band is `child_count` rows tall.
+                    col.tab_header().unwrap().extra_size(col.root.child_count(), col.scale).w
                 } else {
                     0.
                 };
@@ -4235,16 +4237,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     .to_physical_precise_round(scale)
                     .to_logical(scale);
 
+                // One tab per direct root child (a nested child is a single group tab), matching the
+                // renderer's `child_count`-based layout — not one tab per flat leaf. Map the hit tab
+                // to that child's representative leaf so activating it switches to that tab.
+                let children = col.tab_children(&[]);
                 if let Some(idx) = col.tab_header().unwrap().hit(
                     col.tab_indicator_area(),
-                    col.tiles_len(),
+                    children.len(),
                     scale,
                     pos_in - section_pos,
                 ) {
+                    let leaf = children.get(idx).map_or(0, |c| c.rep_leaf_idx);
                     let hit = HitType::Activate {
                         is_tab_indicator: true,
                     };
-                    return Some((col.tile(idx).window(), hit));
+                    return Some((col.tile(leaf).window(), hit));
                 }
             }
 

@@ -6880,3 +6880,48 @@ fn set_window_width_resizes_nested_main_split_child() {
     );
 }
 
+
+#[test]
+fn root_tab_hit_maps_group_tab_to_its_representative_leaf() {
+    // Bug 3: root Stacked[1, H[2,3]] — two drawn tabs (one per root child) but three leaves. The
+    // root header hit-test must use the child count and map each tab to its child's representative
+    // leaf; window 2 (buried inside the group tab, whose representative leaf is 3) must never be a
+    // tab-indicator target, or clicking the drawn group tab activates the wrong window.
+    let mut layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: wide_window(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: wide_window(2) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: wide_window(3) },
+        Op::FocusWindow(1),
+        Op::SetLayout(super::tile_node::Layout::Stacked),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ]);
+    let output = layout.outputs().next().unwrap().clone();
+    layout.update_render_elements(Some(&output));
+
+    let mut tab_hits = std::collections::BTreeSet::new();
+    for x in (0..1280).step_by(4) {
+        for y in (0..720).step_by(4) {
+            if let Some((w, HitType::Activate { is_tab_indicator: true })) =
+                layout.window_under(&output, Point::from((x as f64, y as f64)))
+            {
+                tab_hits.insert(*w.id());
+            }
+        }
+    }
+
+    assert!(
+        tab_hits.contains(&3),
+        "the group tab must be hittable and resolve to its representative leaf (3): {tab_hits:?}"
+    );
+    assert!(
+        !tab_hits.contains(&2),
+        "window 2 is buried inside the group tab and must never be a root-header target: {tab_hits:?}"
+    );
+}
+
