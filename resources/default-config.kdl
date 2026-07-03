@@ -523,15 +523,29 @@ binds {
     Mod+7 { focus-workspace 7; }
     Mod+8 { focus-workspace 8; }
     Mod+9 { focus-workspace 9; }
-    Mod+Shift+1 { move-section-to-workspace 1; }
-    Mod+Shift+2 { move-section-to-workspace 2; }
-    Mod+Shift+3 { move-section-to-workspace 3; }
-    Mod+Shift+4 { move-section-to-workspace 4; }
-    Mod+Shift+5 { move-section-to-workspace 5; }
-    Mod+Shift+6 { move-section-to-workspace 6; }
-    Mod+Shift+7 { move-section-to-workspace 7; }
-    Mod+Shift+8 { move-section-to-workspace 8; }
-    Mod+Shift+9 { move-section-to-workspace 9; }
+    // sway's `$mod+Shift+1..9 move` moves the *focused container* (a single window, unless you've
+    // grouped one). `move-window-to-workspace` is the closest match: it moves just the focused
+    // window. To move the whole section (every window side-by-side/tabbed with it) instead, swap in
+    // the commented `move-section-to-workspace` binds below.
+    Mod+Shift+1 { move-window-to-workspace 1; }
+    Mod+Shift+2 { move-window-to-workspace 2; }
+    Mod+Shift+3 { move-window-to-workspace 3; }
+    Mod+Shift+4 { move-window-to-workspace 4; }
+    Mod+Shift+5 { move-window-to-workspace 5; }
+    Mod+Shift+6 { move-window-to-workspace 6; }
+    Mod+Shift+7 { move-window-to-workspace 7; }
+    Mod+Shift+8 { move-window-to-workspace 8; }
+    Mod+Shift+9 { move-window-to-workspace 9; }
+    // Move the whole section instead of just the focused window:
+    // Mod+Shift+1 { move-section-to-workspace 1; }
+    // Mod+Shift+2 { move-section-to-workspace 2; }
+    // Mod+Shift+3 { move-section-to-workspace 3; }
+    // Mod+Shift+4 { move-section-to-workspace 4; }
+    // Mod+Shift+5 { move-section-to-workspace 5; }
+    // Mod+Shift+6 { move-section-to-workspace 6; }
+    // Mod+Shift+7 { move-section-to-workspace 7; }
+    // Mod+Shift+8 { move-section-to-workspace 8; }
+    // Mod+Shift+9 { move-section-to-workspace 9; }
 
     // niri's rail extends beyond a single screen — page through sections/workspaces and outputs.
     Mod+Page_Down { focus-workspace-down; }
