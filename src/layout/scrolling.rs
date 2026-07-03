@@ -1150,11 +1150,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let pos = self.map_point_in(pos);
-        let main = pos.x + self.view_main_pos();
 
-        // Aim for the center of the gap.
-        let main = main + self.options.layout.gaps / 2.;
-        let cross = pos.y + self.options.layout.gaps / 2.;
+        // Raw (unfudged) cursor position in section-main / cross space. Used for the per-tile
+        // interior hit-test and the rel_x/rel_y region map, which must line up with the actual
+        // (unfudged) tile rects and the drawn header band.
+        let main_raw = pos.x + self.view_main_pos();
+        let cross_raw = pos.y;
+
+        // Aim for the center of the gap. This fudge only biases the closest-gap searches below; it
+        // must NOT leak into the interior hit-test (see `main_raw`/`cross_raw`).
+        let main = main_raw + self.options.layout.gaps / 2.;
+        let cross = cross_raw + self.options.layout.gaps / 2.;
 
         // Insert position is before the first section.
         if main < 0. {
@@ -1212,7 +1218,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Section-local position (no gap-aiming fudge), in the same coordinate space as
         // `leaf_positions` and the tab-header geometry. Used for the header-band hit-test.
-        let local = Point::from((pos.x + self.view_main_pos() - col_main_start, pos.y));
+        let local = Point::from((main_raw - col_main_start, cross_raw));
 
         // Tab-header band: if the cursor is over the titlebar band a tabbing container (the root
         // tabbed section, or a nested Tabbed/Stacked node) reserves at its top, add the dragged
@@ -1253,10 +1259,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     let sz = leaf_size(*idx);
                     let left = col_main_start + off.x;
                     visibility.get(*idx).copied().unwrap_or(true)
-                        && cross >= off.y
-                        && cross <= off.y + sz.h
-                        && main >= left
-                        && main <= left + sz.w
+                        && cross_raw >= off.y
+                        && cross_raw <= off.y + sz.h
+                        && main_raw >= left
+                        && main_raw <= left + sz.w
                 })
                 .map(|(idx, _)| idx)
                 .unwrap_or(closest_tile_idx);
@@ -1271,8 +1277,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let tile_w = leaf_size(tile_idx).w;
                 let tile_h = leaf_size(tile_idx).h;
                 let left = col_main_start + tile_off.x;
-                let rel_x = ((main - left) / tile_w.max(1.)).clamp(0., 1.);
-                let rel_y = ((cross - tile_off.y) / tile_h.max(1.)).clamp(0., 1.);
+                let rel_x = ((main_raw - left) / tile_w.max(1.)).clamp(0., 1.);
+                let rel_y = ((cross_raw - tile_off.y) / tile_h.max(1.)).clamp(0., 1.);
 
                 let in_centre = (1. / 3. ..=2. / 3.).contains(&rel_x)
                     && (1. / 3. ..=2. / 3.).contains(&rel_y);

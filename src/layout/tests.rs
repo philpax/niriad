@@ -5782,6 +5782,43 @@ fn in_place_drag_mode_swaps_at_centre() {
     );
 }
 
+#[test]
+fn in_place_interior_region_map_is_not_gap_offset() {
+    use super::monitor::InsertPosition;
+
+    // Regression: the gap-aiming fudge (`+ gaps/2`) must only bias the closest-gap search, not the
+    // per-tile interior hit-test / rel_x-rel_y region map. With the fudge leaking in, every interior
+    // drop zone was displaced gaps/2 up-left, so a cursor a few px inside the centre band (but
+    // within gaps/2 of the band's right edge) was misclassified as a split. Uses default gaps (16).
+    let layout = in_place_row();
+    let ws = layout.active_workspace().unwrap();
+    let ip = |x: f64, y: f64| ws.scrolling_insert_position(Point::from((x, y)));
+
+    let (pos, size) = window_geo(&layout, 1).unwrap();
+    assert!(size.w > 0. && size.h > 0.);
+
+    // rel_x = 0.65 sits inside the centre band [1/3, 2/3] but within gaps/2 (8px on a ~300px tile,
+    // ≈0.027 in rel terms) of the band's right edge, so the +gaps/2 fudge would push it to ≈0.677 —
+    // outside the band — and misreport a Main split. Unfudged it stays a centre Swap.
+    let x = pos.x + size.w * 0.65;
+    let y = pos.y + size.h * 0.5;
+    assert!(
+        matches!(ip(x, y), InsertPosition::Swap(0, 0)),
+        "a cursor inside window 1's centre band should be a Swap, not gap-offset into a split, \
+         got {:?}",
+        ip(x, y)
+    );
+
+    // The exact centre is unambiguously a Swap target too.
+    let cx = pos.x + size.w * 0.5;
+    let cy = pos.y + size.h * 0.5;
+    assert!(
+        matches!(ip(cx, cy), InsertPosition::Swap(0, 0)),
+        "the exact centre of window 1 should be a Swap, got {:?}",
+        ip(cx, cy)
+    );
+}
+
 /// Builds a Main row `[1, 2]` (section 0) under the in-place tiling-drag mode, settled. Window 1
 /// occupies x≈[16,316] (centre ≈166), window 2 x≈[332,632] (centre ≈482), both full height.
 fn in_place_row() -> Layout<TestWindow> {
