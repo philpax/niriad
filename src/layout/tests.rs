@@ -6814,3 +6814,30 @@ fn move_active_tile_removes_the_focused_leaf_not_a_sibling() {
     );
 }
 
+
+#[test]
+fn remove_leaf_that_flattens_nesting_keeps_the_active_window() {
+    // Bug 5: root V[H[1,3], 2] with window 2 active (root child 1). Closing window 1 collapses
+    // H[1,3] to a single leaf and simplify flattens the tree to V[3,2]. The active-index fixup keys
+    // off a pre-removal flat index, so it must decide against the *pre-removal* shape — the active
+    // window has to stay 2, not silently become 3.
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::FocusWindow(1),
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(2),
+        Op::CloseWindow(1),
+    ]);
+
+    assert_eq!(window_order(&layout), vec![3, 2], "the tree flattened to V[3,2]");
+    assert_eq!(
+        active_window_id(&layout),
+        Some(2),
+        "the active window must stay 2 after the removal flattened the nesting"
+    );
+}
+

@@ -1642,6 +1642,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let was_normal = section.sizing_mode().is_normal();
+        // Capture whether the tree is flat *before* the removal: `remove_tile` runs `simplify`,
+        // which can flatten nesting away, and the root-level `active_idx` fixup below is only valid
+        // when the pre-removal tree was flat (otherwise `remove_leaf` already maintained
+        // `active_idx` at every level). `tile_idx` is a pre-removal flat index, so it must not be
+        // interpreted against the post-removal tree.
+        let was_flat = !section.root.has_nested_children();
 
         let tile = section.remove_tile(tile_idx);
 
@@ -1673,7 +1679,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         #[allow(clippy::comparison_chain)] // What do you even want here?
-        if !section.root.has_nested_children() {
+        if was_flat {
             if tile_idx < section.active_tile_idx() {
                 // A tile above was removed; preserve the current position.
                 section.set_active_tile_idx(section.active_tile_idx() - 1);
