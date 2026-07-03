@@ -6788,3 +6788,29 @@ fn tabbed_tab_containing_split_shows_all_its_leaves() {
     assert_eq!(window_visible(&layout, 1), Some(false), "the other tab is hidden");
 }
 
+
+#[test]
+fn move_active_tile_removes_the_focused_leaf_not_a_sibling() {
+    // Bug 1: root V[H[1,3], 2] with window 2 active (root child index 1, but flat leaf index 2).
+    // Moving the active window to another workspace must remove the *focused* leaf (2), not the leaf
+    // sitting at the root-child index (window 3).
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params: TestWindowParams::new(1) },
+        Op::SplitWindow(niri_ipc::SplitDirection::Cross),
+        Op::AddWindow { params: TestWindowParams::new(2) },
+        Op::FocusWindow(1),
+        Op::SplitWindow(niri_ipc::SplitDirection::Main),
+        Op::AddWindow { params: TestWindowParams::new(3) },
+        Op::FocusWindow(2),
+        // Moves the *active* tile (2) down; focus stays on the source workspace.
+        Op::MoveWindowToWorkspaceDown(false),
+    ]);
+
+    assert_eq!(
+        window_order(&layout),
+        vec![1, 3],
+        "the focused leaf (2) must be the one that left the section, not window 3"
+    );
+}
+

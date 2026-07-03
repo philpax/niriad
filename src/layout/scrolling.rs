@@ -1580,9 +1580,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let section = &self.sections[self.active_section_idx];
+        // `remove_tile_by_idx` treats its index as a flat leaf index throughout, so pass the flat
+        // index of the active leaf, not the root-child `active_tile_idx` (they differ once the
+        // section is nested).
         Some(self.remove_tile_by_idx(
             self.active_section_idx,
-            section.active_tile_idx(),
+            section.active_leaf_idx(),
             transaction,
             None,
         ))
