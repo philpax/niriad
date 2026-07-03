@@ -5181,6 +5181,7 @@ impl<W: LayoutElement> Layout<W> {
         let scale = output.current_scale().fractional_scale();
         let options = Options::clone(&self.options)
             .with_merged_layout(output_config.as_ref())
+            .with_merged_layout(workspace_config.as_ref().map(|(_, c)| c))
             .adjusted_for_scale(scale);
         tile.update_config(view_size, scale, Rc::new(options));
 

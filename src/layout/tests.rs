@@ -3551,6 +3551,51 @@ fn interactive_move_from_workspace_with_layout_config() {
 }
 
 #[test]
+fn in_place_drag_to_floating_merges_workspace_layout_config() {
+    // Regression: the in-place (sway) drag's float hand-off detaches the source into a `Moving`
+    // follow via `detach_inplace_into_move`. That detach must merge the *source workspace's* layout
+    // override into the detached tile's options, exactly like the classic Starting→Moving detach
+    // path — otherwise the live `Moving` tile carries the wrong border/gap options and
+    // `verify_invariants` (which asserts the merged form for a `Moving` tile) fails after the toggle.
+    let ops = [
+        // Named workspace with a border override; window 2 lands on it (mirrors the setup of
+        // `interactive_move_from_workspace_with_layout_config`).
+        Op::AddNamedWorkspace {
+            ws_name: 1,
+            output_name: Some(2),
+            layout_config: Some(Box::new(niri_config::LayoutPart {
+                border: Some(niri_config::BorderRule {
+                    on: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+        },
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::Communicate(2),
+        Op::AdvanceAnimations { msec_delta: 2000 },
+        // Enter the in-place drag and move past the detach threshold (the source stays in the tree).
+        Op::InteractiveMoveBegin { window: 2, output_idx: 1, px: 66., py: 356. },
+        Op::InteractiveMoveUpdate {
+            window: 2,
+            dx: 400.,
+            dy: 0.,
+            output_idx: 1,
+            px: 466.,
+            py: 356.,
+        },
+        // Hand off to floating: detaches into a `Moving` tile whose options must include the
+        // workspace override. verify_invariants (run after each op) asserts the merged form.
+        Op::ToggleWindowFloating { id: Some(2) },
+        Op::AdvanceAnimations { msec_delta: 1000 },
+    ];
+    check_ops(ops);
+}
+
+#[test]
 fn set_width_fixed_negative() {
     let ops = [
         Op::AddOutput(3),
