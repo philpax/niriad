@@ -245,7 +245,7 @@ include "csd.kdl"
 #### Non-merging sections
 
 Some sections where the contents represent a combined structure are not merged.
-Examples are `struts`, `preset-column-widths`, individual subsections in `animations`, pointing device sections in `input`.
+Examples are `struts`, `preset-section-widths`, individual subsections in `animations`, pointing device sections in `input`.
 
 ```kdl
 // struts.kdl

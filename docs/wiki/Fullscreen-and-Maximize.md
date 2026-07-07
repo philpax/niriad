@@ -3,10 +3,10 @@ Let's look at their differences.
 
 ## Maximized (full-width) columns
 
-Maximizing the column via `maximize-column` (bound to <kbd>Mod</kbd><kbd>F</kbd> by default) expands its width to cover the whole screen.
+Maximizing the column via `maximize-section` (bound to <kbd>Mod</kbd><kbd>F</kbd> by default) expands its width to cover the whole screen.
 Maximized columns still leave space for [struts] and [gaps], and can contain multiple windows.
 The windows retain their borders.
-This is the simplest of the sizing modes, and is equivalent to `proportion 1.0` column width, or `set-column-width "100%"`.
+This is the simplest of the sizing modes, and is equivalent to `proportion 1.0` column width, or `set-section-width "100%"`.
 
 ![Screenshot of a maximized column with two windows.](./img/maximized-column.png)
 

@@ -211,7 +211,7 @@ impl LayoutElement for TestWindow {
 
     fn set_activated(&mut self, _active: bool) {}
 
-    fn set_active_in_column(&mut self, _active: bool) {}
+    fn set_active_in_section(&mut self, _active: bool) {}
 
     fn set_floating(&mut self, _floating: bool) {}
 

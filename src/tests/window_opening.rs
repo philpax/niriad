@@ -246,7 +246,7 @@ workspace "ws-2" {
             width 10
         }
 
-        default-column-width {
+        default-section-width {
             fixed 500
         }
     }
@@ -449,9 +449,9 @@ fn target_size() {
     // * open-fullscreen
     // * open-maximized
     // * open-floating
-    // * default-column-width
+    // * default-section-width
     // * border
-    // * default-column-display normal, tabbed
+    // * default-section-display normal, tabbed
 
     let open_fullscreen = [None, Some("false"), Some("true")];
     let want_fullscreen = [
@@ -464,7 +464,7 @@ fn target_size() {
     ];
     let open_maximized = [None, Some("true")];
     let open_floating = [None, Some("true")];
-    let default_column_width = [
+    let default_section_width = [
         None,
         Some(DefaultSize::WindowChooses),
         Some(DefaultSize::Proportion("0.25")),
@@ -484,7 +484,7 @@ fn target_size() {
         for wfs in want_fullscreen {
             for om in open_maximized {
                 for of in open_floating {
-                    for dw in default_column_width {
+                    for dw in default_section_width {
                         for dh in default_window_height {
                             for b in border {
                                 for t in tabbed {
@@ -552,7 +552,7 @@ window-rule {
             DefaultSize::Proportion(prop) => format!("proportion {prop};"),
             DefaultSize::Fixed(fixed) => format!("fixed {fixed};"),
         };
-        writeln!(config, "    default-column-width {{ {value} }}").unwrap();
+        writeln!(config, "    default-section-width {{ {value} }}").unwrap();
 
         snapshot_suffix.push(format!("dw{x}"));
     }
@@ -574,7 +574,7 @@ window-rule {
     }
 
     if tabbed {
-        writeln!(config, "    default-column-display \"tabbed\"").unwrap();
+        writeln!(config, "    default-section-display \"tabbed\"").unwrap();
     }
 
     config.push('}');
@@ -592,7 +592,7 @@ window-rule {
             "\n
 layout {
     tab-indicator {
-        place-within-column
+        place-within-section
     }
 }",
         );

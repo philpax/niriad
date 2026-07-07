@@ -91,8 +91,8 @@ pub struct Mapped {
     /// Whether this window has the keyboard focus.
     is_focused: bool,
 
-    /// Whether this window is the active window in its column.
-    is_active_in_column: bool,
+    /// Whether this window is the active window in its section.
+    is_active_in_section: bool,
 
     /// Whether this window is floating.
     is_floating: bool,
@@ -287,7 +287,7 @@ impl Mapped {
             offscreen_data: RefCell::new(None),
             is_urgent: false,
             is_focused: false,
-            is_active_in_column: true,
+            is_active_in_section: true,
             is_floating: false,
             is_window_cast_target: false,
             ignore_opacity_window_rule: false,
@@ -371,8 +371,8 @@ impl Mapped {
         self.is_focused
     }
 
-    pub fn is_active_in_column(&self) -> bool {
-        self.is_active_in_column
+    pub fn is_active_in_section(&self) -> bool {
+        self.is_active_in_section
     }
 
     pub fn is_floating(&self) -> bool {
@@ -631,6 +631,11 @@ impl LayoutElement for Mapped {
         with_toplevel_role(toplevel, |role| role.title.clone())
     }
 
+    fn app_id(&self) -> Option<String> {
+        let toplevel = self.toplevel();
+        with_toplevel_role(toplevel, |role| role.app_id.clone())
+    }
+
     fn update_config(&mut self, blur_config: niri_config::Blur) {
         self.blur_config = blur_config;
     }
@@ -821,7 +826,7 @@ impl LayoutElement for Mapped {
         self.request_size_once = None;
 
         // Store the transaction regardless of whether the size changed. This is because with 3+
-        // windows in a column, the size may change among windows 1 and 2 and then right away among
+        // windows in a section, the size may change among windows 1 and 2 and then right away among
         // windows 2 and 3, and we want all windows 1, 2 and 3 to use the last transaction, rather
         // than window 1 getting stuck with the previous transaction that is immediately released
         // by 2.
@@ -994,9 +999,9 @@ impl LayoutElement for Mapped {
         self.need_to_recompute_rules |= changed;
     }
 
-    fn set_active_in_column(&mut self, active: bool) {
-        let changed = self.is_active_in_column != active;
-        self.is_active_in_column = active;
+    fn set_active_in_section(&mut self, active: bool) {
+        let changed = self.is_active_in_section != active;
+        self.is_active_in_section = active;
         self.need_to_recompute_rules |= changed;
     }
 
@@ -1113,7 +1118,7 @@ impl LayoutElement for Mapped {
 
             // Send the window a frame callback unconditionally to let it respond to size changes
             // and such immediately, even when it's hidden. This especially matters for cases like
-            // tabbed columns which compute their width based on all windows in the column, even
+            // tabbed sections which compute their width based on all windows in the section, even
             // hidden ones.
             self.needs_frame_callback = true;
 

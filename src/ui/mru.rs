@@ -1240,7 +1240,7 @@ fn compute_view_offset(cur_x: f64, working_width: f64, new_col_x: f64, new_col_w
     let new_x = new_col_x;
     let new_right_x = new_col_x + new_col_width;
 
-    // If the column is already fully visible, leave the view as is.
+    // If the section is already fully visible, leave the view as is.
     if cur_x <= new_x && new_right_x <= cur_x + working_width {
         return -(new_col_x - cur_x);
     }
@@ -1883,24 +1883,24 @@ fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
 
     for bind in &config.binds.0 {
         let action = match &bind.action {
-            Action::FocusColumnRight
-            | Action::FocusColumnRightOrFirst
-            | Action::FocusColumnOrMonitorRight
-            | Action::FocusWindowDownOrColumnRight => Action::MruAdvance {
+            Action::FocusSectionRight
+            | Action::FocusSectionRightOrFirst
+            | Action::FocusSectionOrMonitorRight
+            | Action::FocusWindowDownOrSectionRight => Action::MruAdvance {
                 direction: MruDirection::Forward,
                 scope: None,
                 filter: None,
             },
-            Action::FocusColumnLeft
-            | Action::FocusColumnLeftOrLast
-            | Action::FocusColumnOrMonitorLeft
-            | Action::FocusWindowUpOrColumnLeft => Action::MruAdvance {
+            Action::FocusSectionLeft
+            | Action::FocusSectionLeftOrLast
+            | Action::FocusSectionOrMonitorLeft
+            | Action::FocusWindowUpOrSectionLeft => Action::MruAdvance {
                 direction: MruDirection::Backward,
                 scope: None,
                 filter: None,
             },
-            Action::FocusColumnFirst => Action::MruFirst,
-            Action::FocusColumnLast => Action::MruLast,
+            Action::FocusSectionFirst => Action::MruFirst,
+            Action::FocusSectionLast => Action::MruLast,
             Action::CloseWindow => Action::MruCloseCurrentWindow,
             x @ Action::Screenshot(_, _) => x.clone(),
             _ => continue,

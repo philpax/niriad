@@ -723,7 +723,7 @@ fn print_window(window: &Window) {
 
     if let Some(pos) = pos_in_scrolling_layout {
         let path_str = pos.1.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".");
-        println!("    Scrolling position: column {}, path {}", pos.0, path_str);
+        println!("    Scrolling position: section {}, path {}", pos.0, path_str);
     }
 
     if let Some(pos) = tile_pos_in_workspace_view {

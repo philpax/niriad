@@ -88,6 +88,15 @@ impl TabHeader {
         }
     }
 
+    /// Sets whether this header renders a Stacked layout (one full-width title row per tab) rather
+    /// than a Tabbed one (a single row of side-by-side tabs). Only the i3/sway-style Bar honours
+    /// this; the niri-style Indicator is a thin edge strip and ignores it.
+    pub fn set_stacked(&mut self, stacked: bool) {
+        if let TabHeader::Bar(bar) = self {
+            bar.set_stacked(stacked);
+        }
+    }
+
     pub fn advance_animations(&mut self) {
         match self {
             TabHeader::Indicator(ti) => ti.advance_animations(),
@@ -478,7 +487,7 @@ impl TabIndicator {
     /// Extra size occupied by the tab indicator.
     pub fn extra_size(&self, tab_count: usize, scale: f64) -> Size<f64, Logical> {
         if self.config.off
-            || !self.config.place_within_column
+            || !self.config.place_within_section
             || (self.config.hide_when_single_tab && tab_count == 1)
         {
             return Size::from((0., 0.));
@@ -576,5 +585,21 @@ impl TabInfo {
         let geometry = Rectangle::new(position, tile.animated_tile_size());
 
         TabInfo { gradient, geometry, is_active }
+    }
+
+    /// Like [`from_tile`], but uses an explicit geometry rather than the single tile's size. Used for
+    /// a tab whose content is a nested container: the geometry is the union (bounding box) of the
+    /// whole subtree under the tab, so the tab represents the group's full extent rather than one
+    /// descendant leaf's.
+    pub fn from_tile_with_geometry<W: LayoutElement>(
+        tile: &Tile<W>,
+        geometry: Rectangle<f64, Logical>,
+        is_active: bool,
+        is_urgent: bool,
+        config: &niri_config::TabIndicator,
+    ) -> Self {
+        let mut info = Self::from_tile(tile, geometry.loc, is_active, is_urgent, config);
+        info.geometry = geometry;
+        info
     }
 }

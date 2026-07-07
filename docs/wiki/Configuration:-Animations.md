@@ -303,7 +303,7 @@ Movement of individual windows within a workspace.
 
 Includes:
 
-- Moving window columns with `move-column-left` and `move-column-right`.
+- Moving window sections with `move-section-left` and `move-section-right`.
 - Moving windows inside a column with `move-window-up` and `move-window-down`.
 - Moving windows out of the way upon window opening and closing.
 - Window movement between columns when consuming/expelling.
@@ -324,7 +324,7 @@ animations {
 
 Window resize animation.
 
-Only manual window resizes are animated, i.e. when you resize the window with `switch-preset-column-width` or `maximize-column`.
+Only manual window resizes are animated, i.e. when you resize the window with `switch-preset-section-width` or `maximize-section`.
 Also, very small resizes (up to 10 pixels) are not animated.
 
 ```kdl
@@ -447,7 +447,7 @@ animations {
 Sometimes, when two animations are meant to play together synchronized, niri will drive them both with the same configuration.
 
 For example, if a window resize causes the view to move, then that view movement animation will also use the `window-resize` configuration (rather than the `horizontal-view-movement` configuration).
-This is especially important for animated resizes to look good when using `center-focused-column "always"`.
+This is especially important for animated resizes to look good when using `center-focused-section "always"`.
 
 As another example, resizing a window in a column vertically causes other windows to move up or down into their new position.
 This movement will use the `window-resize` configuration, rather than the `window-movement` configuration, to keep the animations synchronized.

@@ -183,7 +183,7 @@ fn unfullscreen_before_fullscreen_ack_doesnt_prevent_view_offset_save_restore() 
     niri.layout.set_fullscreen(&window2_id, true);
     f.double_roundtrip(id);
 
-    // Before acking, unfullscreen the column, clearing the pending fullscreen flag.
+    // Before acking, unfullscreen the section, clearing the pending fullscreen flag.
     f.niri().layout.set_fullscreen(&window2_id, false);
 
     // Now, window2 receives the fullscreen configure and resizes in response.

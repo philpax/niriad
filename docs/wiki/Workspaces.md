@@ -31,7 +31,7 @@ But, they will also "remember" their original monitor, so when you reconnect it,
 
 ### Addressing workspaces by index
 
-Several actions in niri can address workspaces "by index": `focus-workspace 2`, `move-column-to-workspace 4`.
+Several actions in niri can address workspaces "by index": `focus-workspace 2`, `move-section-to-workspace 4`.
 This index refers to whichever workspace *currently happens to be* at this position on the focused monitor.
 So, `focus-workspace 2` will always put you on the second workspace of the monitor, whichever workspace that currently is.
 

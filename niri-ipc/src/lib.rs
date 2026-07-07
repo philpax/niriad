@@ -324,9 +324,9 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: u64,
     },
-    /// Focus a window in the focused column by index.
-    FocusWindowInColumn {
-        /// Index of the window in the column.
+    /// Focus a window in the focused section by index.
+    FocusWindowInSection {
+        /// Index of the window in the section.
         ///
         /// The index starts from 1 for the topmost window.
         #[cfg_attr(feature = "clap", arg())]
@@ -334,23 +334,40 @@ pub enum Action {
     },
     /// Focus the previously focused window.
     FocusWindowPrevious {},
-    /// Focus the column to the left.
-    FocusColumnLeft {},
-    /// Focus the column to the right.
-    FocusColumnRight {},
-    /// Focus the first column.
-    FocusColumnFirst {},
-    /// Focus the last column.
-    FocusColumnLast {},
-    /// Focus the next column to the right, looping if at end.
-    FocusColumnRightOrFirst {},
-    /// Focus the next column to the left, looping if at start.
-    FocusColumnLeftOrLast {},
-    /// Focus a column by index.
-    FocusColumn {
-        /// Index of the column to focus.
+    /// Focus the window/section toward the left of the screen (sway-style spatial focus). Resolves
+    /// to the main or cross axis depending on the monitor's orientation.
+    FocusLeft {},
+    /// Focus toward the right of the screen (sway-style spatial focus).
+    FocusRight {},
+    /// Focus toward the top of the screen (sway-style spatial focus).
+    FocusUp {},
+    /// Focus toward the bottom of the screen (sway-style spatial focus).
+    FocusDown {},
+    /// Move the focused window toward the left of the screen (sway-style spatial move).
+    MoveLeft {},
+    /// Move toward the right of the screen (sway-style spatial move).
+    MoveRight {},
+    /// Move toward the top of the screen (sway-style spatial move).
+    MoveUp {},
+    /// Move toward the bottom of the screen (sway-style spatial move).
+    MoveDown {},
+    /// Focus the section to the left.
+    FocusSectionLeft {},
+    /// Focus the section to the right.
+    FocusSectionRight {},
+    /// Focus the first section.
+    FocusSectionFirst {},
+    /// Focus the last section.
+    FocusSectionLast {},
+    /// Focus the next section to the right, looping if at end.
+    FocusSectionRightOrFirst {},
+    /// Focus the next section to the left, looping if at start.
+    FocusSectionLeftOrLast {},
+    /// Focus a section by index.
+    FocusSection {
+        /// Index of the section to focus.
         ///
-        /// The index starts from 1 for the first column.
+        /// The index starts from 1 for the first section.
         #[cfg_attr(feature = "clap", arg())]
         index: usize,
     },
@@ -358,22 +375,22 @@ pub enum Action {
     FocusWindowOrMonitorUp {},
     /// Focus the window or the monitor below.
     FocusWindowOrMonitorDown {},
-    /// Focus the column or the monitor to the left.
-    FocusColumnOrMonitorLeft {},
-    /// Focus the column or the monitor to the right.
-    FocusColumnOrMonitorRight {},
+    /// Focus the section or the monitor to the left.
+    FocusSectionOrMonitorLeft {},
+    /// Focus the section or the monitor to the right.
+    FocusSectionOrMonitorRight {},
     /// Focus the window below.
     FocusWindowDown {},
     /// Focus the window above.
     FocusWindowUp {},
-    /// Focus the window below or the column to the left.
-    FocusWindowDownOrColumnLeft {},
-    /// Focus the window below or the column to the right.
-    FocusWindowDownOrColumnRight {},
-    /// Focus the window above or the column to the left.
-    FocusWindowUpOrColumnLeft {},
-    /// Focus the window above or the column to the right.
-    FocusWindowUpOrColumnRight {},
+    /// Focus the window below or the section to the left.
+    FocusWindowDownOrSectionLeft {},
+    /// Focus the window below or the section to the right.
+    FocusWindowDownOrSectionRight {},
+    /// Focus the window above or the section to the left.
+    FocusWindowUpOrSectionLeft {},
+    /// Focus the window above or the section to the right.
+    FocusWindowUpOrSectionRight {},
     /// Focus the window or the workspace below.
     FocusWindowOrWorkspaceDown {},
     /// Focus the window or the workspace above.
@@ -386,33 +403,33 @@ pub enum Action {
     FocusWindowDownOrTop {},
     /// Focus the window above or the bottommost window.
     FocusWindowUpOrBottom {},
-    /// Move the focused column to the left.
-    MoveColumnLeft {},
-    /// Move the focused column to the right.
-    MoveColumnRight {},
-    /// Move the focused column to the start of the workspace.
-    MoveColumnToFirst {},
-    /// Move the focused column to the end of the workspace.
-    MoveColumnToLast {},
-    /// Move the focused column to the left or to the monitor to the left.
-    MoveColumnLeftOrToMonitorLeft {},
-    /// Move the focused column to the right or to the monitor to the right.
-    MoveColumnRightOrToMonitorRight {},
-    /// Move the focused column to a specific index on its workspace.
-    MoveColumnToIndex {
-        /// New index for the column.
+    /// Move the focused section to the left.
+    MoveSectionLeft {},
+    /// Move the focused section to the right.
+    MoveSectionRight {},
+    /// Move the focused section to the start of the workspace.
+    MoveSectionToFirst {},
+    /// Move the focused section to the end of the workspace.
+    MoveSectionToLast {},
+    /// Move the focused section to the left or to the monitor to the left.
+    MoveSectionLeftOrToMonitorLeft {},
+    /// Move the focused section to the right or to the monitor to the right.
+    MoveSectionRightOrToMonitorRight {},
+    /// Move the focused section to a specific index on its workspace.
+    MoveSectionToIndex {
+        /// New index for the section.
         ///
-        /// The index starts from 1 for the first column.
+        /// The index starts from 1 for the first section.
         #[cfg_attr(feature = "clap", arg())]
         index: usize,
     },
-    /// Move the focused window down in a column.
+    /// Move the focused window down in a section.
     MoveWindowDown {},
-    /// Move the focused window up in a column.
+    /// Move the focused window up in a section.
     MoveWindowUp {},
-    /// Move the focused window down in a column or to the workspace below.
+    /// Move the focused window down in a section or to the workspace below.
     MoveWindowDownOrToWorkspaceDown {},
-    /// Move the focused window up in a column or to the workspace above.
+    /// Move the focused window up in a section or to the workspace above.
     MoveWindowUpOrToWorkspaceUp {},
     /// Consume or expel a window left.
     #[cfg_attr(
@@ -438,11 +455,11 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Consume the window to the right into the focused column.
-    ConsumeWindowIntoColumn {},
-    /// Expel the bottom window from the focused column.
-    ExpelWindowFromColumn {},
-    /// Split the focused window: the next window opened in this column will be placed
+    /// Consume the window to the right into the focused section.
+    ConsumeWindowIntoSection {},
+    /// Expel the bottom window from the focused section.
+    ExpelWindowFromSection {},
+    /// Split the focused window: the next window opened in this section will be placed
     /// side-by-side with the focused window in a split.
     SplitWindow {
         /// Direction to split in.
@@ -451,7 +468,7 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         direction: Option<SplitDirection>,
     },
-    /// Consume the window from an adjacent column into a split with the focused window.
+    /// Consume the window from an adjacent section into a split with the focused window.
     ConsumeWindowIntoSplit {
         /// Direction to split in.
         ///
@@ -468,11 +485,11 @@ pub enum Action {
     SwapWindowRight {},
     /// Swap focused window with one to the left.
     SwapWindowLeft {},
-    /// Toggle the focused column between normal and tabbed display.
-    ToggleColumnTabbedDisplay {},
+    /// Toggle the focused section between normal and tabbed display.
+    ToggleSectionTabbedDisplay {},
     /// Toggle the active leaf's parent between split and tabbed container.
     ///
-    /// This generalizes tabbed mode to work at any tree level, not just the column root.
+    /// This generalizes tabbed mode to work at any tree level, not just the section root.
     ToggleTabbed {},
     /// Move the focused tab left or right within its tabbed container.
     MoveTab {
@@ -480,14 +497,23 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         direction: TabDirection,
     },
-    /// Set the display mode of the focused column.
-    SetColumnDisplay {
+    /// Set the display mode of the focused section.
+    SetSectionDisplay {
         /// Display mode to set.
         #[cfg_attr(feature = "clap", arg())]
-        display: ColumnDisplay,
+        display: SectionDisplay,
     },
-    /// Center the focused column on the screen.
-    CenterColumn {},
+    /// Set the layout of the container holding the focused window (sway's `layout`/`split`).
+    SetSectionLayout {
+        /// Layout to set: splith, splitv, tabbed or stacked.
+        #[cfg_attr(feature = "clap", arg())]
+        layout: SectionLayout,
+    },
+    /// Toggle the container holding the focused window between horizontal and vertical split
+    /// (sway's `layout toggle split`).
+    ToggleSplitLayout {},
+    /// Center the focused section on the screen.
+    CenterSection {},
     /// Center a window on the screen.
     #[cfg_attr(
         feature = "clap",
@@ -500,8 +526,8 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Center all fully visible columns on the screen.
-    CenterVisibleColumns {},
+    /// Center all fully visible sections on the screen.
+    CenterVisibleSections {},
     /// Focus the workspace below.
     FocusWorkspaceDown {},
     /// Focus the workspace above.
@@ -556,33 +582,33 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
         focus: bool,
     },
-    /// Move the focused column to the workspace below.
-    MoveColumnToWorkspaceDown {
+    /// Move the focused section to the workspace below.
+    MoveSectionToWorkspaceDown {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true` (the default), the focus will follow the section to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
         focus: bool,
     },
-    /// Move the focused column to the workspace above.
-    MoveColumnToWorkspaceUp {
+    /// Move the focused section to the workspace above.
+    MoveSectionToWorkspaceUp {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true` (the default), the focus will follow the section to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
         focus: bool,
     },
-    /// Move the focused column to a workspace by reference (index or name).
-    MoveColumnToWorkspace {
-        /// Reference (index or name) of the workspace to move the column to.
+    /// Move the focused section to a workspace by reference (index or name).
+    MoveSectionToWorkspace {
+        /// Reference (index or name) of the workspace to move the section to.
         #[cfg_attr(feature = "clap", arg())]
         reference: WorkspaceReferenceArg,
 
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true` (the default), the focus will follow the section to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
         focus: bool,
@@ -681,20 +707,20 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         output: String,
     },
-    /// Move the focused column to the monitor to the left.
-    MoveColumnToMonitorLeft {},
-    /// Move the focused column to the monitor to the right.
-    MoveColumnToMonitorRight {},
-    /// Move the focused column to the monitor below.
-    MoveColumnToMonitorDown {},
-    /// Move the focused column to the monitor above.
-    MoveColumnToMonitorUp {},
-    /// Move the focused column to the previous monitor.
-    MoveColumnToMonitorPrevious {},
-    /// Move the focused column to the next monitor.
-    MoveColumnToMonitorNext {},
-    /// Move the focused column to a specific monitor.
-    MoveColumnToMonitor {
+    /// Move the focused section to the monitor to the left.
+    MoveSectionToMonitorLeft {},
+    /// Move the focused section to the monitor to the right.
+    MoveSectionToMonitorRight {},
+    /// Move the focused section to the monitor below.
+    MoveSectionToMonitorDown {},
+    /// Move the focused section to the monitor above.
+    MoveSectionToMonitorUp {},
+    /// Move the focused section to the previous monitor.
+    MoveSectionToMonitorPrevious {},
+    /// Move the focused section to the next monitor.
+    MoveSectionToMonitorNext {},
+    /// Move the focused section to a specific monitor.
+    MoveSectionToMonitor {
         /// The target output name.
         #[cfg_attr(feature = "clap", arg())]
         output: String,
@@ -743,10 +769,10 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Switch between preset column widths.
-    SwitchPresetColumnWidth {},
-    /// Switch between preset column widths backwards.
-    SwitchPresetColumnWidthBack {},
+    /// Switch between preset section widths.
+    SwitchPresetSectionWidth {},
+    /// Switch between preset section widths backwards.
+    SwitchPresetSectionWidthBack {},
     /// Switch between preset window widths.
     SwitchPresetWindowWidth {
         /// Id of the window whose width to switch.
@@ -779,8 +805,8 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Toggle the maximized state of the focused column.
-    MaximizeColumn {},
+    /// Toggle the maximized state of the focused section.
+    MaximizeSection {},
     /// Toggle the maximized-to-edges state of the focused window.
     MaximizeWindowToEdges {
         /// Id of the window to maximize.
@@ -789,14 +815,14 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Change the width of the focused column.
-    SetColumnWidth {
+    /// Change the width of the focused section.
+    SetSectionWidth {
         /// How to change the width.
         #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
         change: SizeChange,
     },
-    /// Expand the focused column to space not taken up by other fully visible columns.
-    ExpandColumnToAvailableWidth {},
+    /// Expand the focused section to space not taken up by other fully visible sections.
+    ExpandSectionToAvailableWidth {},
     /// Switch between keyboard layouts.
     SwitchLayout {
         /// Layout to switch to.
@@ -977,7 +1003,7 @@ pub enum Action {
     },
 }
 
-/// Change in window or column size.
+/// Change in window or section size.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum SizeChange {
@@ -1029,14 +1055,28 @@ pub enum LayoutSwitchTarget {
     Index(u8),
 }
 
-/// How windows display in a column.
+/// How windows display in a section.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
-pub enum ColumnDisplay {
+pub enum SectionDisplay {
     /// Windows are tiled vertically across the working area height.
     Normal,
     /// Windows are in tabs.
     Tabbed,
+}
+
+/// A sway-style container layout for the container holding the focused window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum SectionLayout {
+    /// Children side by side, all visible (sway `splith`).
+    SplitH,
+    /// Children stacked vertically, all visible (sway `splitv`).
+    SplitV,
+    /// Children as tabs; one visible; a single row of side-by-side tab titles (sway `tabbed`).
+    Tabbed,
+    /// Children stacked; one visible; one title row per child (sway `stacking`).
+    Stacked,
 }
 
 /// Direction for splitting a window.
@@ -1045,11 +1085,11 @@ pub enum ColumnDisplay {
 pub enum SplitDirection {
     /// Split along the main axis (horizontal in normal monitors).
     ///
-    /// This creates side-by-side windows within a column.
+    /// This creates side-by-side windows within a section.
     Main,
     /// Split along the cross axis (vertical in normal monitors).
     ///
-    /// This is the existing column behavior — windows stacked vertically.
+    /// This is the existing section behavior — windows stacked vertically.
     Cross,
 }
 
@@ -1455,13 +1495,13 @@ pub struct Timestamp {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct WindowLayout {
-    /// Location of a tiled window within a workspace: (column index, path within column).
+    /// Location of a tiled window within a workspace: (section index, path within section).
     ///
-    /// The column index is 1-based, i.e. the leftmost column is at index 1.
-    /// The path is a sequence of 1-based child indices from the column root to the leaf.
-    /// For a flat column, this is a single element (the tile index + 1).
-    /// For a split/tabbed column, the path encodes the tree structure.
-    /// This is consistent with [`Action::FocusColumn`] and [`Action::FocusWindowInColumn`].
+    /// The section index is 1-based, i.e. the leftmost section is at index 1.
+    /// The path is a sequence of 1-based child indices from the section root to the leaf.
+    /// For a flat section, this is a single element (the tile index + 1).
+    /// For a split/tabbed section, the path encodes the tree structure.
+    /// This is consistent with [`Action::FocusSection`] and [`Action::FocusWindowInSection`].
     pub pos_in_scrolling_layout: Option<(usize, Vec<usize>)>,
     /// Size of the tile this window is in, including decorations like borders.
     pub tile_size: (f64, f64),
@@ -1951,14 +1991,28 @@ impl FromStr for TabDirection {
     }
 }
 
-impl FromStr for ColumnDisplay {
+impl FromStr for SectionDisplay {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "normal" => Ok(Self::Normal),
             "tabbed" => Ok(Self::Tabbed),
-            _ => Err(r#"invalid column display, can be "normal" or "tabbed""#),
+            _ => Err(r#"invalid section display, can be "normal" or "tabbed""#),
+        }
+    }
+}
+
+impl FromStr for SectionLayout {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "splith" => Ok(Self::SplitH),
+            "splitv" => Ok(Self::SplitV),
+            "tabbed" => Ok(Self::Tabbed),
+            "stacked" | "stacking" => Ok(Self::Stacked),
+            _ => Err(r#"invalid section layout, can be "splith", "splitv", "tabbed" or "stacked""#),
         }
     }
 }

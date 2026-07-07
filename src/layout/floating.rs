@@ -10,7 +10,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::axis::{AxisDirection, AxisEdge, AxisMap};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::scrolling::ColumnWidth;
+use super::scrolling::SectionWidth;
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
@@ -534,7 +534,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // Store the floating position.
         tile.floating_pos = Some(data.pos);
 
-        let width = ColumnWidth::Fixed(tile.tile_expected_or_current_size().w);
+        let width = SectionWidth::Fixed(tile.tile_expected_or_current_size().w);
         RemovedTile {
             tile,
             width,
@@ -637,7 +637,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let available_size = self.working_area.size.w;
 
-        let len = self.options.layout.preset_column_widths.len();
+        let len = self.options.layout.preset_section_widths.len();
         let tile = &mut self.tiles[idx];
         let preset_idx = if let Some(idx) = tile.floating_preset_width_idx {
             (idx + if forwards { 1 } else { len - 1 }) % len
@@ -648,7 +648,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let mut it = self
                 .options
                 .layout
-                .preset_column_widths
+                .preset_section_widths
                 .iter()
                 .map(|preset| resolve_preset_size(*preset, available_size));
 
@@ -673,7 +673,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
         };
 
-        let preset = self.options.layout.preset_column_widths[preset_idx];
+        let preset = self.options.layout.preset_section_widths[preset_idx];
         self.set_window_width(Some(&id), SizeChange::from(preset), true);
 
         self.tiles[idx].floating_preset_width_idx = Some(preset_idx);
@@ -1254,7 +1254,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for tile in &mut self.tiles {
             let win = tile.window_mut();
 
-            win.set_active_in_column(true);
+            win.set_active_in_section(true);
             win.set_floating(true);
 
             let mut is_active = is_active && Some(win.id()) == active.as_ref();
@@ -1433,7 +1433,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
             tile.verify_invariants();
 
             if let Some(idx) = tile.floating_preset_width_idx {
-                assert!(idx < self.options.layout.preset_column_widths.len());
+                assert!(idx < self.options.layout.preset_section_widths.len());
             }
             if let Some(idx) = tile.floating_preset_height_idx {
                 assert!(idx < self.options.layout.preset_window_heights.len());

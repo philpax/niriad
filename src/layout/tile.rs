@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
+use super::tile_node::SplitAxis;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
     SizeFrac, RESIZE_ANIMATION_THRESHOLD,
@@ -34,6 +35,19 @@ use crate::utils::transaction::Transaction;
 use crate::utils::{
     baba_is_float_offset, round_logical_in_physical, round_logical_in_physical_max1,
 };
+
+/// Anchor for restoring a window to its origin container after it was expelled to go
+/// fullscreen/maximized. `neighbor` is a window that shared the origin section; on restore the tile
+/// is re-split beside it along `axis`, on the side recorded by `before`.
+#[derive(Debug, Clone)]
+pub struct FullscreenRestore<Id> {
+    /// A window that shared the origin section; the restore target.
+    pub neighbor: Id,
+    /// Whether the restored window sat before (left/above) `neighbor` in the origin container.
+    pub before: bool,
+    /// The split axis of the restored window's origin container.
+    pub axis: SplitAxis,
+}
 
 /// Toplevel window with decorations.
 #[derive(Debug)]
@@ -61,6 +75,12 @@ pub struct Tile<W: LayoutElement> {
 
     /// Whether the tile should float upon unfullscreening.
     pub(super) restore_to_floating: bool,
+
+    /// Where this window came from when it was expelled into its own section to go
+    /// fullscreen/maximized (see `ScrollingSpace::set_fullscreen`). On unfullscreen/unmaximize back
+    /// to normal sizing, it's reinserted beside `neighbor` if that window still lives in the same
+    /// workspace; otherwise the anchor is dropped and the window stays a stray section.
+    pub(super) fullscreen_restore: Option<FullscreenRestore<W::Id>>,
 
     /// The size that the window should assume when going floating.
     ///
@@ -196,6 +216,7 @@ impl<W: LayoutElement> Tile<W> {
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
             restore_to_floating: false,
+            fullscreen_restore: None,
             floating_window_size: None,
             floating_pos: None,
             floating_preset_width_idx: None,
@@ -222,7 +243,7 @@ impl<W: LayoutElement> Tile<W> {
         options: Rc<Options>,
     ) {
         // If preset widths or heights changed, clear our stored preset index.
-        if self.options.layout.preset_column_widths != options.layout.preset_column_widths {
+        if self.options.layout.preset_section_widths != options.layout.preset_section_widths {
             self.floating_preset_width_idx = None;
         }
         if self.options.layout.preset_window_heights != options.layout.preset_window_heights {
@@ -911,7 +932,7 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         // The size request has to be i32 unfortunately, due to Wayland. We floor here instead of
-        // round to avoid situations where proportionally-sized columns don't fit on the screen
+        // round to avoid situations where proportionally-sized sections don't fit on the screen
         // exactly.
         self.window.request_size(
             size.to_i32_floor(),
@@ -1548,6 +1569,18 @@ impl<W: LayoutElement> Tile<W> {
         use approx::assert_abs_diff_eq;
 
         assert_eq!(self.sizing_mode, self.window.sizing_mode());
+
+        // A fullscreen/maximize restore anchor points at a *neighbor* window to re-split beside on
+        // return to normal sizing. It may legitimately dangle (the neighbor closed — the restore
+        // path falls back to leaving the window a stray section), but it must never reference this
+        // tile's own window: that would be a self-referential restore, i.e. a bookkeeping bug.
+        if let Some(restore) = &self.fullscreen_restore {
+            assert_ne!(
+                &restore.neighbor,
+                self.window.id(),
+                "a tile's fullscreen restore anchor must not reference its own window"
+            );
+        }
 
         let scale = self.scale;
         let size = self.tile_size();

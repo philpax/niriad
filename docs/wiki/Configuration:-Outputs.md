@@ -341,7 +341,7 @@ output "SomeCompany VerticalMonitor 1234" {
 
     // Layout config overrides just for this output.
     layout {
-        default-column-width { proportion 1.0; }
+        default-section-width { proportion 1.0; }
 
         // ...any other setting.
     }
@@ -350,9 +350,9 @@ output "SomeCompany VerticalMonitor 1234" {
 output "SomeCompany UltrawideMonitor 1234" {
     // Narrower proportions and more presets for an ultrawide.
     layout {
-        default-column-width { proportion 0.25; }
+        default-section-width { proportion 0.25; }
 
-        preset-column-widths {
+        preset-section-widths {
             proportion 0.2
             proportion 0.25
             proportion 0.5
@@ -370,13 +370,13 @@ In order to unset a flag, write it with `false`, e.g.:
 ```kdl
 layout {
     // Enabled globally.
-    always-center-single-column
+    always-center-single-section
 }
 
 output "eDP-1" {
     layout {
         // Unset on this output.
-        always-center-single-column false
+        always-center-single-section false
     }
 }
 ```

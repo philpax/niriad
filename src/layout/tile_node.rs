@@ -1,7 +1,7 @@
 use std::iter::zip;
 use std::rc::Rc;
 
-use niri_ipc::ColumnDisplay;
+use niri_ipc::SectionDisplay;
 use ordered_float::NotNan;
 use smithay::utils::{Logical, Point, Size};
 
@@ -16,16 +16,108 @@ use crate::utils::transaction::Transaction;
 pub enum SplitAxis {
     /// Along the main axis (horizontal in normal monitors).
     ///
-    /// Inside a column, this creates side-by-side windows.
+    /// Inside a section, this creates side-by-side windows.
     Main,
     /// Along the cross axis (vertical in normal monitors).
     ///
-    /// This is the existing column behavior — windows stacked vertically.
+    /// This is the existing section behavior — windows stacked vertically.
     Cross,
 }
 
-/// Path from a column root to a leaf, as a sequence of child indices.
+/// How an internal node arranges its children. The four layouts are inspired by the tiling model
+/// of sway/i3.
+///
+/// The four layouts fall into two *families* by axis: `SplitH`/`Tabbed` are the horizontal family
+/// (main axis), `SplitV`/`Stacked` the vertical family (cross axis). Within a family, the split
+/// shows all children while the tabbing layout shows one at a time. The family governs how a
+/// tabbing container is sized and what plain split it un-tabs to — *not* how you focus through it:
+/// focus navigation through a tabbing container (both `Tabbed` and `Stacked`) is cross-axis, so
+/// focusing up/down cycles its tabs. (Focusing "right" does not cycle tabs.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// Children side by side along the main axis, all visible (sway `L_HORIZ`).
+    SplitH,
+    /// Children stacked along the cross axis, all visible (sway `L_VERT`).
+    SplitV,
+    /// Children as tabs; one visible; a single row of side-by-side tab titles (sway `L_TABBED`).
+    Tabbed,
+    /// Children stacked; one visible; one title row per child (sway `L_STACKED`).
+    Stacked,
+}
+
+impl Layout {
+    /// The screen axis this layout arranges along (or, for a tabbing layout, the axis it navigates
+    /// along and the split it collapses to when un-tabbed).
+    pub fn axis(self) -> SplitAxis {
+        match self {
+            Layout::SplitH | Layout::Tabbed => SplitAxis::Main,
+            Layout::SplitV | Layout::Stacked => SplitAxis::Cross,
+        }
+    }
+
+    /// The axis along which a per-child `Fixed`/`Preset` span is measured for this layout.
+    ///
+    /// This differs from [`axis`](Self::axis) for tabbing layouts: only `SplitH` sizes its children
+    /// along the *main* axis (a fixed child is a width). `SplitV`, `Tabbed`, and `Stacked` all size
+    /// their children along the *cross* axis (a fixed child is a height) — a `Tabbed` group navigates
+    /// like a row but its per-tab spans are cross spans in the flat layout path. When a container's
+    /// resize axis flips, any stored span was measured along the *old* axis and must be reset rather
+    /// than silently reinterpreted.
+    pub fn resize_axis(self) -> SplitAxis {
+        match self {
+            Layout::SplitH => SplitAxis::Main,
+            Layout::SplitV | Layout::Tabbed | Layout::Stacked => SplitAxis::Cross,
+        }
+    }
+
+    /// Whether this is a "tabbing" layout (Tabbed/Stacked): one child visible at a time, with a
+    /// titlebar header.
+    pub fn is_tabbing(self) -> bool {
+        matches!(self, Layout::Tabbed | Layout::Stacked)
+    }
+
+    /// Whether this is a plain split (SplitH/SplitV): all children visible.
+    pub fn is_split(self) -> bool {
+        matches!(self, Layout::SplitH | Layout::SplitV)
+    }
+
+    /// Two layouts are in the same family if they share an axis (so they can be merged when nested).
+    pub fn same_family(self, other: Layout) -> bool {
+        self.axis() == other.axis()
+    }
+
+    /// The plain split layout of this layout's family (SplitH for the horizontal family, SplitV for
+    /// the vertical family). Used when un-tabbing.
+    pub fn split_of_family(self) -> Layout {
+        match self.axis() {
+            SplitAxis::Main => Layout::SplitH,
+            SplitAxis::Cross => Layout::SplitV,
+        }
+    }
+
+    /// The split layout for an axis.
+    pub fn split_for_axis(axis: SplitAxis) -> Layout {
+        match axis {
+            SplitAxis::Main => Layout::SplitH,
+            SplitAxis::Cross => Layout::SplitV,
+        }
+    }
+}
+
+/// Path from a section root to a leaf, as a sequence of child indices.
 pub type TilePath = Vec<usize>;
+
+/// Resets every child slot's span to `Auto` when a container's [resize axis](Layout::resize_axis)
+/// changes between `old` and `new`. A stored `Fixed`/`Preset` span is measured along the old axis;
+/// after a flip it would be silently reinterpreted along the new one (e.g. a fixed *width* becoming a
+/// fixed *height* when a horizontal row is tabbed), so reset instead.
+fn reset_spans_on_axis_flip(old: Layout, new: Layout, data: &mut [SplitChildData]) {
+    if old.resize_axis() != new.resize_axis() {
+        for d in data.iter_mut() {
+            d.span = ChildSpan::auto_1();
+        }
+    }
+}
 
 /// How a child's span is determined along its parent split's axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,9 +139,6 @@ impl ChildSpan {
 /// Extra per-child data stored alongside each child of a split or tabbed node.
 ///
 /// `span` stores *tile* spans (including decorations), not window spans.
-/// The existing `WindowHeight::Fixed(f64)` stored *window* spans converted via
-/// `tile_cross_span_for_window_cross_span` during layout. During migration, `WindowHeight::Fixed`
-/// values convert to tile spans.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitChildData {
     /// Requested span of the child along the split's axis.
@@ -91,41 +180,35 @@ pub struct LeafLayout<W: LayoutElement> {
     pub main_size: f64,
     /// Whether the leaf is being interactively resized by its start edge.
     pub resizing_by_start: bool,
-    /// Whether the leaf shares the column's main-axis origin (no Main split ancestor).
+    /// Whether the leaf shares the section's main-axis origin (no Main split ancestor).
     pub aligned: bool,
 }
 
-/// A recursive tile tree node.
+/// A recursive tile tree node. The design draws on sway/i3's container model: a node is either a
+/// `Leaf` (a single window) or an `Internal` node arranging children according to a [`Layout`].
 ///
-/// A column's root is a `TileNode`. In Phase 1, the tree is effectively flat: the root is
-/// either a `Leaf` (single window), a `Split { axis: Cross }` (normal column), or a
-/// `Tabbed` node (tabbed column). Later phases introduce `Split { axis: Main }` and
-/// nested structures.
+/// This is the single internal node type — `SplitH`/`SplitV`/`Tabbed`/`Stacked` are all just
+/// `layout` values; like sway and i3, tabbed and stacked are layouts rather than separate node
+/// types.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TileNode<W: LayoutElement> {
     /// A single window.
     Leaf(Tile<W>),
 
-    /// Children arranged along an axis, all visible.
-    Split {
-        axis: SplitAxis,
+    /// An internal node arranging its children per `layout`.
+    Internal {
+        /// How the children are arranged.
+        layout: Layout,
         children: Vec<TileNode<W>>,
         active_idx: usize,
         data: Vec<SplitChildData>,
-    },
-
-    /// Children as tabs, one visible at a time.
-    Tabbed {
-        children: Vec<TileNode<W>>,
-        active_idx: usize,
-        data: Vec<SplitChildData>,
-        tab_header: TabHeader,
-        /// The split axis to restore when this node is un-tabbed. A tabbed container is
-        /// axis-agnostic (children overlap), but it was created from a split along some axis
-        /// — `Cross` for a normal column, `Main` for a side-by-side row — and toggling back
-        /// should return to that arrangement rather than always collapsing to a column.
-        restore_axis: SplitAxis,
+        /// Titlebar header, present iff `layout.is_tabbing()`.
+        tab_header: Option<TabHeader>,
+        /// The plain split layout to restore when leaving a tabbing layout (sway's
+        /// `prev_split_layout`): tabbing a vertical section then un-tabbing returns a section, not a
+        /// row. Only meaningful while `layout.is_tabbing()`.
+        prev_split: Layout,
     },
 }
 
@@ -135,16 +218,39 @@ impl<W: LayoutElement> TileNode<W> {
         TileNode::Leaf(tile)
     }
 
-    /// Creates a new cross-axis split (existing column behavior) from a list of tiles.
-    pub fn cross_split(tiles: Vec<Tile<W>>, active_idx: usize) -> Self {
-        let data = tiles.iter().map(|_| SplitChildData::new_auto()).collect();
-        let children = tiles.into_iter().map(TileNode::Leaf).collect();
-        TileNode::Split {
-            axis: SplitAxis::Cross,
+    /// Creates an internal node from a list of child nodes with the given layout.
+    pub fn internal(
+        layout: Layout,
+        children: Vec<TileNode<W>>,
+        active_idx: usize,
+        data: Vec<SplitChildData>,
+        mut tab_header: Option<TabHeader>,
+    ) -> Self {
+        if let Some(h) = &mut tab_header {
+            h.set_stacked(layout == Layout::Stacked);
+        }
+        TileNode::Internal {
+            layout,
             children,
             active_idx,
             data,
+            tab_header,
+            // A plain split's prev_split is itself; a node born in a tabbing layout conceptually
+            // came from a vertical section (niri's default), so un-tabbing it yields a section, not a
+            // row. (Matches the old `restore_axis = Cross` default.)
+            prev_split: if layout.is_split() {
+                layout
+            } else {
+                Layout::SplitV
+            },
         }
+    }
+
+    /// Creates a new cross-axis split (a normal vertical section) from a list of tiles.
+    pub fn cross_split(tiles: Vec<Tile<W>>, active_idx: usize) -> Self {
+        let data = tiles.iter().map(|_| SplitChildData::new_auto()).collect();
+        let children = tiles.into_iter().map(TileNode::Leaf).collect();
+        TileNode::internal(Layout::SplitV, children, active_idx, data, None)
     }
 
     /// Creates a new tabbed node from a list of tiles.
@@ -155,27 +261,66 @@ impl<W: LayoutElement> TileNode<W> {
     ) -> Self {
         let data = tiles.iter().map(|_| SplitChildData::new_auto()).collect();
         let children = tiles.into_iter().map(TileNode::Leaf).collect();
-        TileNode::Tabbed {
-            children,
-            active_idx,
-            data,
-            tab_header,
-            // A freshly-tabbed column is conceptually a cross-axis stack.
-            restore_axis: SplitAxis::Cross,
+        // A freshly-tabbed section is conceptually a vertical stack.
+        TileNode::internal(Layout::Tabbed, children, active_idx, data, Some(tab_header))
+    }
+
+    /// The node's layout, or `None` for a leaf.
+    pub fn layout(&self) -> Option<Layout> {
+        match self {
+            TileNode::Leaf(_) => None,
+            TileNode::Internal { layout, .. } => Some(*layout),
         }
     }
 
-    /// Whether this node is a tabbed container.
+    /// Whether this node is a tabbing container (Tabbed or Stacked).
     pub fn is_tabbed(&self) -> bool {
-        matches!(self, TileNode::Tabbed { .. })
+        matches!(self, TileNode::Internal { layout, .. } if layout.is_tabbing())
     }
 
     /// Returns the number of leaves in this subtree.
     pub fn leaf_count(&self) -> usize {
         match self {
             TileNode::Leaf(_) => 1,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.iter().map(TileNode::leaf_count).sum()
+            }
+        }
+    }
+
+    /// sway/i3-style tree representation for a tab title. A leaf tab shows its window *title*; a
+    /// container shows its layout glyph (`H`/`V`/`T`/`S`) followed by its children's compact
+    /// identifiers, space-separated, in brackets — recursively. E.g. `H[firefox V[kitty kitty]]`.
+    pub fn tree_repr(&self) -> String {
+        match self {
+            TileNode::Leaf(tile) => tile.window().title().unwrap_or_default(),
+            TileNode::Internal { .. } => self.repr_id(),
+        }
+    }
+
+    /// The compact identifier used *inside* a group representation: a leaf's app id (falling back to
+    /// its title), or a container's bracketed representation (recursive). app id is preferred here
+    /// because titles are usually too verbose to list together.
+    fn repr_id(&self) -> String {
+        match self {
+            TileNode::Leaf(tile) => tile
+                .window()
+                .app_id()
+                .or_else(|| tile.window().title())
+                .unwrap_or_default(),
+            TileNode::Internal { layout, children, .. } => {
+                let glyph = match layout {
+                    Layout::SplitH => 'H',
+                    Layout::SplitV => 'V',
+                    Layout::Tabbed => 'T',
+                    Layout::Stacked => 'S',
+                };
+                let inner = children
+                    .iter()
+                    .map(TileNode::repr_id)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{glyph}[{inner}]")
             }
         }
     }
@@ -192,7 +337,7 @@ impl<W: LayoutElement> TileNode<W> {
             while let Some((node, path)) = stack.pop() {
                 match node {
                     TileNode::Leaf(tile) => return Some((tile, path)),
-                    TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                    TileNode::Internal { children, .. } => {
                         for (i, child) in children.iter().enumerate().rev() {
                             let mut p = path.clone();
                             p.push(i);
@@ -215,7 +360,7 @@ impl<W: LayoutElement> TileNode<W> {
                 let node = unsafe { &mut *node_ptr };
                 match node {
                     TileNode::Leaf(tile) => return Some((tile, path)),
-                    TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+                    TileNode::Internal { children, .. } => {
                         for (i, child) in children.iter_mut().enumerate().rev() {
                             let mut p = path.clone();
                             p.push(i);
@@ -232,7 +377,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn has_nested_children(&self) -> bool {
         match self {
             TileNode::Leaf(_) => false,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.iter().any(|c| !matches!(c, TileNode::Leaf(_)))
             }
         }
@@ -251,8 +396,23 @@ impl<W: LayoutElement> TileNode<W> {
     ) -> Point<f64, Logical> {
         match self {
             TileNode::Leaf(_) => origin,
-            TileNode::Split { axis: split_axis, children, data, active_idx } => {
-                let is_main = *split_axis == SplitAxis::Main;
+            TileNode::Internal { layout, children, active_idx, tab_header, .. }
+                if layout.is_tabbing() =>
+            {
+                // All children share the same position (one shown at a time). A nested tabbing
+                // container reserves a header band, so its content is pushed past it (the root
+                // section's header offset is applied separately by `tiles_origin`).
+                let content_origin = if is_root {
+                    origin
+                } else {
+                    tab_header
+                        .as_ref()
+                        .map_or(origin, |h| origin + h.content_offset(children.len(), scale))
+                };
+                children[*active_idx].active_leaf_offset(content_origin, gaps, scale, axis, false)
+            }
+            TileNode::Internal { layout, children, active_idx, data, .. } => {
+                let is_main = layout.axis() == SplitAxis::Main;
                 // Adjust origin for siblings before the active child.
                 let mut offset = origin;
                 for (i, d) in data.iter().enumerate() {
@@ -267,17 +427,6 @@ impl<W: LayoutElement> TileNode<W> {
                 }
                 children[*active_idx].active_leaf_offset(offset, gaps, scale, axis, false)
             }
-            TileNode::Tabbed { children, active_idx, tab_header, .. } => {
-                // All children share the same position (tabbed). A nested tabbed container also
-                // reserves a header band, so its content is pushed past it (the root column's
-                // header offset is applied separately by `tiles_origin`).
-                let content_origin = if is_root {
-                    origin
-                } else {
-                    origin + tab_header.content_offset(children.len(), scale)
-                };
-                children[*active_idx].active_leaf_offset(content_origin, gaps, scale, axis, false)
-            }
         }
     }
 
@@ -286,8 +435,8 @@ impl<W: LayoutElement> TileNode<W> {
     /// This is the single source of truth for leaf geometry. It computes each leaf's
     /// position by walking the tree, and additionally reports the leaf's main-axis size, its
     /// interactive-resize flag, and whether it is "main-axis aligned" — i.e. reachable from the
-    /// root without crossing a Main split, so it shares the column's main-axis origin and is
-    /// eligible for main-axis centering. Centering itself is applied by the caller (the column),
+    /// root without crossing a Main split, so it shares the section's main-axis origin and is
+    /// eligible for main-axis centering. Centering itself is applied by the caller (the section),
     /// which knows the relevant options.
     pub fn leaf_layout(&self, origin: Point<f64, Logical>, gaps: f64, scale: f64) -> Vec<LeafLayout<W>> {
         let mut out = Vec::new();
@@ -315,10 +464,38 @@ impl<W: LayoutElement> TileNode<W> {
                     aligned: false,
                 });
             }
-            TileNode::Split { axis: split_axis, children, data, .. } => {
-                let is_main = *split_axis == SplitAxis::Main;
+            TileNode::Internal { layout, children, data, tab_header, .. }
+                if layout.is_tabbing() =>
+            {
+                // A nested tabbing container reserves a band for its own header (the root section's
+                // header offset is applied separately, by `tiles_origin`). Push the children's
+                // content down past that band so it doesn't render under the header.
+                let content_origin = if is_root {
+                    origin
+                } else {
+                    tab_header
+                        .as_ref()
+                        .map_or(origin, |h| origin + h.content_offset(children.len(), scale))
+                };
+                for (i, child) in children.iter().enumerate() {
+                    match child {
+                        TileNode::Leaf(tile) => out.push(LeafLayout {
+                            tile: tile as *const _,
+                            pos: content_origin,
+                            main_size: data.get(i).map_or(0., |d| d.size.w),
+                            resizing_by_start: data
+                                .get(i)
+                                .is_some_and(|d| d.interactively_resizing_by_start_edge),
+                            aligned,
+                        }),
+                        _ => child.collect_leaf_layout(content_origin, gaps, scale, aligned, false, out),
+                    }
+                }
+            }
+            TileNode::Internal { layout, children, data, .. } => {
+                let is_main = layout.axis() == SplitAxis::Main;
                 // Children of a Main split are spread along the main axis, so they are no longer
-                // aligned to the column's main origin.
+                // aligned to the section's main origin.
                 let child_aligned = aligned && !is_main;
                 let mut pos = origin;
                 for (i, child) in children.iter().enumerate() {
@@ -343,30 +520,6 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 }
             }
-            TileNode::Tabbed { children, data, tab_header, .. } => {
-                // A nested tabbed container reserves a band for its own header (the root column's
-                // header offset is applied separately, by `tiles_origin`). Push the children's
-                // content down past that band so it doesn't render under the header.
-                let content_origin = if is_root {
-                    origin
-                } else {
-                    origin + tab_header.content_offset(children.len(), scale)
-                };
-                for (i, child) in children.iter().enumerate() {
-                    match child {
-                        TileNode::Leaf(tile) => out.push(LeafLayout {
-                            tile: tile as *const _,
-                            pos: content_origin,
-                            main_size: data.get(i).map_or(0., |d| d.size.w),
-                            resizing_by_start: data
-                                .get(i)
-                                .is_some_and(|d| d.interactively_resizing_by_start_edge),
-                            aligned,
-                        }),
-                        _ => child.collect_leaf_layout(content_origin, gaps, scale, aligned, false, out),
-                    }
-                }
-            }
         }
     }
 
@@ -376,8 +529,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn verify_structure(&self) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, data, active_idx, .. }
-            | TileNode::Tabbed { children, data, active_idx, .. } => {
+            TileNode::Internal { layout, children, data, active_idx, .. } => {
                 assert_eq!(
                     children.len(),
                     data.len(),
@@ -392,11 +544,37 @@ impl<W: LayoutElement> TileNode<W> {
                     active_idx,
                     children.len()
                 );
+                // No span anywhere in the tree may be NaN/infinite: a degenerate weight (e.g. a
+                // 0./0. from a zero median in `convert_heights_to_auto`) would later panic a
+                // `partial_cmp().unwrap()`.
+                for d in data.iter() {
+                    match d.span {
+                        ChildSpan::Auto { weight } => {
+                            assert!(weight.is_finite(), "auto span weight must be finite, got {weight}")
+                        }
+                        ChildSpan::Fixed(span) => {
+                            assert!(span.is_finite(), "fixed span must be finite, got {span}")
+                        }
+                        ChildSpan::Preset(_) => {}
+                    }
+                }
                 if children.len() == 1 {
                     assert!(
                         matches!(children[0], TileNode::Leaf(_)),
                         "a single-child split/tabbed node must wrap a leaf (else it should collapse)"
                     );
+                }
+                // No plain-split child of the same family as a plain-split parent (it must have been
+                // merged: a section never directly contains a section, a row never a row).
+                if layout.is_split() {
+                    for child in children.iter() {
+                        if let TileNode::Internal { layout: cl, .. } = child {
+                            assert!(
+                                !(cl.is_split() && cl.same_family(*layout)),
+                                "same-family split nesting not merged: {layout:?} contains {cl:?}"
+                            );
+                        }
+                    }
                 }
                 for child in children {
                     assert!(child.leaf_count() >= 1, "a child subtree must be non-empty");
@@ -419,14 +597,12 @@ impl<W: LayoutElement> TileNode<W> {
     fn collect_leaf_visibility(&self, visible: bool, out: &mut Vec<bool>) {
         match self {
             TileNode::Leaf(_) => out.push(visible),
-            TileNode::Split { children, .. } => {
-                for child in children {
-                    child.collect_leaf_visibility(visible, out);
-                }
-            }
-            TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { layout, children, active_idx, .. } => {
+                // A tabbing layout shows only its active child; a plain split shows all.
+                let tabbing = layout.is_tabbing();
                 for (i, child) in children.iter().enumerate() {
-                    child.collect_leaf_visibility(visible && i == *active_idx, out);
+                    let child_visible = visible && (!tabbing || i == *active_idx);
+                    child.collect_leaf_visibility(child_visible, out);
                 }
             }
         }
@@ -436,10 +612,30 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn active_leaf(&self) -> &Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, active_idx, .. }
-            | TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { children, active_idx, .. } => {
                 let idx = (*active_idx).min(children.len().saturating_sub(1));
                 children[idx].active_leaf()
+            }
+        }
+    }
+
+    /// Ensures every currently-visible leaf in this subtree animates back to opaque. A leaf is
+    /// visible unless a `Tabbed`/`Stacked` ancestor *within this subtree* shows a different tab, so a
+    /// plain split reveals all of its leaves while a tabbing container reveals only its active tab.
+    pub fn ensure_visible_leaves_animate_to_1(&mut self) {
+        match self {
+            TileNode::Leaf(tile) => tile.ensure_alpha_animates_to_1(),
+            TileNode::Internal { layout, children, active_idx, .. } => {
+                if layout.is_tabbing() {
+                    let idx = (*active_idx).min(children.len().saturating_sub(1));
+                    if let Some(child) = children.get_mut(idx) {
+                        child.ensure_visible_leaves_animate_to_1();
+                    }
+                } else {
+                    for child in children.iter_mut() {
+                        child.ensure_visible_leaves_animate_to_1();
+                    }
+                }
             }
         }
     }
@@ -448,8 +644,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn active_leaf_mut(&mut self) -> &mut Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, active_idx, .. }
-            | TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { children, active_idx, .. } => {
                 let idx = (*active_idx).min(children.len().saturating_sub(1));
                 children[idx].active_leaf_mut()
             }
@@ -460,8 +655,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn active_leaf_path(&self) -> TilePath {
         match self {
             TileNode::Leaf(_) => Vec::new(),
-            TileNode::Split { children, active_idx, .. }
-            | TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { children, active_idx, .. } => {
                 let idx = (*active_idx).min(children.len().saturating_sub(1));
                 let mut path = vec![idx];
                 path.extend(children[idx].active_leaf_path());
@@ -474,7 +668,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn first_leaf(&self) -> &Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children[0].first_leaf()
             }
         }
@@ -484,7 +678,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn first_leaf_mut(&mut self) -> &mut Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children[0].first_leaf_mut()
             }
         }
@@ -494,7 +688,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn last_leaf(&self) -> &Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.last().unwrap().last_leaf()
             }
         }
@@ -504,7 +698,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn last_leaf_mut(&mut self) -> &mut Tile<W> {
         match self {
             TileNode::Leaf(tile) => tile,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.last_mut().unwrap().last_leaf_mut()
             }
         }
@@ -517,7 +711,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => self,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children[path[0]].node_at(&path[1..])
             }
         }
@@ -530,7 +724,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => self,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children[path[0]].node_at_mut(&path[1..])
             }
         }
@@ -560,8 +754,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => false,
-            TileNode::Split { children, active_idx, .. }
-            | TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { children, active_idx, .. } => {
                 let changed = if *active_idx != path[0] {
                     *active_idx = path[0];
                     true
@@ -571,8 +764,11 @@ impl<W: LayoutElement> TileNode<W> {
                 // Also recurse if there's more path.
                 let child_changed = children[path[0]].activate_path(&path[1..]);
                 if changed {
-                    // Ensure the newly activated leaf animates to opaque.
-                    children[path[0]].active_leaf_mut().ensure_alpha_animates_to_1();
+                    // The newly-activated child becomes visible. If it is a split, *all* of its
+                    // visible leaves become visible at once — not just the one on the active path —
+                    // so every one of them must animate back to opaque, or a leaf whose tab was
+                    // previously hidden stays mid fade-out while on screen.
+                    children[path[0]].ensure_visible_leaves_animate_to_1();
                 }
                 changed || child_changed
             }
@@ -590,8 +786,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => None,
-            TileNode::Split { children, active_idx, data, .. }
-            | TileNode::Tabbed { children, active_idx, data, .. } => {
+            TileNode::Internal { children, active_idx, data, .. } => {
                 let idx = path[0];
                 if idx >= children.len() {
                     return None;
@@ -640,7 +835,7 @@ impl<W: LayoutElement> TileNode<W> {
 
                         return Some(tile);
                     }
-                    // Not a leaf — recurse (shouldn't happen in Phase 1, but handle gracefully).
+                    // Not a leaf — recurse into the nested node.
                     return children[idx].remove_leaf(&path[1..]);
                 }
 
@@ -658,18 +853,18 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// Returns the tab header if this is a tabbed node.
+    /// Returns the tab header if this is a tabbing node.
     pub fn tab_header(&self) -> Option<&TabHeader> {
         match self {
-            TileNode::Tabbed { tab_header, .. } => Some(tab_header),
+            TileNode::Internal { tab_header, .. } => tab_header.as_ref(),
             _ => None,
         }
     }
 
-    /// Returns the tab header (mutable) if this is a tabbed node.
+    /// Returns the tab header (mutable) if this is a tabbing node.
     pub fn tab_header_mut(&mut self) -> Option<&mut TabHeader> {
         match self {
-            TileNode::Tabbed { tab_header, .. } => Some(tab_header),
+            TileNode::Internal { tab_header, .. } => tab_header.as_mut(),
             _ => None,
         }
     }
@@ -678,20 +873,13 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn advance_animations(&mut self) {
         match self {
             TileNode::Leaf(tile) => tile.advance_animations(),
-            TileNode::Split { children, .. } => {
+            TileNode::Internal { children, tab_header, .. } => {
                 for child in children {
                     child.advance_animations();
                 }
-            }
-            TileNode::Tabbed {
-                children,
-                tab_header,
-                ..
-            } => {
-                for child in children {
-                    child.advance_animations();
+                if let Some(h) = tab_header {
+                    h.advance_animations();
                 }
-                tab_header.advance_animations();
             }
         }
     }
@@ -700,15 +888,8 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         match self {
             TileNode::Leaf(tile) => tile.are_animations_ongoing(),
-            TileNode::Split { children, .. } => {
-                children.iter().any(TileNode::are_animations_ongoing)
-            }
-            TileNode::Tabbed {
-                children,
-                tab_header,
-                ..
-            } => {
-                tab_header.are_animations_ongoing()
+            TileNode::Internal { children, tab_header, .. } => {
+                tab_header.as_ref().is_some_and(|h| h.are_animations_ongoing())
                     || children.iter().any(TileNode::are_animations_ongoing)
             }
         }
@@ -718,15 +899,8 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn are_transitions_ongoing(&self) -> bool {
         match self {
             TileNode::Leaf(tile) => tile.are_transitions_ongoing(),
-            TileNode::Split { children, .. } => {
-                children.iter().any(TileNode::are_transitions_ongoing)
-            }
-            TileNode::Tabbed {
-                children,
-                tab_header,
-                ..
-            } => {
-                tab_header.are_animations_ongoing()
+            TileNode::Internal { children, tab_header, .. } => {
+                tab_header.as_ref().is_some_and(|h| h.are_animations_ongoing())
                     || children.iter().any(TileNode::are_transitions_ongoing)
             }
         }
@@ -736,42 +910,50 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn update_shaders(&mut self) {
         match self {
             TileNode::Leaf(tile) => tile.update_shaders(),
-            TileNode::Split { children, .. } => {
+            TileNode::Internal { children, tab_header, .. } => {
                 for child in children {
                     child.update_shaders();
                 }
-            }
-            TileNode::Tabbed {
-                children,
-                tab_header,
-                ..
-            } => {
-                for child in children {
-                    child.update_shaders();
+                if let Some(h) = tab_header {
+                    h.update_shaders();
                 }
-                tab_header.update_shaders();
             }
         }
     }
 
     /// Updates config for all tiles in this subtree.
+    ///
+    /// `refresh_leaf_data` controls whether each leaf slot's cached `data` is refreshed from the
+    /// tile's committed size. That is correct for the flat sizing path (whose `data` mirrors the
+    /// tiles), but must be `false` for the recursive path, where `data.size` holds the *intended*
+    /// span used for positioning — overwriting it with the committed size would clobber the layout
+    /// until the next `request_sizes`.
     pub fn update_config_tiles(
         &mut self,
         tile_view_size: Size<f64, Logical>,
         scale: f64,
         options: Rc<Options>,
         axis: AxisMap,
+        refresh_leaf_data: bool,
     ) {
         match self {
             TileNode::Leaf(tile) => {
                 tile.update_config(tile_view_size, scale, options);
             }
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 for (child, d) in zip(children, data) {
-                    child.update_config_tiles(tile_view_size, scale, options.clone(), axis);
-                    // Update data for leaf children.
-                    if let TileNode::Leaf(tile) = child {
-                        d.update(tile, axis);
+                    child.update_config_tiles(
+                        tile_view_size,
+                        scale,
+                        options.clone(),
+                        axis,
+                        refresh_leaf_data,
+                    );
+                    // Update data for leaf children (flat path only).
+                    if refresh_leaf_data {
+                        if let TileNode::Leaf(tile) = child {
+                            d.update(tile, axis);
+                        }
                     }
                 }
             }
@@ -782,13 +964,13 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn update_data(&mut self, axis: AxisMap) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 for (child, data) in children.iter_mut().zip(data.iter_mut()) {
                     if let TileNode::Leaf(tile) = child {
                         data.update(tile, axis);
                     }
                     // For non-leaf children, data.cached_size would need updating,
-                    // but in Phase 1 all children are leaves.
+                    // they are sized by request_sizes instead.
                 }
             }
         }
@@ -798,7 +980,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn contains(&self, window: &W::Id) -> bool {
         match self {
             TileNode::Leaf(tile) => tile.window().id() == window,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.iter().any(|c| c.contains(window))
             }
         }
@@ -814,7 +996,7 @@ impl<W: LayoutElement> TileNode<W> {
                     None
                 }
             }
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 for (i, child) in children.iter().enumerate() {
                     if let Some(mut path) = child.find_path(window) {
                         path.insert(0, i);
@@ -833,7 +1015,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => None,
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 let idx = path[0];
                 if path.len() == 1 {
                     data.get(idx)
@@ -851,7 +1033,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 let idx = path[0];
                 if path.len() == 1 {
                     if let Some(d) = data.get_mut(idx) {
@@ -872,7 +1054,7 @@ impl<W: LayoutElement> TileNode<W> {
         }
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 let idx = path[0];
                 if path.len() == 1 {
                     if let Some(d) = data.get_mut(idx) {
@@ -885,15 +1067,15 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
-    /// Collects the paths of every `Tabbed` node in the subtree (including this node if it is one),
-    /// in pre-order. `prefix` is the path of `self`.
+    /// Collects the paths of every tabbing node (Tabbed/Stacked) in the subtree (including this node
+    /// if it is one), in pre-order. `prefix` is the path of `self`.
     pub fn collect_tabbed_paths(&self, prefix: &mut TilePath, out: &mut Vec<TilePath>) {
-        if matches!(self, TileNode::Tabbed { .. }) {
+        if self.is_tabbed() {
             out.push(prefix.clone());
         }
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 for (i, child) in children.iter().enumerate() {
                     prefix.push(i);
                     child.collect_tabbed_paths(prefix, out);
@@ -911,8 +1093,7 @@ impl<W: LayoutElement> TileNode<W> {
         loop {
             match node {
                 TileNode::Leaf(_) => break,
-                TileNode::Split { children, active_idx, .. }
-                | TileNode::Tabbed { children, active_idx, .. } => {
+                TileNode::Internal { children, active_idx, .. } => {
                     let idx = (*active_idx).min(children.len().saturating_sub(1));
                     path.push(idx);
                     node = &children[idx];
@@ -935,8 +1116,7 @@ impl<W: LayoutElement> TileNode<W> {
                 *idx += 1;
                 result
             }
-            TileNode::Split { children, active_idx, .. }
-            | TileNode::Tabbed { children, active_idx, .. } => {
+            TileNode::Internal { children, active_idx, .. } => {
                 for (i, child) in children.iter().enumerate() {
                     if i == *active_idx {
                         return child.find_active_leaf_index(idx);
@@ -965,7 +1145,7 @@ impl<W: LayoutElement> TileNode<W> {
                     None
                 }
             }
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 for (i, child) in children.iter().enumerate() {
                     if let Some(mut path) = child.path_for_leaf_index_inner(idx) {
                         path.insert(0, i);
@@ -981,23 +1161,23 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn active_idx(&self) -> usize {
         match self {
             TileNode::Leaf(_) => 0,
-            TileNode::Split { active_idx, .. } | TileNode::Tabbed { active_idx, .. } => *active_idx,
+            TileNode::Internal { active_idx, .. } => *active_idx,
         }
     }
 
-    /// Returns the split axis if this is a split node.
+    /// Returns the split axis if this is a plain split node (SplitH/SplitV).
     pub fn split_axis(&self) -> Option<SplitAxis> {
         match self {
-            TileNode::Split { axis, .. } => Some(*axis),
+            TileNode::Internal { layout, .. } if layout.is_split() => Some(layout.axis()),
             _ => None,
         }
     }
 
-    /// Returns the display mode (Normal for Leaf/Split, Tabbed for Tabbed).
-    pub fn display_mode(&self) -> ColumnDisplay {
+    /// Returns the display mode (Normal for Leaf/split, Tabbed for a tabbing layout).
+    pub fn display_mode(&self) -> SectionDisplay {
         match self {
-            TileNode::Tabbed { .. } => ColumnDisplay::Tabbed,
-            _ => ColumnDisplay::Normal,
+            TileNode::Internal { layout, .. } if layout.is_tabbing() => SectionDisplay::Tabbed,
+            _ => SectionDisplay::Normal,
         }
     }
 
@@ -1005,61 +1185,72 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn child_count(&self) -> usize {
         match self {
             TileNode::Leaf(_) => 0,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 children.len()
             }
         }
     }
 
-    /// Toggles between tabbed and normal display.
+    /// Toggles between the `Tabbed` layout and a plain split. Tabbing a node remembers its split
+    /// layout (`prev_split`) so un-tabbing returns to it (a tabbed section un-tabs to a section, a
+    /// tabbed row to a row).
     pub fn toggle_tabbed(&mut self, tab_header_config: niri_config::TabHeaderConfig) {
-        match self {
-            TileNode::Tabbed {
-                children,
-                active_idx,
-                data,
-                restore_axis,
-                ..
-            } => {
-                // Convert back to a split along the axis we were created from (a column for a
-                // tabbed column, a row for a tabbed row).
-                let children = std::mem::take(children);
-                let data = std::mem::take(data);
-                let active_idx = *active_idx;
-                *self = TileNode::Split {
-                    axis: *restore_axis,
-                    children,
-                    active_idx,
-                    data,
-                };
-            }
-            TileNode::Split {
-                axis,
-                children,
-                active_idx,
-                data,
-            } => {
-                let tab_header = TabHeader::new(tab_header_config);
-                let restore_axis = *axis;
-                let children = std::mem::take(children);
-                let data = std::mem::take(data);
-                let active_idx = *active_idx;
-                *self = TileNode::Tabbed {
-                    children,
-                    active_idx,
-                    data,
-                    tab_header,
-                    restore_axis,
-                };
-            }
-            TileNode::Leaf(_) => {
-                // Can't toggle a leaf; this should be handled at the column level.
-            }
+        let TileNode::Internal { layout, tab_header, prev_split, data, .. } = self else {
+            // Can't toggle a leaf; this should be handled at the section level.
+            return;
+        };
+        let old_layout = *layout;
+        if layout.is_tabbing() {
+            *layout = *prev_split;
+            *tab_header = None;
+        } else {
+            *prev_split = *layout;
+            // Family-aware tabbing, matching sway's two title styles: a vertical (cross-axis) split
+            // tabs into `Stacked` (one full-width title row per child, stacked downward), a
+            // horizontal (main-axis) split into `Tabbed` (a single row of side-by-side titles).
+            let tabbing = if layout.axis() == SplitAxis::Cross {
+                Layout::Stacked
+            } else {
+                Layout::Tabbed
+            };
+            *layout = tabbing;
+            let mut header = TabHeader::new(tab_header_config);
+            header.set_stacked(tabbing == Layout::Stacked);
+            *tab_header = Some(header);
         }
+        reset_spans_on_axis_flip(old_layout, *layout, data);
+    }
+
+    /// Sets this node's layout directly, creating/dropping the tab header as needed and remembering
+    /// the previous split layout when entering a tabbing layout (inspired by sway's layout command:
+    /// a flag flip on an existing container). No-op for a leaf.
+    pub fn set_layout(&mut self, new: Layout, tab_header_config: niri_config::TabHeaderConfig) {
+        let TileNode::Internal { layout, tab_header, prev_split, data, .. } = self else {
+            return;
+        };
+        if *layout == new {
+            return;
+        }
+        let old_layout = *layout;
+        if layout.is_split() {
+            *prev_split = *layout;
+        }
+        *layout = new;
+        if new.is_tabbing() {
+            if tab_header.is_none() {
+                *tab_header = Some(TabHeader::new(tab_header_config));
+            }
+            if let Some(h) = tab_header {
+                h.set_stacked(new == Layout::Stacked);
+            }
+        } else {
+            *tab_header = None;
+        }
+        reset_spans_on_axis_flip(old_layout, new, data);
     }
 
     /// Sets the display mode to tabbed or normal.
-    pub fn set_display(&mut self, display: ColumnDisplay, tab_header_config: niri_config::TabHeaderConfig) {
+    pub fn set_display(&mut self, display: SectionDisplay, tab_header_config: niri_config::TabHeaderConfig) {
         if self.display_mode() == display {
             return;
         }
@@ -1070,7 +1261,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn set_active_idx(&mut self, idx: usize) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { active_idx, .. } | TileNode::Tabbed { active_idx, .. } => {
+            TileNode::Internal { active_idx, .. } => {
                 *active_idx = idx;
             }
         }
@@ -1080,12 +1271,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn insert_leaf(&mut self, idx: usize, tile: Tile<W>, data: SplitChildData) {
         match self {
             TileNode::Leaf(_) => panic!("cannot insert into a Leaf node"),
-            TileNode::Split { children, data: child_data, .. }
-            | TileNode::Tabbed {
-                children,
-                data: child_data,
-                ..
-            } => {
+            TileNode::Internal { children, data: child_data, .. } => {
                 children.insert(idx, TileNode::Leaf(tile));
                 child_data.insert(idx, data);
             }
@@ -1096,7 +1282,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn remove_leaf_at(&mut self, idx: usize) -> Tile<W> {
         match self {
             TileNode::Leaf(_) => panic!("cannot remove from a Leaf node"),
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 data.remove(idx);
                 match children.remove(idx) {
                     TileNode::Leaf(tile) => tile,
@@ -1110,11 +1296,39 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn swap_leaves(&mut self, a: usize, b: usize) {
         match self {
             TileNode::Leaf(_) => panic!("cannot swap in a Leaf node"),
-            TileNode::Split { children, data, .. } | TileNode::Tabbed { children, data, .. } => {
+            TileNode::Internal { children, data, .. } => {
                 children.swap(a, b);
                 data.swap(a, b);
             }
         }
+    }
+
+    /// Swaps just the `Tile` payloads of the two leaves at the given paths, leaving the tree
+    /// structure (and each slot's split data) untouched. Used to exchange two windows that don't
+    /// share a parent (`swap_leaves` only works on siblings), so each window adopts the other's
+    /// slot geometry. No-op if the paths are equal or either doesn't point to a leaf.
+    pub fn swap_leaf_contents(&mut self, a: &[usize], b: &[usize]) {
+        if a == b {
+            return;
+        }
+        // Both paths must point to leaves; bail without mutating otherwise.
+        if !matches!(self.node_at(a), TileNode::Leaf(_))
+            || !matches!(self.node_at(b), TileNode::Leaf(_))
+        {
+            return;
+        }
+
+        // Lift `a`'s tile out behind a throwaway placeholder, move `b`'s tile into `a`'s slot, then
+        // drop `a`'s tile into `b`'s slot. Three disjoint single-`&mut` steps — no aliasing, no
+        // unsafe (the placeholder is overwritten before it can be observed).
+        let placeholder = TileNode::internal(Layout::SplitV, Vec::new(), 0, Vec::new(), None);
+        let TileNode::Leaf(ta) = std::mem::replace(self.node_at_mut(a), placeholder) else {
+            unreachable!("checked to be a leaf above")
+        };
+        let TileNode::Leaf(tb) = std::mem::replace(self.node_at_mut(b), TileNode::Leaf(ta)) else {
+            unreachable!("checked to be a leaf above")
+        };
+        *self.node_at_mut(a) = TileNode::Leaf(tb);
     }
 
     /// If this Split/Tabbed node has exactly one child, replace `self` with that child.
@@ -1123,7 +1337,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn collapse_single_child(&mut self) -> bool {
         match self {
             TileNode::Leaf(_) => false,
-            TileNode::Split { children, .. } | TileNode::Tabbed { children, .. } => {
+            TileNode::Internal { children, .. } => {
                 if children.len() == 1 {
                     let child = children.remove(0);
                     *self = child;
@@ -1139,8 +1353,7 @@ impl<W: LayoutElement> TileNode<W> {
     pub fn collapse_all_single_child(&mut self) {
         match self {
             TileNode::Leaf(_) => {}
-            TileNode::Split { children, data, active_idx, .. }
-            | TileNode::Tabbed { children, data, active_idx, .. } => {
+            TileNode::Internal { children, data, active_idx, .. } => {
                 // First, recurse into children.
                 for child in children.iter_mut() {
                     child.collapse_all_single_child();
@@ -1148,7 +1361,7 @@ impl<W: LayoutElement> TileNode<W> {
                 // Remove empty children (can happen when a nested split's last child was removed).
                 let mut i = 0;
                 while i < children.len() {
-                    let is_empty = matches!(&children[i], TileNode::Split { children: c, .. } | TileNode::Tabbed { children: c, .. } if c.is_empty());
+                    let is_empty = matches!(&children[i], TileNode::Internal { children: c, .. } if c.is_empty());
                     if is_empty {
                         children.remove(i);
                         data.remove(i);
@@ -1167,6 +1380,96 @@ impl<W: LayoutElement> TileNode<W> {
         }
     }
 
+    /// Canonicalizes this subtree (bottom-up), enforcing tree-shape invariants inspired by sway plus our
+    /// same-family merge:
+    ///
+    /// - empty internal children are reaped;
+    /// - a single-child internal child is flattened into its only child;
+    /// - a plain-split child of the *same family* as a plain-split parent is spliced in, so
+    ///   `V[a, V[b,c], d] => V[a,b,c,d]` and `H[H[..]] => H[..]` (a section never directly contains a
+    ///   section, a row never directly contains a row).
+    ///
+    /// Tabbing layouts (Tabbed/Stacked) are never merged — a tab group wrapping a tab group, or a
+    /// tab group wrapping a split, is meaningful structure. `self` is **not** collapsed when it ends
+    /// up single-child; that is the caller's concern (the section root keeps a lone-leaf wrapper).
+    pub fn simplify(&mut self) {
+        // Recurse first so children are already canonical.
+        if let TileNode::Internal { children, .. } = self {
+            for c in children.iter_mut() {
+                c.simplify();
+            }
+        } else {
+            return;
+        }
+
+        loop {
+            let TileNode::Internal { layout, children, data, active_idx, .. } = self else {
+                return;
+            };
+            let self_layout = *layout;
+            let mut changed = false;
+            let mut i = 0;
+            while i < children.len() {
+                // Reap an empty internal child.
+                if matches!(&children[i], TileNode::Internal { children: c, .. } if c.is_empty()) {
+                    children.remove(i);
+                    data.remove(i);
+                    if *active_idx > i {
+                        *active_idx -= 1;
+                    }
+                    changed = true;
+                    continue;
+                }
+
+                // Flatten a single-child internal child into its only grandchild (the slot keeps its
+                // span data and active flag).
+                if matches!(&children[i], TileNode::Internal { children: c, .. } if c.len() == 1) {
+                    let TileNode::Internal { children: mut gc, .. } = children.remove(i) else {
+                        unreachable!()
+                    };
+                    children.insert(i, gc.remove(0));
+                    changed = true;
+                    continue;
+                }
+
+                // Merge a same-family plain-split child into this plain split.
+                let mergeable = self_layout.is_split()
+                    && matches!(&children[i], TileNode::Internal { layout: cl, .. }
+                        if cl.is_split() && cl.same_family(self_layout));
+                if mergeable {
+                    let was_active = *active_idx == i;
+                    let TileNode::Internal { children: gc, data: gd, active_idx: ga, .. } =
+                        children.remove(i)
+                    else {
+                        unreachable!()
+                    };
+                    data.remove(i);
+                    let n = gc.len();
+                    for (j, (g, gd1)) in gc.into_iter().zip(gd).enumerate() {
+                        children.insert(i + j, g);
+                        data.insert(i + j, gd1);
+                    }
+                    if was_active {
+                        *active_idx = i + ga;
+                    } else if *active_idx > i {
+                        *active_idx += n.saturating_sub(1);
+                    }
+                    changed = true;
+                    continue;
+                }
+
+                i += 1;
+            }
+
+            if !children.is_empty() {
+                *active_idx = (*active_idx).min(children.len() - 1);
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     /// Returns the maximum cached main-axis span among all leaves.
     pub fn max_leaf_main_span(&self) -> f64 {
         match self {
@@ -1174,9 +1477,8 @@ impl<W: LayoutElement> TileNode<W> {
                 // This is in axis-mapped coordinates (w = main, h = cross).
                 tile.tile_size().w
             }
-            TileNode::Split { children: _, data, .. } | TileNode::Tabbed { children: _, data, .. } => {
-                // For Phase 1 (flat tree), all children are leaves, and the max main span
-                // is the max of all children's cached sizes.
+            TileNode::Internal { children: _, data, .. } => {
+                // The max main span is the largest of the children's cached sizes.
                 data.iter()
                     .map(|d| NotNan::new(d.size.w).unwrap())
                     .max()
@@ -1234,21 +1536,23 @@ impl<W: LayoutElement> TileNode<W> {
                 let size = Size::from((available.w.max(1.), available.h.max(1.)));
                 tile.request_tile_size(axis.size_out(size), animate, transaction.cloned());
             }
-            TileNode::Split { axis: split_axis, children, data, active_idx } => {
+            TileNode::Internal { layout, children, data, active_idx, .. }
+                if layout.is_split() =>
+            {
                 let count = children.len();
                 if count == 0 {
                     return;
                 }
 
-                let is_main = *split_axis == SplitAxis::Main;
+                let is_main = layout.axis() == SplitAxis::Main;
 
                 // Determine which axis we're distributing along.
                 // For a Main split: distribute along w (main axis), each child gets full h.
                 // For a Cross split: distribute along h (cross axis), each child gets full w.
                 //
                 // Only the gaps *between* children are taken from `available`: the outer gaps are
-                // already accounted for at the column level (the cross `available` is the working
-                // area minus its two edge gaps; the main `available` is the column width, which is
+                // already accounted for at the section level (the cross `available` is the working
+                // area minus its two edge gaps; the main `available` is the section width, which is
                 // defined as sum-of-children + between-gaps). Positioning (`leaf_layout`) likewise
                 // places only between-children gaps, so the two must agree to reach a steady state.
                 let gap_total = gaps * count.saturating_sub(1) as f64;
@@ -1270,7 +1574,7 @@ impl<W: LayoutElement> TileNode<W> {
                     }
                 }).collect();
 
-                assert_eq!(data.len(), count, "data.len ({}) != children.len ({}) in {:?} split", data.len(), count, split_axis);
+                assert_eq!(data.len(), count, "data.len ({}) != children.len ({}) in {:?}", data.len(), count, layout);
 
                 // Resolved span per child, and whether it has been pinned to a fixed value yet.
                 // Auto/Preset children start unresolved and get distributed below; fixed children
@@ -1305,7 +1609,7 @@ impl<W: LayoutElement> TileNode<W> {
                 // Iteratively distribute the remaining span among auto children, honoring each
                 // child's minimum. If a child's weighted share is below its minimum, pin it to the
                 // minimum and re-run, since the other children now have less to share. This mirrors
-                // the flat-column algorithm in `update_tile_sizes` so nested splits reach the same
+                // the flat-section algorithm in `update_tile_sizes` so nested splits reach the same
                 // steady state. Spans are rounded to integer logical pixels (Wayland requirement),
                 // which also guarantees the committed tile size matches the cached span exactly.
                 let mut auto_left = count - resolved.iter().filter(|r| **r).count();
@@ -1370,14 +1674,17 @@ impl<W: LayoutElement> TileNode<W> {
                     *active_idx = 0;
                 }
             }
-            TileNode::Tabbed { children, data, active_idx, tab_header, .. } => {
+            TileNode::Internal { children, data, active_idx, tab_header, .. } => {
                 let count = children.len();
                 if count == 0 {
                     return;
                 }
 
-                // All children get the same span.
-                let extra = tab_header.extra_size(count, scale);
+                // A tabbing layout shows one child at a time; all children get the same content
+                // span, reduced by the header band reserved at the top.
+                let extra = tab_header
+                    .as_ref()
+                    .map_or(Size::from((0., 0.)), |h| h.extra_size(count, scale));
                 let child_cross = (available.h - extra.h).max(1.);
                 let child_size = Size::from((available.w, child_cross));
 
@@ -1393,32 +1700,26 @@ impl<W: LayoutElement> TileNode<W> {
     }
 
     /// Returns the minimum cross-axis span of this subtree (used for layout clamping).
-    fn min_cross_span_subtree(&self, axis: AxisMap) -> f64 {
+    pub(super) fn min_cross_span_subtree(&self, axis: AxisMap) -> f64 {
         match self {
             TileNode::Leaf(tile) => {
                 axis.size_in(tile.min_size_nonfullscreen()).h
             }
-            TileNode::Split { children, axis: split_axis, .. } => {
-                if *split_axis == SplitAxis::Main {
-                    // Main split: children share the cross span, so min is the max of children.
-                    children.iter()
-                        .map(|c| c.min_cross_span_subtree(axis))
-                        .max_by(|a, b| a.total_cmp(b))
-                        .unwrap_or(1.)
-                } else {
-                    // Cross split: children stack along cross, so min is the sum.
+            TileNode::Internal { layout, children, .. } => {
+                if *layout == Layout::SplitV {
+                    // Vertical split: children stack along cross, so min is the sum.
                     children.iter()
                         .map(|c| c.min_cross_span_subtree(axis))
                         .sum::<f64>()
                         .max(1.)
+                } else {
+                    // SplitH / Tabbed / Stacked: children share the cross span, so min is the max.
+                    // (Tabbing layouts also add a header band, handled where the header is sized.)
+                    children.iter()
+                        .map(|c| c.min_cross_span_subtree(axis))
+                        .max_by(|a, b| a.total_cmp(b))
+                        .unwrap_or(1.)
                 }
-            }
-            TileNode::Tabbed { children, .. } => {
-                // Tabbed: all children share the cross span, so min is the max.
-                children.iter()
-                    .map(|c| c.min_cross_span_subtree(axis))
-                    .max_by(|a, b| a.total_cmp(b))
-                    .unwrap_or(1.)
             }
         }
     }

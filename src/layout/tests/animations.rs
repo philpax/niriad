@@ -41,7 +41,7 @@ fn make_options() -> Options {
     options
 }
 
-fn set_up_two_in_column() -> Layout<TestWindow> {
+fn set_up_two_in_section() -> Layout<TestWindow> {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {
@@ -50,8 +50,8 @@ fn set_up_two_in_column() -> Layout<TestWindow> {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
-        Op::ConsumeWindowIntoColumn,
+        Op::FocusSectionLeft,
+        Op::ConsumeWindowIntoSection,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -70,7 +70,7 @@ fn set_up_two_in_column() -> Layout<TestWindow> {
 
 #[test]
 fn height_resize_animates_next_y() {
-    let mut layout = set_up_two_in_column();
+    let mut layout = set_up_two_in_section();
 
     let ops = [
         // Issue a resize.
@@ -115,7 +115,7 @@ fn height_resize_animates_next_y() {
 
 #[test]
 fn clientside_height_change_doesnt_animate() {
-    let mut layout = set_up_two_in_column();
+    let mut layout = set_up_two_in_section();
 
     // The initial state.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -144,7 +144,7 @@ fn clientside_height_change_doesnt_animate() {
 
 #[test]
 fn height_resize_and_back() {
-    let mut layout = set_up_two_in_column();
+    let mut layout = set_up_two_in_section();
 
     // The initial state.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -221,7 +221,7 @@ fn height_resize_and_back() {
 
 #[test]
 fn height_resize_and_cancel() {
-    let mut layout = set_up_two_in_column();
+    let mut layout = set_up_two_in_section();
 
     // The initial state.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -299,7 +299,7 @@ fn height_resize_and_back_during_another_y_anim() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -320,8 +320,8 @@ fn height_resize_and_back_during_another_y_anim() {
     200 × 200 at x:100 y:  0
     ");
 
-    // Consume second window into column, starting the X/Y move anim down.
-    Op::ConsumeWindowIntoColumn.apply(&mut layout);
+    // Consume second window into section, starting the X/Y move anim down.
+    Op::ConsumeWindowIntoSection.apply(&mut layout);
 
     // No time had passed, so no change in coordinates yet.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -365,7 +365,7 @@ fn height_resize_and_back_during_another_y_anim() {
     Op::AdvanceAnimations { msec_delta: 200 }.apply(&mut layout);
 
     // X changed by 20, but y changed by 30 since the Y movement from the resize compounds with the
-    // Y movement from consume-into-column.
+    // Y movement from consume-into-section.
     assert_snapshot!(format_tiles(&layout), @r"
     100 × 120 at x:  0 y:  0
     200 × 200 at x: 30 y: 80
@@ -432,7 +432,7 @@ fn height_resize_and_cancel_during_another_y_anim() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -453,8 +453,8 @@ fn height_resize_and_cancel_during_another_y_anim() {
     200 × 200 at x:100 y:  0
     ");
 
-    // Consume second window into column, starting the X/Y move anim down.
-    Op::ConsumeWindowIntoColumn.apply(&mut layout);
+    // Consume second window into section, starting the X/Y move anim down.
+    Op::ConsumeWindowIntoSection.apply(&mut layout);
 
     // No time had passed, so no change in coordinates yet.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -491,7 +491,7 @@ fn height_resize_and_cancel_during_another_y_anim() {
     check_ops_on_layout(&mut layout, ops);
 
     // X changed by 5, but y changed by 8 since the Y movement from the resize compounds with the Y
-    // movement from consume-into-column.
+    // movement from consume-into-section.
     assert_snapshot!(format_tiles(&layout), @r"
     100 × 105 at x:  0 y:  0
     200 × 200 at x: 45 y: 58
@@ -552,7 +552,7 @@ fn height_resize_before_another_y_anim_then_back() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -588,8 +588,8 @@ fn height_resize_before_another_y_anim_then_back() {
     200 × 200 at x:100 y:  0
     ");
 
-    // Consume second window into column, starting the X/Y move anim down.
-    Op::ConsumeWindowIntoColumn.apply(&mut layout);
+    // Consume second window into section, starting the X/Y move anim down.
+    Op::ConsumeWindowIntoSection.apply(&mut layout);
 
     // No time had passed, so no change in coordinates yet.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -667,7 +667,7 @@ fn height_resize_before_another_y_anim_then_cancel() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -703,8 +703,8 @@ fn height_resize_before_another_y_anim_then_cancel() {
     200 × 200 at x:100 y:  0
     ");
 
-    // Consume second window into column, starting the X/Y move anim down.
-    Op::ConsumeWindowIntoColumn.apply(&mut layout);
+    // Consume second window into section, starting the X/Y move anim down.
+    Op::ConsumeWindowIntoSection.apply(&mut layout);
 
     // No time had passed, so no change in coordinates yet.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -765,7 +765,7 @@ fn clientside_height_change_during_another_y_anim() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -777,7 +777,7 @@ fn clientside_height_change_during_another_y_anim() {
         Op::Communicate(1),
         Op::Communicate(2),
         Op::CompleteAnimations,
-        Op::ConsumeWindowIntoColumn,
+        Op::ConsumeWindowIntoSection,
         // Clear the animate next configure flag.
         Op::Communicate(1),
         Op::Communicate(2),
@@ -829,7 +829,7 @@ fn height_resize_cancel_with_stationary_second_window() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -868,8 +868,8 @@ fn height_resize_cancel_with_stationary_second_window() {
     200 × 200 at x:100 y:  0
     ");
 
-    // Consume second window into column, starting the X/Y move anim down.
-    Op::ConsumeWindowIntoColumn.apply(&mut layout);
+    // Consume second window into section, starting the X/Y move anim down.
+    Op::ConsumeWindowIntoSection.apply(&mut layout);
 
     // No time had passed, so no change in coordinates yet.
     assert_snapshot!(format_tiles(&layout), @r"
@@ -927,7 +927,7 @@ fn width_resize_and_cancel() {
         Op::AddWindow {
             params: TestWindowParams::new(2),
         },
-        Op::FocusColumnLeft,
+        Op::FocusSectionLeft,
         Op::SetForcedSize {
             id: 1,
             size: Some(Size::new(100, 100)),
@@ -1009,7 +1009,7 @@ fn width_resize_and_cancel() {
 }
 
 #[test]
-fn width_resize_and_cancel_of_column_to_the_left() {
+fn width_resize_and_cancel_of_section_to_the_left() {
     let ops = [
         Op::AddOutput(1),
         Op::AddWindow {

@@ -85,7 +85,7 @@ fn set_up() -> Fixture {
     f
 }
 
-fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
+fn set_up_two_in_section() -> (Fixture, ClientId, WlSurface, WlSurface) {
     let mut f = set_up();
 
     let id = f.add_client();
@@ -97,12 +97,12 @@ fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
     let _ = f.client(id).window(&surface1).recent_configures();
     let _ = f.client(id).window(&surface2).recent_configures();
 
-    // Consume into one column.
+    // Consume into one section.
     f.niri().layout.focus_left();
-    f.niri().layout.consume_into_column();
+    f.niri().layout.consume_into_section();
     f.double_roundtrip(id);
 
-    // Commit for the column consume.
+    // Commit for the section consume.
     let window = f.client(id).window(&surface1);
     window.ack_last_and_commit();
 
@@ -119,7 +119,7 @@ fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
 
 #[test]
 fn egl_height_resize_animates_next_y() {
-    let (mut f, id, surface1, surface2) = set_up_two_in_column();
+    let (mut f, id, surface1, surface2) = set_up_two_in_section();
 
     // Issue a resize.
     f.niri()
@@ -166,7 +166,7 @@ fn egl_height_resize_animates_next_y() {
 
 #[test]
 fn egl_clientside_height_change_doesnt_animate() {
-    let (mut f, id, surface1, _surface2) = set_up_two_in_column();
+    let (mut f, id, surface1, _surface2) = set_up_two_in_section();
 
     // The initial state.
     assert_snapshot!(format_tiles(f.niri()), @r"

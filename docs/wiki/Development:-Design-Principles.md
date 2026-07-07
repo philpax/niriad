@@ -24,7 +24,7 @@ And stuff happening outside the view shouldn't mess with what you're focused on.
 
 This is important both for compositor responsiveness and predictability, and for keeping the code sane and free of edge cases and unnecessary asynchrony.
 
-- Things like resizing or consuming into column take effect immediately, even if the window needs time to catch up.
+- Things like resizing or consuming into a section take effect immediately, even if the window needs time to catch up.
 - An animated workspace switch makes your input go to the final workspace and window instantly, without waiting for the animation.
 - Opening the overview (which has a zoom-out animation) lets you grab windows right away, and closing the overview makes your input immediately go back to the windows, without waiting for the zoom back in.
 
@@ -56,13 +56,13 @@ Here are some design considerations for the window layout logic.
 
     The top left area of a window is more likely to contain something important, so it should always be visible.
 
-1. Setting window width or height to a fixed pixel size (e.g. `set-column-width 1280` or `default-column-width { fixed 1280; }`) will set the size of the window itself, however setting to a proportional size (e.g. `set-column-width 50%`) will set the size of the tile, including the border added by niri.
+1. Setting window width or height to a fixed pixel size (e.g. `set-section-width 1280` or `default-section-width { fixed 1280; }`) will set the size of the window itself, however setting to a proportional size (e.g. `set-section-width 50%`) will set the size of the tile, including the border added by niri.
 
-    For vertical main-axis layouts, keep the action names stable and reinterpret them by axis: `column-width` refers to main-axis span, while `window-height` refers to cross-axis span.
+    For vertical main-axis layouts, keep the action names stable and reinterpret them by axis: `section-width` refers to main-axis span, while `window-height` refers to cross-axis span.
 
     - With proportions, the user is looking to tile multiple windows on the screen, so they should include borders.
     - With fixed sizes, the user wants to test a specific client size or take a specifically sized screenshot, so they should affect the window directly.
-    - After the size is set, it is always converted to a value that includes the borders, to make the code sane. That is, `set-column-width 1000` followed by changing the niri border width will resize the window accordingly.
+    - After the size is set, it is always converted to a value that includes the borders, to make the code sane. That is, `set-section-width 1000` followed by changing the niri border width will resize the window accordingly.
 
 1. Fullscreen windows are a normal part of the scrolling layout.
 
@@ -108,7 +108,7 @@ The default binds largely come from my own experience using PaperWM, and from ot
 They assume QWERTY.
 The binds are ordered in a way to gradually introduce you to different bind configuration concepts.
 
-The general system is: if a hotkey switches somewhere, then adding <kbd>Ctrl</kbd> will move the focused window or column there.
+The general system is: if a hotkey switches somewhere, then adding <kbd>Ctrl</kbd> will move the focused window or section there.
 Adding <kbd>Shift</kbd> does an alternative action: for focus and movement it starts going across monitors, for resizes it starts acting on the cross-axis size rather than the main-axis size, etc.
 Workspace switching on <kbd>Mod</kbd><kbd>U</kbd>/<kbd>I</kbd> is one key up from <kbd>Mod</kbd><kbd>J</kbd>/<kbd>K</kbd> used for window switching.
 

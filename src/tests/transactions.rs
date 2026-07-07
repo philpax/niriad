@@ -34,7 +34,7 @@ fn create_window(f: &mut Fixture, id: ClientId, w: u16, h: u16) -> WlSurface {
 }
 
 #[test]
-fn column_resize_waits_for_both_windows() {
+fn section_resize_waits_for_both_windows() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -46,11 +46,11 @@ fn column_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface1).recent_configures();
     let _ = f.client(id).window(&surface2).recent_configures();
 
-    // Consume into one column.
+    // Consume into one section.
     f.niri().layout.consume_or_expel_window_left(None);
     f.double_roundtrip(id);
 
-    // Commit for the column consume.
+    // Commit for the section consume.
     let window = f.client(id).window(&surface1);
     assert_snapshot!(
         window.format_recent_configures(),
@@ -76,7 +76,7 @@ fn column_resize_waits_for_both_windows() {
     // Issue a resize.
     f.niri()
         .layout
-        .set_column_width(SizeChange::AdjustFixed(10));
+        .set_section_width(SizeChange::AdjustFixed(10));
     f.double_roundtrip(id);
 
     // Commit window 1 in response to resize.

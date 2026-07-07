@@ -1,4 +1,4 @@
-use niri_ipc::ColumnDisplay;
+use niri_ipc::SectionDisplay;
 
 use crate::appearance::{
     BackgroundEffect, BackgroundEffectRule, BlockOutFrom, BorderRule, CornerRadius, ShadowRule,
@@ -17,7 +17,7 @@ pub struct WindowRule {
 
     // Rules applied at initial configure.
     #[knuffel(child)]
-    pub default_column_width: Option<DefaultPresetSize>,
+    pub default_section_width: Option<DefaultPresetSize>,
     #[knuffel(child)]
     pub default_window_height: Option<DefaultPresetSize>,
     #[knuffel(child, unwrap(argument))]
@@ -68,7 +68,7 @@ pub struct WindowRule {
     #[knuffel(child, unwrap(argument))]
     pub variable_refresh_rate: Option<bool>,
     #[knuffel(child, unwrap(argument, str))]
-    pub default_column_display: Option<ColumnDisplay>,
+    pub default_section_display: Option<SectionDisplay>,
     #[knuffel(child)]
     pub default_floating_position: Option<FloatingPosition>,
     #[knuffel(child, unwrap(argument))]
@@ -128,7 +128,7 @@ pub struct Match {
     #[knuffel(property)]
     pub is_focused: Option<bool>,
     #[knuffel(property)]
-    pub is_active_in_column: Option<bool>,
+    pub is_active_in_section: Option<bool>,
     #[knuffel(property)]
     pub is_floating: Option<bool>,
     #[knuffel(property)]

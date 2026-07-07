@@ -212,18 +212,18 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
 
     actions.extend(&[
         &Action::CloseWindow,
-        &Action::FocusColumnLeft,
-        &Action::FocusColumnRight,
-        &Action::MoveColumnLeft,
-        &Action::MoveColumnRight,
+        &Action::FocusSectionLeft,
+        &Action::FocusSectionRight,
+        &Action::MoveSectionLeft,
+        &Action::MoveSectionRight,
         &Action::FocusWorkspaceDown,
         &Action::FocusWorkspaceUp,
     ]);
 
-    // Prefer move-column-to-workspace-down, but fall back to move-window-to-workspace-down.
+    // Prefer move-section-to-workspace-down, but fall back to move-window-to-workspace-down.
     if let Some(bind) = binds
         .iter()
-        .find(|bind| matches!(bind.action, Action::MoveColumnToWorkspaceDown(_)))
+        .find(|bind| matches!(bind.action, Action::MoveSectionToWorkspaceDown(_)))
     {
         actions.push(&bind.action);
     } else if binds
@@ -232,13 +232,13 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
     {
         actions.push(&Action::MoveWindowToWorkspaceDown(true));
     } else {
-        actions.push(&Action::MoveColumnToWorkspaceDown(true));
+        actions.push(&Action::MoveSectionToWorkspaceDown(true));
     }
 
     // Same for -up.
     if let Some(bind) = binds
         .iter()
-        .find(|bind| matches!(bind.action, Action::MoveColumnToWorkspaceUp(_)))
+        .find(|bind| matches!(bind.action, Action::MoveSectionToWorkspaceUp(_)))
     {
         actions.push(&bind.action);
     } else if binds
@@ -247,12 +247,12 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
     {
         actions.push(&Action::MoveWindowToWorkspaceUp(true));
     } else {
-        actions.push(&Action::MoveColumnToWorkspaceUp(true));
+        actions.push(&Action::MoveSectionToWorkspaceUp(true));
     }
 
     actions.extend(&[
-        &Action::SwitchPresetColumnWidth,
-        &Action::MaximizeColumn,
+        &Action::SwitchPresetSectionWidth,
+        &Action::MaximizeSection,
         &Action::ConsumeOrExpelWindowLeft,
         &Action::ConsumeOrExpelWindowRight,
         &Action::ToggleWindowFloating,
@@ -315,7 +315,7 @@ fn render(
     let padding: i32 = to_physical_precise_round(scale, PADDING);
     let line_interval: i32 = to_physical_precise_round(scale, LINE_INTERVAL);
 
-    // FIXME: if it doesn't fit, try splitting in two columns or something.
+    // FIXME: if it doesn't fit, try splitting in two sections or something.
     // let mut target_size = output_size;
     // target_size.w -= margin * 2;
     // target_size.h -= margin * 2;
@@ -460,18 +460,18 @@ fn action_name(action: &Action) -> String {
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
-        Action::FocusColumnLeft => String::from("Focus Column to the Left"),
-        Action::FocusColumnRight => String::from("Focus Column to the Right"),
-        Action::MoveColumnLeft => String::from("Move Column Left"),
-        Action::MoveColumnRight => String::from("Move Column Right"),
+        Action::FocusSectionLeft => String::from("Focus Section to the Left"),
+        Action::FocusSectionRight => String::from("Focus Section to the Right"),
+        Action::MoveSectionLeft => String::from("Move Section Left"),
+        Action::MoveSectionRight => String::from("Move Section Right"),
         Action::FocusWorkspaceDown => String::from("Switch Workspace Down"),
         Action::FocusWorkspaceUp => String::from("Switch Workspace Up"),
-        Action::MoveColumnToWorkspaceDown(_) => String::from("Move Column to Workspace Down"),
-        Action::MoveColumnToWorkspaceUp(_) => String::from("Move Column to Workspace Up"),
+        Action::MoveSectionToWorkspaceDown(_) => String::from("Move Section to Workspace Down"),
+        Action::MoveSectionToWorkspaceUp(_) => String::from("Move Section to Workspace Up"),
         Action::MoveWindowToWorkspaceDown(_) => String::from("Move Window to Workspace Down"),
         Action::MoveWindowToWorkspaceUp(_) => String::from("Move Window to Workspace Up"),
-        Action::SwitchPresetColumnWidth => String::from("Switch Preset Column Widths"),
-        Action::MaximizeColumn => String::from("Maximize Column"),
+        Action::SwitchPresetSectionWidth => String::from("Switch Preset Section Widths"),
+        Action::MaximizeSection => String::from("Maximize Section"),
         Action::ConsumeOrExpelWindowLeft => String::from("Consume or Expel Window Left"),
         Action::ConsumeOrExpelWindowRight => String::from("Consume or Expel Window Right"),
         Action::ToggleWindowFloating => String::from("Move Window Between Floating and Tiling"),

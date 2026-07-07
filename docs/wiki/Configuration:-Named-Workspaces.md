@@ -15,7 +15,7 @@ workspace "chat" {
 Contrary to normal dynamic workspaces, named workspaces always exist, even when they have no windows.
 Otherwise, they behave like any other workspace: you can move them around, move to a different monitor, and so on.
 
-Actions like `focus-workspace` or `move-column-to-workspace` can refer to workspaces by name.
+Actions like `focus-workspace` or `move-section-to-workspace` can refer to workspaces by name.
 Also, you can use an `open-on-workspace` window rule to make a window open on a specific named workspace:
 
 ```kdl
@@ -85,13 +85,13 @@ In order to unset a flag, write it with `false`, e.g.:
 ```kdl
 layout {
     // Enabled globally.
-    always-center-single-column
+    always-center-single-section
 }
 
 workspace "uncentered" {
     layout {
         // Unset on this workspace.
-        always-center-single-column false
+        always-center-single-section false
     }
 }
 ```

@@ -2,3 +2,6 @@
 /result
 
 .idea
+
+# Claude Code local state (agent worktrees, etc.)
+.claude/

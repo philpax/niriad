@@ -143,6 +143,9 @@ pub struct TabBar {
     total_tabs_width: f64,
     /// Open animation.
     open_anim: Option<Animation>,
+    /// Whether this header is for a Stacked layout (one full-width title row per tab, stacked
+    /// vertically) rather than a Tabbed layout (a single row of side-by-side tabs).
+    stacked: bool,
     /// Config.
     config: niri_config::TabBarConfig,
 }
@@ -158,8 +161,13 @@ impl TabBar {
             scroll_offset: 0.,
             total_tabs_width: 0.,
             open_anim: None,
+            stacked: false,
             config,
         }
+    }
+
+    pub fn set_stacked(&mut self, stacked: bool) {
+        self.stacked = stacked;
     }
 
     pub fn update_config(&mut self, config: niri_config::TabBarConfig) {
@@ -187,13 +195,15 @@ impl TabBar {
         self.open_anim = Some(Animation::new(clock, 0., 1., 0., config));
     }
 
-    /// Extra size taken up by the tab bar (rounded bar height plus a 1px gap).
-    pub fn extra_size(&self, _tab_count: usize, scale: f64) -> Size<f64, Logical> {
+    /// Extra size taken up by the tab bar (rounded bar height plus a 1px gap). A Stacked layout
+    /// reserves one title row per tab; a Tabbed layout reserves a single row.
+    pub fn extra_size(&self, tab_count: usize, scale: f64) -> Size<f64, Logical> {
         if self.config.off || (self.config.height <= 0.) {
             return Size::from((0., 0.));
         }
         let height = round_logical_in_physical(scale, self.config.height);
-        Size::from((0., height + 1.))
+        let rows = if self.stacked { tab_count.max(1) as f64 } else { 1. };
+        Size::from((0., height * rows + 1.))
     }
 
     /// Content offset — shifts tab content to make room for the bar.
@@ -259,8 +269,27 @@ impl TabBar {
 
         let progress = self.open_anim.as_ref().map_or(1., |a| a.value().max(0.));
         let bar_height = round(self.config.height * progress);
+        let row_height = round(self.config.height);
 
-        // Compute tab positions (without scroll offset).
+        if self.stacked {
+            // Stacked: one full-width title row per tab, stacked vertically in the reserved band.
+            for (i, (tab, rect)) in tabs.zip(self.tab_rects.iter_mut()).enumerate() {
+                if tab.is_active {
+                    self.active_idx = i;
+                }
+                let y = round(bar_y + i as f64 * row_height);
+                *rect = Rectangle::new(
+                    Point::from((area.loc.x, y)),
+                    Size::from((available_width, bar_height)),
+                );
+            }
+            // No horizontal scrolling for stacked rows.
+            self.total_tabs_width = available_width;
+            self.scroll_offset = 0.;
+            return;
+        }
+
+        // Tabbed: a single row of side-by-side tabs (without scroll offset).
         for (i, (tab, rect)) in tabs.zip(self.tab_rects.iter_mut()).enumerate() {
             if tab.is_active {
                 self.active_idx = i;
@@ -303,7 +332,7 @@ impl TabBar {
     pub fn render_backgrounds(
         &self,
         pos: Point<f64, Logical>,
-        is_column_active: bool,
+        is_section_active: bool,
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
         if self.config.off || self.tab_rects.is_empty() {
@@ -320,7 +349,7 @@ impl TabBar {
             let tab_size = rect.size;
 
             // Tab background color.
-            let bg_color = if i == self.active_idx && is_column_active {
+            let bg_color = if i == self.active_idx && is_section_active {
                 self.config.active_color
                     .unwrap_or(niri_config::Color::new_unpremul(0.35, 0.35, 0.35, 1.))
             } else {
@@ -351,12 +380,12 @@ impl TabBar {
         renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
-        is_column_active: bool,
+        is_section_active: bool,
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
-        self.render_titles(renderer, pos, scale, is_column_active, titles, push);
-        self.render_backgrounds(pos, is_column_active, push);
+        self.render_titles(renderer, pos, scale, is_section_active, titles, push);
+        self.render_backgrounds(pos, is_section_active, push);
     }
 
     /// Renders cached title textures for each tab.
@@ -366,7 +395,7 @@ impl TabBar {
         renderer: &mut GlesRenderer,
         pos: Point<f64, Logical>,
         scale: f64,
-        is_column_active: bool,
+        is_section_active: bool,
         titles: &[&str],
         push: &mut dyn FnMut(TabBarRenderElement),
     ) {
@@ -396,7 +425,7 @@ impl TabBar {
             }
 
             // Text color: active vs inactive, falling back to the shared text_color.
-            let text_color = if i == self.active_idx && is_column_active {
+            let text_color = if i == self.active_idx && is_section_active {
                 self.config.active_text_color.unwrap_or(self.config.text_color)
             } else {
                 self.config.inactive_text_color.unwrap_or(self.config.text_color)

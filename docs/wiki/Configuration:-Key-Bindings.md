@@ -10,10 +10,16 @@ For example:
 
 ```kdl
 binds {
-    Mod+Left { focus-column-left; }
+    Mod+Left { focus-left; }
     Super+Alt+L { spawn "swaylock"; }
 }
 ```
+
+> [!NOTE]
+> niriad renames niri's "column" to "**section**" throughout the config and IPC (a section is one slot of the scrolling rail, holding a recursive window tree).
+> All `*-column-*` action and option names became `*-section-*` (e.g. `focus-column-left` → `focus-section-left`, `move-column-right` → `move-section-right`).
+> A backward-compatibility shim rewrites `column`-named nodes to their `section` equivalents when loading, so old configs keep working, but the canonical names used below are the `section` ones.
+> The shipped default config is i3/sway-themed (spatial `hjkl`/arrow focus and move, `set-section-layout` on Mod+B/V/S/W, in-place tiling drag); the classic niri binds are kept as a commented-out block at the bottom of `binds {}`.
 
 The hotkey consists of modifiers separated by `+` signs, followed by an XKB key name in the end.
 
@@ -90,8 +96,8 @@ These binds will change direction based on the `natural-scroll` setting.
 binds {
     Mod+WheelScrollDown cooldown-ms=150 { focus-workspace-down; }
     Mod+WheelScrollUp   cooldown-ms=150 { focus-workspace-up; }
-    Mod+WheelScrollRight                { focus-column-right; }
-    Mod+WheelScrollLeft                 { focus-column-left; }
+    Mod+WheelScrollRight                { focus-section-right; }
+    Mod+WheelScrollLeft                 { focus-section-left; }
 }
 ```
 
@@ -416,5 +422,124 @@ They will always be handled by niri and never passed to the window.
 binds {
     // This bind will always work, even when using a virtual machine.
     Super+Alt+L allow-inhibiting=false { spawn "swaylock"; }
+}
+```
+
+#### Spatial focus and move actions
+
+niriad models each section as a recursive tree of windows that can be split, tabbed, or stacked.
+On top of niri's classic column/window actions, it adds *spatial* directional actions that always mean the **screen** direction and resolve through the tree, crossing to the adjacent output when you reach the edge of the layout.
+
+- `focus-left`, `focus-right`, `focus-up`, `focus-down`: move keyboard focus in a screen direction.
+- `move-left`, `move-right`, `move-up`, `move-down`: move the focused window in a screen direction. These **swap** the focused window's subtree with its adjacent sibling at the nearest axis ancestor — they never reparent it into a different container. With no sibling in that direction inside the current section, the movement falls through to moving the whole section along the strip. To restructure the tree (reparent a window), use the in-place drag or `expel-window-from-section` / `consume-window-into-split`.
+
+```kdl
+binds {
+    Mod+H { focus-left; }
+    Mod+L { focus-right; }
+    Mod+K { focus-up; }
+    Mod+J { focus-down; }
+
+    Mod+Shift+H { move-left; }
+    Mod+Shift+L { move-right; }
+    Mod+Shift+K { move-up; }
+    Mod+Shift+J { move-down; }
+}
+```
+
+These stay correct regardless of `main-axis`: on a portrait monitor where the rail runs vertically, `focus-left`/`focus-right` still follow the physical screen direction.
+
+#### `set-section-layout`
+
+Set the layout of the container holding the focused window.
+The argument is one of `splith`, `splitv`, `tabbed`, or `stacked` (`stacking` is accepted as an alias for `stacked`):
+
+- `splith`: children side by side, all visible.
+- `splitv`: children stacked, all visible.
+- `tabbed`: children as tabs, one visible, with a single row of side-by-side tab titles.
+- `stacked`: children stacked, one visible, with one title row per child.
+
+```kdl
+binds {
+    Mod+B { set-section-layout "splith"; }
+    Mod+V { set-section-layout "splitv"; }
+    Mod+W { set-section-layout "tabbed"; }
+    Mod+S { set-section-layout "stacked"; }
+}
+```
+
+On a **lone window** there is no container to re-lay: `splith`/`splitv` instead arm a pending split in that direction (identical to [`split-window`](#split-window)), so the next window opens beside this one, mirroring sway. `tabbed`/`stacked` have no effect on a lone window.
+
+#### `toggle-split-layout`
+
+Flip the container holding the focused window between the `splith` and `splitv` layouts.
+
+```kdl
+binds {
+    Mod+E { toggle-split-layout; }
+}
+```
+
+#### `toggle-tabbed`
+
+Toggle the container holding the focused window between a split layout and its tabbing equivalent.
+It is family-aware: a vertical (`splitv`/`stacked`) container toggles to `stacked`, and a horizontal (`splith`/`tabbed`) container toggles to `tabbed`.
+
+```kdl
+binds {
+    Mod+Shift+W { toggle-tabbed; }
+}
+```
+
+#### `split-window`
+
+Arm a pending split on the focused section: the **next new window** opened there is placed beside the focused window in a split, instead of opening as its own section (the default). New windows open as a new section unless a split is armed.
+
+The argument is optional and selects the split direction: `main` (side-by-side, along the layout's main axis) or `cross` (stacked, along the cross axis). With no argument, the direction defaults to `main`.
+
+Re-arming the same direction toggles it off; arming a different direction switches. The pending split is cleared if you move focus to another section, workspace, or output before opening a window, and it is *preserved* (not consumed) by `consume-window-into-section`, which appends the pulled-in window. There is no on-screen indicator for an armed split yet.
+
+```kdl
+binds {
+    Mod+Shift+S { split-window; }
+    // Or force a direction:
+    // Mod+Shift+S { split-window "main"; }
+}
+```
+
+#### `consume-window-into-split`
+
+Consume the adjacent window into a split container with the focused window.
+Like `split-window`, it takes an optional `main` or `cross` argument for the split direction.
+
+```kdl
+binds {
+    Mod+Shift+Comma { consume-window-into-split; }
+}
+```
+
+#### `consume-window-into-section`, `expel-window-from-section`
+
+Move a window into the neighbouring section, or expel the **focused** window back out into its own section.
+(These are the `section`-renamed equivalents of niri's `consume-window-into-column` / `expel-window-from-column`.) They are **not bound by default** — the binds below live in the commented "classic niri" block of the default config.
+
+```kdl
+binds {
+    Mod+Comma  { consume-window-into-section; }
+    Mod+Period { expel-window-from-section; }
+}
+```
+
+#### `move-tab-left`, `move-tab-right`, `move-tab`
+
+Reorder the focused tab within its tabbed or stacked container.
+`move-tab-left` and `move-tab-right` take no argument; `move-tab` takes a `left` or `right` argument.
+
+```kdl
+binds {
+    Mod+Shift+BracketLeft  { move-tab-left; }
+    Mod+Shift+BracketRight { move-tab-right; }
+    // Equivalent to:
+    // Mod+Shift+BracketLeft  { move-tab "left"; }
 }
 ```

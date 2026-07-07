@@ -39,10 +39,11 @@ use std::time::Duration;
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
+    Config, CornerRadius, LayoutPart, MainAxis, PresetSize, Workspace as WorkspaceConfig,
+    WorkspaceReference,
 };
-use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
-use scrolling::{Column, ColumnWidth};
+use niri_ipc::{SectionDisplay, PositionChange, SizeChange, WindowLayout};
+use scrolling::{Section, SectionWidth};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -62,7 +63,7 @@ use crate::layout::scrolling::ScrollDirection;
 use crate::layout::tile_node::SplitAxis;
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
-use crate::render_helpers::offscreen::OffscreenData;
+use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenData};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -104,6 +105,12 @@ const INTERACTIVE_MOVE_START_THRESHOLD: f64 = 256. * 256.;
 /// Opacity of interactively moved tiles targeting the scrolling layout.
 const INTERACTIVE_MOVE_ALPHA: f64 = 0.75;
 
+/// Opacity of the translucent ghost that follows the cursor during an in-place (sway) tiling drag.
+///
+/// More translucent than [`INTERACTIVE_MOVE_ALPHA`] because, unlike the detach drag, the real
+/// window keeps rendering at full opacity in its slot — the ghost is a hint layered on top.
+const INTERACTIVE_MOVE_GHOST_ALPHA: f32 = 0.4;
+
 /// Amount of touchpad movement to toggle the overview.
 const OVERVIEW_GESTURE_MOVEMENT: f64 = 300.;
 
@@ -142,6 +149,12 @@ pub trait LayoutElement {
 
     /// Returns the window title, if available.
     fn title(&self) -> Option<String> {
+        None
+    }
+
+    /// Returns the window's app id, if available. Used for the compact tree representation in group
+    /// tab titles (titles are usually more verbose than the app id).
+    fn app_id(&self) -> Option<String> {
         None
     }
 
@@ -249,7 +262,7 @@ pub trait LayoutElement {
     fn output_leave(&self, output: &Output);
     fn set_offscreen_data(&self, data: Option<OffscreenData>);
     fn set_activated(&mut self, active: bool);
-    fn set_active_in_column(&mut self, active: bool);
+    fn set_active_in_section(&mut self, active: bool);
     fn set_floating(&mut self, floating: bool);
     fn set_bounds(&self, bounds: Size<i32, Logical>);
     fn is_ignoring_opacity_window_rule(&self) -> bool;
@@ -423,8 +436,33 @@ enum InteractiveMoveState<W: LayoutElement> {
         /// This helps the pointer remain inside the window as it resizes.
         pointer_ratio_within_window: (f64, f64),
     },
+    /// In-place (sway) drag: the window stays in the layout tree for the whole drag; on release we
+    /// swap it with the tile under the cursor (centre-drop) or move it to the drop target.
+    InPlace(InPlaceMoveData<W>),
     /// Moving; the window is no longer in the layout.
     Moving(InteractiveMoveData<W>),
+}
+
+#[derive(Debug)]
+struct InPlaceMoveData<W: LayoutElement> {
+    /// The window being dragged. It stays owned by its workspace in the layout tree.
+    pub(self) window_id: W::Id,
+    /// Output where the pointer currently is.
+    pub(self) output: Output,
+    /// Current pointer position within `output`.
+    pub(self) pointer_pos_within_output: Point<f64, Logical>,
+    /// Pointer location within the visual window geometry as ratio from geometry size.
+    ///
+    /// Used by the translucent following ghost ([`Layout::render_interactive_move_for_output`]) so
+    /// the grab point stays under the pointer.
+    pub(self) pointer_ratio_within_window: (f64, f64),
+    /// Offscreen buffer backing the translucent following ghost.
+    ///
+    /// The source tile stays in the layout tree (rendered at full opacity in its slot), so we
+    /// cannot tint it directly. Instead the ghost re-renders the tile's elements into this buffer
+    /// and composites the whole result at [`INTERACTIVE_MOVE_GHOST_ALPHA`]. Kept on the drag state
+    /// so its element id (hence damage) is stable across frames.
+    pub(self) ghost_buffer: OffscreenBuffer,
 }
 
 #[derive(Debug)]
@@ -435,9 +473,9 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) output: Output,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
-    /// Window column width.
-    pub(self) width: ColumnWidth,
-    /// Whether the window column was full-width.
+    /// Window section width.
+    pub(self) width: SectionWidth,
+    /// Whether the window section was full-width.
     pub(self) is_full_width: bool,
     /// Whether the window targets the floating layout.
     pub(self) is_floating: bool,
@@ -501,9 +539,9 @@ pub enum ConfigureIntent {
 /// Tile that was just removed from the layout.
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
-    /// Width of the column the tile was in.
-    width: ColumnWidth,
-    /// Whether the column the tile was in was full-width.
+    /// Width of the section the tile was in.
+    width: SectionWidth,
+    /// Whether the section the tile was in was full-width.
     is_full_width: bool,
     /// Whether the tile was floating.
     is_floating: bool,
@@ -619,6 +657,30 @@ impl<W: LayoutElement> InteractiveMoveData<W> {
         ));
         let pos = self.pointer_pos_within_output
             - (pointer_offset_within_window + window_loc - self.tile.render_offset()).upscale(zoom);
+        // Round to physical pixels.
+        pos.to_physical_precise_round(scale).to_logical(scale)
+    }
+}
+
+impl<W: LayoutElement> InPlaceMoveData<W> {
+    /// Logical position at which to render the translucent following ghost.
+    ///
+    /// Mirror of [`InteractiveMoveData::tile_render_location`], but the source tile is owned by its
+    /// workspace (not by the drag state) so it is passed in. In-place drags only ever target tiled
+    /// windows, so this always applies the main-axis remap (the non-floating branch).
+    fn ghost_render_location(&self, tile: &Tile<W>, zoom: f64) -> Point<f64, Logical> {
+        let scale = Scale::from(self.output.current_scale().fractional_scale());
+
+        let axis = AxisMap::new(tile.options.layout.main_axis);
+        let window_size = axis.size_out(tile.window_size());
+        let window_loc = axis.point_out(tile.window_loc());
+
+        let pointer_offset_within_window = Point::from((
+            window_size.w * self.pointer_ratio_within_window.0,
+            window_size.h * self.pointer_ratio_within_window.1,
+        ));
+        let pos = self.pointer_pos_within_output
+            - (pointer_offset_within_window + window_loc - tile.render_offset()).upscale(zoom);
         // Round to physical pixels.
         pos.to_physical_precise_round(scale).to_logical(scale)
     }
@@ -915,11 +977,11 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    pub fn add_column_by_idx(
+    pub fn add_section_by_idx(
         &mut self,
         monitor_idx: usize,
         workspace_idx: usize,
-        column: Column<W>,
+        section: Section<W>,
         activate: bool,
     ) {
         let MonitorSet::Normal {
@@ -931,7 +993,7 @@ impl<W: LayoutElement> Layout<W> {
             panic!()
         };
 
-        monitors[monitor_idx].add_column(workspace_idx, column, activate);
+        monitors[monitor_idx].add_section(workspace_idx, section, activate);
 
         if activate {
             *active_monitor_idx = monitor_idx;
@@ -981,7 +1043,7 @@ impl<W: LayoutElement> Layout<W> {
                             mon_idx,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                section_idx: None,
                             },
                         )
                     }
@@ -1136,6 +1198,19 @@ impl<W: LayoutElement> Layout<W> {
                 InteractiveMoveState::Starting { window_id, .. } => {
                     if window_id == window {
                         self.interactive_move_end(window);
+                    }
+                }
+                InteractiveMoveState::InPlace(data) => {
+                    if data.window_id == *window {
+                        // Cancel the in-place drag; the source is still in the tree and gets
+                        // removed by the normal path below.
+                        self.interactive_move = None;
+                        for mon in self.monitors_mut() {
+                            mon.dnd_scroll_gesture_end();
+                        }
+                        for ws in self.workspaces_mut() {
+                            ws.dnd_scroll_gesture_end();
+                        }
                     }
                 }
                 InteractiveMoveState::Moving(move_) => {
@@ -1819,47 +1894,47 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_right();
     }
 
-    pub fn move_column_to_first(&mut self) {
+    pub fn move_section_to_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_first();
+        workspace.move_section_to_first();
     }
 
-    pub fn move_column_to_last(&mut self) {
+    pub fn move_section_to_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_last();
+        workspace.move_section_to_last();
     }
 
-    pub fn move_column_left_or_to_output(&mut self, output: &Output) -> bool {
+    pub fn move_section_left_or_to_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.move_left() {
                 return false;
             }
         }
 
-        self.move_column_to_output(output, None, true);
+        self.move_section_to_output(output, None, true);
         true
     }
 
-    pub fn move_column_right_or_to_output(&mut self, output: &Output) -> bool {
+    pub fn move_section_right_or_to_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.move_right() {
                 return false;
             }
         }
 
-        self.move_column_to_output(output, None, true);
+        self.move_section_to_output(output, None, true);
         true
     }
 
-    pub fn move_column_to_index(&mut self, index: usize) {
+    pub fn move_section_to_index(&mut self, index: usize) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.move_column_to_index(index);
+        workspace.move_section_to_index(index);
     }
 
     pub fn move_down(&mut self) {
@@ -1943,6 +2018,179 @@ impl<W: LayoutElement> Layout<W> {
         workspace.focus_left();
     }
 
+    /// The active workspace's main axis (the direction the scrolling strip runs).
+    fn active_main_axis(&self) -> MainAxis {
+        self.active_workspace()
+            .map_or(MainAxis::Horizontal, |ws| ws.main_axis())
+    }
+
+    // --- Spatial (screen-direction) focus/move ---
+    //
+    // niri's focus_left/right move along the *main* axis (the strip + side-by-side splits) and
+    // focus_up/down along the *cross* axis. On a landscape monitor the main axis is horizontal, so
+    // those coincide with the screen directions; on a portrait monitor the strip runs vertically, so
+    // the two axes are swapped relative to the screen. These wrappers resolve a *screen* direction to
+    // the right axis per the monitor's orientation, so left/right/up/down always mean what you see —
+    // the way sway/i3 behave, and fixing the confusing vertical-monitor case.
+
+    pub fn focus_screen_left(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_left(),
+            MainAxis::Vertical => self.focus_up(),
+        }
+    }
+
+    pub fn focus_screen_right(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_right(),
+            MainAxis::Vertical => self.focus_down(),
+        }
+    }
+
+    pub fn focus_screen_up(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_up(),
+            MainAxis::Vertical => self.focus_left(),
+        }
+    }
+
+    pub fn focus_screen_down(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.focus_down(),
+            MainAxis::Vertical => self.focus_right(),
+        }
+    }
+
+    pub fn move_screen_left(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_left(),
+            MainAxis::Vertical => self.move_up(),
+        }
+    }
+
+    pub fn move_screen_right(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_right(),
+            MainAxis::Vertical => self.move_down(),
+        }
+    }
+
+    pub fn move_screen_up(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_up(),
+            MainAxis::Vertical => self.move_left(),
+        }
+    }
+
+    pub fn move_screen_down(&mut self) {
+        match self.active_main_axis() {
+            MainAxis::Horizontal => self.move_down(),
+            MainAxis::Vertical => self.move_right(),
+        }
+    }
+
+    // Screen-direction focus/move that cross to the adjacent output when already at the tree edge
+    // on the current monitor (sway crosses outputs; the plain `*_screen_*` variants stop at the
+    // edge). The in-tree step is orientation-resolved (mirrors `focus_screen_*`/`move_screen_*`),
+    // but the output is a physical neighbour supplied by the caller. Each returns whether it
+    // crossed to `output` (false = it stayed on this monitor), so the caller can warp the cursor.
+
+    pub fn focus_screen_left_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_left()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_up()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_right_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_right()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_down()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_up_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_up()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_left()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn focus_screen_down_or_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.focus_down()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.focus_right()),
+        };
+        if stayed {
+            return false;
+        }
+        self.focus_output(output);
+        true
+    }
+
+    pub fn move_screen_left_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_left()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_up()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_right_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_right()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_down()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_up_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_up()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_left()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
+    pub fn move_screen_down_or_to_output(&mut self, output: &Output) -> bool {
+        let stayed = match self.active_main_axis() {
+            MainAxis::Horizontal => self.active_workspace_mut().is_some_and(|ws| ws.move_down()),
+            MainAxis::Vertical => self.active_workspace_mut().is_some_and(|ws| ws.move_right()),
+        };
+        if stayed {
+            return false;
+        }
+        self.move_to_output(None, output, None, ActivateWindow::Yes);
+        true
+    }
+
     pub fn focus_right(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -1950,39 +2198,39 @@ impl<W: LayoutElement> Layout<W> {
         workspace.focus_right();
     }
 
-    pub fn focus_column_first(&mut self) {
+    pub fn focus_section_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_first();
+        workspace.focus_section_first();
     }
 
-    pub fn focus_column_last(&mut self) {
+    pub fn focus_section_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_last();
+        workspace.focus_section_last();
     }
 
-    pub fn focus_column_right_or_first(&mut self) {
+    pub fn focus_section_right_or_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_right_or_first();
+        workspace.focus_section_right_or_first();
     }
 
-    pub fn focus_column_left_or_last(&mut self) {
+    pub fn focus_section_left_or_last(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column_left_or_last();
+        workspace.focus_section_left_or_last();
     }
 
-    pub fn focus_column(&mut self, index: usize) {
+    pub fn focus_section(&mut self, index: usize) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_column(index);
+        workspace.focus_section(index);
     }
 
     pub fn focus_window_up_or_output(&mut self, output: &Output) -> bool {
@@ -2007,7 +2255,7 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_column_left_or_output(&mut self, output: &Output) -> bool {
+    pub fn focus_section_left_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.focus_left() {
                 return false;
@@ -2018,7 +2266,7 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_column_right_or_output(&mut self, output: &Output) -> bool {
+    pub fn focus_section_right_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
             if workspace.focus_right() {
                 return false;
@@ -2029,11 +2277,11 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
-    pub fn focus_window_in_column(&mut self, index: u8) {
+    pub fn focus_window_in_section(&mut self, index: u8) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.focus_window_in_column(index);
+        workspace.focus_window_in_section(index);
     }
 
     pub fn focus_down(&mut self) {
@@ -2165,25 +2413,25 @@ impl<W: LayoutElement> Layout<W> {
         monitor.move_to_workspace(window, idx, activate);
     }
 
-    pub fn move_column_to_workspace_up(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_up(&mut self, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace_up(activate);
+        monitor.move_section_to_workspace_up(activate);
     }
 
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
+    pub fn move_section_to_workspace_down(&mut self, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace_down(activate);
+        monitor.move_section_to_workspace_down(activate);
     }
 
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
+    pub fn move_section_to_workspace(&mut self, idx: usize, activate: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
-        monitor.move_column_to_workspace(idx, activate);
+        monitor.move_section_to_workspace(idx, activate);
     }
 
     pub fn switch_workspace_up(&mut self) {
@@ -2221,18 +2469,18 @@ impl<W: LayoutElement> Layout<W> {
         monitor.switch_workspace_previous();
     }
 
-    pub fn consume_into_column(&mut self) {
+    pub fn consume_into_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.consume_into_column();
+        workspace.consume_into_section();
     }
 
-    pub fn expel_from_column(&mut self) {
+    pub fn expel_from_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.expel_from_column();
+        workspace.expel_from_section();
     }
 
     pub fn split_window(&mut self, direction: Option<SplitAxis>) {
@@ -2270,11 +2518,11 @@ impl<W: LayoutElement> Layout<W> {
         ws.scroll_tab_bar(pos_within_output, delta)
     }
 
-    pub fn toggle_column_tabbed_display(&mut self) {
+    pub fn toggle_section_tabbed_display(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.toggle_column_tabbed_display();
+        workspace.toggle_section_tabbed_display();
     }
 
     pub fn toggle_tabbed(&mut self) {
@@ -2284,6 +2532,20 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_tabbed();
     }
 
+    pub fn set_active_layout(&mut self, layout: crate::layout::tile_node::Layout) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.set_active_layout(layout);
+    }
+
+    pub fn toggle_split_layout(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.toggle_split_layout();
+    }
+
     pub fn move_tab(&mut self, direction: ScrollDirection) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -2291,18 +2553,18 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_tab(direction);
     }
 
-    pub fn set_column_display(&mut self, display: ColumnDisplay) {
+    pub fn set_section_display(&mut self, display: SectionDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.set_column_display(display);
+        workspace.set_section_display(display);
     }
 
-    pub fn center_column(&mut self) {
+    pub fn center_section(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.center_column();
+        workspace.center_section();
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
@@ -2324,11 +2586,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.center_window(id);
     }
 
-    pub fn center_visible_columns(&mut self) {
+    pub fn center_visible_sections(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.center_visible_columns();
+        workspace.center_visible_sections();
     }
 
     pub fn focus(&self) -> Option<&W> {
@@ -2447,6 +2709,14 @@ impl<W: LayoutElement> Layout<W> {
                         "interactive move must be on an existing window"
                     );
                     move_win_id = Some(window_id.clone());
+                }
+                InteractiveMoveState::InPlace(data) => {
+                    // The in-place source stays in the layout tree, like Starting.
+                    assert!(
+                        self.has_window(&data.window_id),
+                        "in-place interactive move must be on an existing window"
+                    );
+                    move_win_id = Some(data.window_id.clone());
                 }
                 InteractiveMoveState::Moving(move_) => {
                     assert_eq!(self.clock, move_.tile.clock);
@@ -2649,16 +2919,29 @@ impl<W: LayoutElement> Layout<W> {
             is_dnd = true;
         }
 
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.advance_animations();
+        match &mut self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => {
+                move_.tile.advance_animations();
 
-            if dnd_scroll.is_none() {
-                dnd_scroll = Some((
-                    move_.output.clone(),
-                    move_.pointer_pos_within_output,
-                    !move_.is_floating,
-                ));
+                if dnd_scroll.is_none() {
+                    dnd_scroll = Some((
+                        move_.output.clone(),
+                        move_.pointer_pos_within_output,
+                        !move_.is_floating,
+                    ));
+                }
             }
+            // The in-place (sway) drag keeps the source in the tree, so it's an `InPlace` state
+            // rather than `Moving`, but it must still edge-scroll the strip when dragged near the
+            // screen edge — consistently, regardless of whether a window is there to tile over.
+            // It's always tiling, so `is_scrolling = true`.
+            Some(InteractiveMoveState::InPlace(data)) => {
+                if dnd_scroll.is_none() {
+                    dnd_scroll =
+                        Some((data.output.clone(), data.pointer_pos_within_output, true));
+                }
+            }
+            _ => {}
         }
 
         let is_overview_open = self.overview_open;
@@ -2901,8 +3184,13 @@ impl<W: LayoutElement> Layout<W> {
             mon.insert_hint = None;
         }
 
-        if !matches!(self.interactive_move, Some(InteractiveMoveState::Moving(_))) {
-            return;
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(_)) => {} // Handled below.
+            Some(InteractiveMoveState::InPlace(_)) => {
+                self.update_insert_hint_in_place(output);
+                return;
+            }
+            _ => return,
         }
         let Some(InteractiveMoveState::Moving(move_)) = self.interactive_move.take() else {
             unreachable!()
@@ -2948,7 +3236,7 @@ impl<W: LayoutElement> Layout<W> {
                     let position = if move_.is_floating {
                         InsertPosition::Floating
                     } else {
-                        InsertPosition::NewColumn(0)
+                        InsertPosition::NewSection(0)
                     };
                     mon.insert_hint = Some(InsertHint {
                         workspace: insert_ws,
@@ -2960,6 +3248,102 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+    }
+
+    /// Drop-indicator hint for the in-place (sway) tiling drag.
+    ///
+    /// Mirrors the `Moving` arm of [`Self::update_insert_hint`], but the source tile is still in the
+    /// layout tree, so we read its corner radius from the workspace and suppress the hint when the
+    /// cursor is over the source's own slot (a `Swap` whose target equals the source slot — the
+    /// same no-op condition that [`Self::interactive_move_end_in_place`] resolves to).
+    fn update_insert_hint_in_place(&mut self, output: Option<&Output>) {
+        // Copy out the bits we need so the `&self.interactive_move` borrow ends before we take a
+        // `&mut` borrow of the monitor below.
+        let (window_id, drag_output, pointer) = match &self.interactive_move {
+            Some(InteractiveMoveState::InPlace(data)) => (
+                data.window_id.clone(),
+                data.output.clone(),
+                data.pointer_pos_within_output,
+            ),
+            _ => return,
+        };
+
+        if output.is_some_and(|out| &drag_output != out) {
+            return;
+        }
+
+        let _span = tracy_client::span!("Layout::update_insert_hint::in_place");
+
+        // Whether the source window is still normal-sized (a client can request
+        // fullscreen/maximized mid-drag). A `Swap` only resolves in the release path when both the
+        // source and the target slot are normal-sized; otherwise it degrades to the detach apply
+        // (a tab-add). Mirror that gate here so the hint shows what the drop would actually do.
+        let source_normal = self
+            .workspaces()
+            .find(|(_, _, ws)| ws.has_window(&window_id))
+            .and_then(|(_, _, ws)| {
+                ws.scrolling_position_of(&window_id)
+                    .and_then(|(sec, leaf)| ws.scrolling_tile(sec, leaf))
+            })
+            .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+
+        let Some(mon) = self.monitor_for_output_mut(&drag_output) else {
+            return;
+        };
+
+        let zoom = mon.overview_zoom();
+        let (insert_ws, geo) = mon.insert_position(pointer);
+        match insert_ws {
+            InsertWorkspace::Existing(ws_id) => {
+                let Some(ws) = mon.workspaces.iter().find(|ws| ws.id() == ws_id) else {
+                    return;
+                };
+                let pos_within_workspace = (pointer - geo.loc).downscale(zoom);
+                let mut position = ws.scrolling_insert_position(pos_within_workspace);
+
+                // Suppress the self-highlight: a centre-drop on the source's own slot is a no-op.
+                if let InsertPosition::Swap(sec, leaf) = position {
+                    if ws.scrolling_position_of(&window_id) == Some((sec, leaf)) {
+                        return;
+                    }
+
+                    // If the swap won't actually happen (source or target not normal-sized), the
+                    // release degrades to the detach apply, which tab-adds onto the target. Show a
+                    // Tab hint instead of a misleading Swap hint.
+                    let target_normal = ws
+                        .scrolling_tile(sec, leaf)
+                        .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                    if !(source_normal && target_normal) {
+                        position = InsertPosition::InsertTab(sec, leaf);
+                    }
+                }
+
+                // The source tile is still in the tree; read its corner radius from there.
+                let corner_radius = ws
+                    .tiles()
+                    .find(|tile| tile.window().id() == &window_id)
+                    .map(|tile| {
+                        let border_width = tile.effective_border_width().unwrap_or(0.);
+                        tile.window()
+                            .geometry_corner_radius()
+                            .expanded_by(border_width as f32)
+                    })
+                    .unwrap_or_default();
+
+                mon.insert_hint = Some(InsertHint {
+                    workspace: insert_ws,
+                    position,
+                    corner_radius,
+                });
+            }
+            InsertWorkspace::NewAt(_) => {
+                mon.insert_hint = Some(InsertHint {
+                    workspace: insert_ws,
+                    position: InsertPosition::NewSection(0),
+                    corner_radius: CornerRadius::default(),
+                });
+            }
+        }
     }
 
     pub fn ensure_named_workspace(&mut self, ws_config: &WorkspaceConfig) {
@@ -3105,11 +3489,11 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_full_width();
     }
 
-    pub fn set_column_width(&mut self, change: SizeChange) {
+    pub fn set_section_width(&mut self, change: SizeChange) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.set_column_width(change);
+        workspace.set_section_width(change);
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -3181,14 +3565,27 @@ impl<W: LayoutElement> Layout<W> {
         workspace.reset_window_height(window);
     }
 
-    pub fn expand_column_to_available_width(&mut self) {
+    pub fn expand_section_to_available_width(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
-        workspace.expand_column_to_available_width();
+        workspace.expand_section_to_available_width();
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
+        // An in-place (sway) drag keeps the source in the tree; the float toggle is the one hand-off
+        // to detach-and-follow (see `interactive_move_inplace_to_floating`). Detach first, then the
+        // `Moving` arm below flips the now-owned tile to floating.
+        if let Some(InteractiveMoveState::InPlace(data)) = &self.interactive_move {
+            if window.is_none() || window == Some(&data.window_id) {
+                let Some(InteractiveMoveState::InPlace(data)) = self.interactive_move.take() else {
+                    unreachable!()
+                };
+                self.interactive_move_inplace_to_floating(data);
+                return;
+            }
+        }
+
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 move_.is_floating = !move_.is_floating;
@@ -3422,7 +3819,7 @@ impl<W: LayoutElement> Layout<W> {
                 removed.tile,
                 MonitorAddWindowTarget::Workspace {
                     id: ws_id,
-                    column_idx: None,
+                    section_idx: None,
                 },
                 activate,
                 true,
@@ -3441,7 +3838,7 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    pub fn move_column_to_output(
+    pub fn move_section_to_output(
         &mut self,
         output: &Output,
         target_ws_idx: Option<usize>,
@@ -3466,14 +3863,14 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             }
 
-            let Some(column) = ws.remove_active_column() else {
+            let Some(section) = ws.remove_active_section() else {
                 return;
             };
 
             let workspace_idx = target_ws_idx
                 .unwrap_or(monitors[new_idx].active_workspace_idx)
                 .min(monitors[new_idx].workspaces.len() - 1);
-            self.add_column_by_idx(new_idx, workspace_idx, column, activate);
+            self.add_section_by_idx(new_idx, workspace_idx, section, activate);
         }
     }
 
@@ -3974,6 +4371,11 @@ impl<W: LayoutElement> Layout<W> {
                     })
                     .unwrap();
 
+                // A fullscreen/maximized window can't sensibly stay in a tiling slot to be swapped,
+                // and the detach path is what unsets those sizing modes — so in-place is gated on a
+                // normal-sized window below.
+                let is_normal_sizing = tile.window().pending_sizing_mode().is_normal();
+
                 let mut move_offset = pointer_delta.upscale(factor);
                 if !is_floating {
                     move_offset = main_axis.point_out(move_offset);
@@ -3988,6 +4390,37 @@ impl<W: LayoutElement> Layout<W> {
                 });
 
                 if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
+                    return true;
+                }
+
+                // S6.2: in-place (sway) tiling drag. Past the threshold we keep the source in the
+                // layout tree (no detach/follow) and just track the pointer; the swap/move is
+                // resolved on release. Floating and fullscreen/maximized drags always use the
+                // classic detach path.
+                if !is_floating
+                    && is_normal_sizing
+                    && self.options.layout.tiling_drag == niri_config::TilingDrag::InPlace
+                {
+                    // Settle the source back into its slot (drop the rubberband offset).
+                    if let Some(tile) = self
+                        .workspaces_mut()
+                        .find(|ws| ws.has_window(&window_id))
+                        .and_then(|ws| {
+                            ws.tiles_mut().find(|t| *t.window().id() == window_id)
+                        })
+                    {
+                        let offset = tile.interactive_move_offset;
+                        tile.interactive_move_offset = Point::from((0., 0.));
+                        tile.animate_move_from(offset);
+                    }
+
+                    self.interactive_move = Some(InteractiveMoveState::InPlace(InPlaceMoveData {
+                        window_id,
+                        output,
+                        pointer_pos_within_output,
+                        pointer_ratio_within_window,
+                        ghost_buffer: OffscreenBuffer::default(),
+                    }));
                     return true;
                 }
 
@@ -4092,6 +4525,23 @@ impl<W: LayoutElement> Layout<W> {
 
                 self.interactive_move = Some(InteractiveMoveState::Moving(data));
             }
+            InteractiveMoveState::InPlace(mut data) => {
+                if *window != data.window_id {
+                    self.interactive_move = Some(InteractiveMoveState::InPlace(data));
+                    return false;
+                }
+
+                // The source stays put in its home tree; we only track where the pointer is. The
+                // ghost renders on `data.output` (so it follows across outputs, S6.4) and the
+                // release resolves its target on whichever workspace/output the pointer is over.
+                if output != data.output {
+                    data.output = output.clone();
+                    self.focus_output(&output);
+                }
+                data.pointer_pos_within_output = pointer_pos_within_output;
+
+                self.interactive_move = Some(InteractiveMoveState::InPlace(data));
+            }
             InteractiveMoveState::Moving(mut move_) => {
                 if window != move_.tile.window().id() {
                     self.interactive_move = Some(InteractiveMoveState::Moving(move_));
@@ -4194,6 +4644,16 @@ impl<W: LayoutElement> Layout<W> {
 
                 return;
             }
+            InteractiveMoveState::InPlace(data) => {
+                if data.window_id != *window {
+                    return;
+                }
+                let Some(InteractiveMoveState::InPlace(data)) = self.interactive_move.take() else {
+                    unreachable!()
+                };
+                self.interactive_move_end_in_place(data);
+                return;
+            }
             InteractiveMoveState::Moving(move_) => move_,
         };
 
@@ -4223,6 +4683,13 @@ impl<W: LayoutElement> Layout<W> {
             );
         }
 
+        self.finish_interactive_move_apply(move_);
+    }
+
+    /// Re-inserts an owned, detached tile at the position the pointer indicates. Shared tail of
+    /// every detach-style release — the classic detach-and-follow, and the in-place fallback for
+    /// cross-workspace/output drops and non-swap moves — so all of them land identically.
+    fn finish_interactive_move_apply(&mut self, move_: InteractiveMoveData<W>) {
         // Dragging in the overview shouldn't switch the workspace and so on.
         let allow_to_activate_workspace = !self.overview_open;
 
@@ -4260,7 +4727,7 @@ impl<W: LayoutElement> Layout<W> {
                                 let position = if move_.is_floating {
                                     InsertPosition::Floating
                                 } else {
-                                    InsertPosition::NewColumn(0)
+                                    InsertPosition::NewSection(0)
                                 };
 
                                 (position, None)
@@ -4309,13 +4776,13 @@ impl<W: LayoutElement> Layout<W> {
                 };
 
                 match position {
-                    InsertPosition::NewColumn(column_idx) => {
+                    InsertPosition::NewSection(section_idx) => {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             move_.tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: Some(column_idx),
+                                section_idx: Some(section_idx),
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
@@ -4324,20 +4791,20 @@ impl<W: LayoutElement> Layout<W> {
                             false,
                         );
                     }
-                    InsertPosition::InColumn(column_idx, tile_idx) => {
-                        mon.add_tile_to_column(
+                    InsertPosition::InSection(section_idx, tile_idx) => {
+                        mon.add_tile_to_section(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             Some(tile_idx),
                             move_.tile,
                             true,
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplit(column_idx, tile_idx, axis, is_right_half) => {
+                    InsertPosition::InSplit(section_idx, tile_idx, axis, is_right_half) => {
                         mon.add_tile_to_split(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             tile_idx,
                             axis,
                             is_right_half,
@@ -4346,12 +4813,15 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
-                    InsertPosition::InSplitStack(column_idx, tile_idx, place_after) => {
-                        mon.add_tile_beside_stack(
+                    // Swap is only produced in the in-place drag, which never reaches this
+                    // detach-mode apply; if it ever did (no source in the tree to swap with), fall
+                    // back to grouping into tabs.
+                    InsertPosition::InsertTab(section_idx, tile_idx)
+                    | InsertPosition::Swap(section_idx, tile_idx) => {
+                        mon.add_tile_as_tab(
                             ws_idx,
-                            column_idx,
+                            section_idx,
                             tile_idx,
-                            place_after,
                             move_.tile,
                             true,
                             allow_to_activate_workspace,
@@ -4394,7 +4864,7 @@ impl<W: LayoutElement> Layout<W> {
                             tile,
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
-                                column_idx: None,
+                                section_idx: None,
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
@@ -4438,6 +4908,346 @@ impl<W: LayoutElement> Layout<W> {
                 );
             }
         }
+    }
+
+    /// Release of an in-place (sway) tiling drag (S6.2). The source has stayed in the layout tree
+    /// the whole time, so here we either swap it with the tile under the cursor (centre-drop), do
+    /// nothing (centre-drop on itself), or — for a non-swap move, or a drop on another
+    /// workspace/output — detach it and run the normal apply, landing exactly like the detach mode.
+    fn interactive_move_end_in_place(&mut self, data: InPlaceMoveData<W>) {
+        // End the dnd scroll lock (mirrors the Starting/Moving arms).
+        for mon in self.monitors_mut() {
+            mon.dnd_scroll_gesture_end();
+        }
+        for ws in self.workspaces_mut() {
+            ws.dnd_scroll_gesture_end();
+        }
+
+        let window_id = data.window_id.clone();
+        let output = data.output.clone();
+        let pointer = data.pointer_pos_within_output;
+
+        // Source workspace + the dragged window's current slot, and whether it's still normal-sized
+        // (a client can request fullscreen/maximized mid-drag; such a window can't be swapped in
+        // place — it must take the detach path, which unsets those modes).
+        let source = self
+            .workspaces()
+            .find(|(_, _, ws)| ws.has_window(&window_id))
+            .map(|(_, _, ws)| {
+                let slot = ws.scrolling_position_of(&window_id);
+                let normal = slot
+                    .and_then(|(sec, leaf)| ws.scrolling_tile(sec, leaf))
+                    .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                (ws.id(), slot, normal)
+            });
+        let Some((source_ws_id, source_slot, source_normal)) = source else {
+            return;
+        };
+
+        enum Outcome {
+            Swap((usize, usize), (usize, usize)),
+            SwapCross {
+                source_slot: (usize, usize),
+                target_ws: WorkspaceId,
+                target_slot: (usize, usize),
+            },
+            NoOp,
+            MoveOut,
+        }
+
+        // Resolve the drop. A centre-drop onto another tile swaps the two windows in place (the
+        // source is still in the tree to swap with): within the same workspace via `swap_tiles`, or
+        // across trees — another workspace, including on another output — via
+        // `swap_tiles_cross_workspace`. A centre-drop on the source itself is a no-op. Anything else
+        // (a non-centre move) falls back to the detach apply, which detaches first and recomputes
+        // its target on the source-free tree. The target slot is resolved with the source still
+        // present, on whichever workspace/output the pointer is over; an in-place swap never shifts
+        // indices.
+        let mut outcome = Outcome::MoveOut;
+        if let Some(slot) = source_slot {
+            if let Some(mon) = self.monitor_for_output(&output) {
+                let zoom = mon.overview_zoom();
+                let (insert_ws, geo) = mon.insert_position(pointer);
+                if let InsertWorkspace::Existing(target_ws_id) = insert_ws {
+                    if let Some(ws) = mon.workspaces.iter().find(|ws| ws.id() == target_ws_id) {
+                        let pos_within_ws = (pointer - geo.loc).downscale(zoom);
+                        if let InsertPosition::Swap(sec, leaf) =
+                            ws.scrolling_insert_position(pos_within_ws)
+                        {
+                            // A swap only makes sense between two normal-sized tiles: swapping into
+                            // a fullscreen/maximized target (that state is section-level, so it'd
+                            // stay behind and display the arrived window with the wrong mode) or out
+                            // of a mid-drag-fullscreened source is wrong. Leave those as MoveOut so
+                            // the detach apply handles them (it unsets fullscreen/maximized).
+                            let target_normal = ws
+                                .scrolling_tile(sec, leaf)
+                                .is_some_and(|t| t.window().pending_sizing_mode().is_normal());
+                            if source_normal && target_normal {
+                                outcome = if target_ws_id == source_ws_id {
+                                    if (sec, leaf) == slot {
+                                        Outcome::NoOp
+                                    } else {
+                                        Outcome::Swap(slot, (sec, leaf))
+                                    }
+                                } else {
+                                    Outcome::SwapCross {
+                                        source_slot: slot,
+                                        target_ws: target_ws_id,
+                                        target_slot: (sec, leaf),
+                                    }
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        match outcome {
+            Outcome::NoOp => {
+                // Centre-drop on the source itself — the window never left its slot, nothing to do.
+            }
+            Outcome::Swap(a, b) => {
+                if let Some(mon) = self.monitor_for_output_mut(&output) {
+                    if let Some(ws) = mon.workspaces.iter_mut().find(|ws| ws.id() == source_ws_id) {
+                        ws.swap_tiles(a, b);
+                        // Keep focus on the dragged window, like sway.
+                        ws.activate_window(&window_id);
+                    }
+                }
+            }
+            Outcome::SwapCross {
+                source_slot,
+                target_ws,
+                target_slot,
+            } => {
+                if self.swap_tiles_cross_workspace(
+                    source_ws_id,
+                    source_slot,
+                    target_ws,
+                    target_slot,
+                ) {
+                    // Keep focus on the dragged window in its new workspace/output, like sway.
+                    self.activate_window(&window_id);
+                } else {
+                    // The slots went stale between resolve and apply; fall back to the detach apply
+                    // so the drag still lands somewhere sensible rather than half-swapping.
+                    self.interactive_move_detach_and_apply(data);
+                }
+            }
+            Outcome::MoveOut => self.interactive_move_detach_and_apply(data),
+        }
+    }
+
+    /// Swaps two tiles that live in *different* workspaces (same or different output) — the
+    /// cross-tree case of sway's centre-drop. The two leaf `Tile`s trade slots in place, so both
+    /// trees keep their shape; each workspace then resettles its adopted tile (reconfig, resize,
+    /// output migration). Returns whether the swap happened (false leaves both trees untouched, so
+    /// the caller can fall back).
+    fn swap_tiles_cross_workspace(
+        &mut self,
+        a_ws_id: WorkspaceId,
+        a_slot: (usize, usize),
+        b_ws_id: WorkspaceId,
+        b_slot: (usize, usize),
+    ) -> bool {
+        if a_ws_id == b_ws_id {
+            return false;
+        }
+
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return false;
+        };
+
+        let locate = |monitors: &[Monitor<W>], id: WorkspaceId| {
+            monitors.iter().enumerate().find_map(|(mi, mon)| {
+                mon.workspaces
+                    .iter()
+                    .position(|ws| ws.id() == id)
+                    .map(|wi| (mi, wi))
+            })
+        };
+        let Some((a_mon, a_wi)) = locate(monitors, a_ws_id) else {
+            return false;
+        };
+        let Some((b_mon, b_wi)) = locate(monitors, b_ws_id) else {
+            return false;
+        };
+
+        // Two disjoint `&mut Workspace`, split either across monitors or within one monitor's
+        // workspaces (the two workspace ids differ, so the indices never collide).
+        let (ws_a, ws_b): (&mut Workspace<W>, &mut Workspace<W>) = if a_mon == b_mon {
+            let mon = &mut monitors[a_mon];
+            let (lo, hi) = (a_wi.min(b_wi), a_wi.max(b_wi));
+            let (left, right) = mon.workspaces.split_at_mut(hi);
+            let (ws_lo, ws_hi) = (&mut left[lo], &mut right[0]);
+            if a_wi < b_wi {
+                (ws_lo, ws_hi)
+            } else {
+                (ws_hi, ws_lo)
+            }
+        } else {
+            let (lo, hi) = (a_mon.min(b_mon), a_mon.max(b_mon));
+            let (left, right) = monitors.split_at_mut(hi);
+            let (mon_lo, mon_hi) = (&mut left[lo], &mut right[0]);
+            let (mon_a, mon_b) = if a_mon < b_mon {
+                (mon_lo, mon_hi)
+            } else {
+                (mon_hi, mon_lo)
+            };
+            (&mut mon_a.workspaces[a_wi], &mut mon_b.workspaces[b_wi])
+        };
+
+        let out_a = ws_a.current_output().cloned();
+        let out_b = ws_b.current_output().cloned();
+
+        // Only animate the reflow when both workspaces live on the same output: niri's layout code
+        // isn't monitor-position-aware, so a slide between two outputs isn't meaningful (see
+        // `interactive_move_update`) — those stay teleports.
+        let same_output = matches!((&out_a, &out_b), (Some(a), Some(b)) if a == b);
+
+        // Capture each affected section's pre-swap leaf positions so their tiles can slide into the
+        // new slots afterwards (mirrors `ScrollingSpace::swap_tiles`' cross-section animation).
+        let (prev_a, prev_b) = if same_output {
+            (
+                ws_a.scrolling_section_leaf_positions(a_slot.0),
+                ws_b.scrolling_section_leaf_positions(b_slot.0),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        // Exchange the two leaf tiles in place. If either slot is stale, bail with both trees still
+        // intact so we never half-swap.
+        {
+            let (Some(ta), Some(tb)) = (
+                ws_a.scrolling_tile_mut(a_slot.0, a_slot.1),
+                ws_b.scrolling_tile_mut(b_slot.0, b_slot.1),
+            ) else {
+                return false;
+            };
+            std::mem::swap(ta, tb);
+        }
+
+        // Resettle each adopted tile in its new home (the tile now at `a_slot` came from `out_b`).
+        ws_a.finish_cross_tree_swap(a_slot, out_b.as_ref());
+        ws_b.finish_cross_tree_swap(b_slot, out_a.as_ref());
+
+        // Slide the reflowed section tiles into place (same-output only, per above).
+        if same_output {
+            ws_a.animate_scrolling_section_leaves(a_slot.0, &prev_a);
+            ws_b.animate_scrolling_section_leaves(b_slot.0, &prev_b);
+        }
+
+        true
+    }
+
+    /// Detaches the in-place source into an owned `Moving` tile, mirroring the Starting→Moving
+    /// detach in `interactive_move_update`. Returns the built move data *without* installing it as
+    /// the interactive-move state or re-inserting it — callers either apply it (a release) or keep
+    /// following (the float hand-off).
+    fn detach_inplace_into_move(&mut self, data: InPlaceMoveData<W>) -> InteractiveMoveData<W> {
+        let window_id = data.window_id;
+        let output = data.output;
+        let pointer_pos_within_output = data.pointer_pos_within_output;
+
+        let output_config = self
+            .monitors()
+            .find(|mon| mon.output() == &output)
+            .and_then(|mon| mon.layout_config().cloned());
+
+        // Capture the source tile's current on-screen position to animate the handoff (only when
+        // the pointer is on the source's own output).
+        let mut tile_pos = None;
+        if let Some((mon, (ws, ws_geo))) = self.monitors().find_map(|mon| {
+            mon.workspaces_with_render_geo()
+                .find(|(ws, _)| ws.has_window(&window_id))
+                .map(|rv| (mon, rv))
+        }) {
+            if mon.output() == &output {
+                if let Some((_, tile_offset, _)) = ws
+                    .tiles_with_render_positions()
+                    .find(|(tile, _, _)| tile.window().id() == &window_id)
+                {
+                    let zoom = mon.overview_zoom();
+                    tile_pos = Some((ws_geo.loc + tile_offset.upscale(zoom), zoom));
+                }
+            }
+        }
+
+        // Unset fullscreen/maximized so the tile restores properly, then detach it.
+        let ws = self
+            .workspaces_mut()
+            .find(|ws| ws.has_window(&window_id))
+            .unwrap();
+        ws.set_fullscreen(&window_id, false);
+        ws.set_maximized(&window_id, false);
+
+        // Preserve the source workspace's per-workspace layout override, matching the classic
+        // Starting→Moving detach path in `interactive_move_update`.
+        let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
+
+        let RemovedTile {
+            mut tile,
+            width,
+            is_full_width,
+            is_floating,
+        } = self.remove_window(&window_id, Transaction::new()).unwrap();
+
+        tile.stop_move_animations();
+        tile.interactive_move_offset = Point::from((0., 0.));
+        tile.window().output_enter(&output);
+        tile.window()
+            .set_preferred_scale_transform(output.current_scale(), output.current_transform());
+
+        let view_size = output_size(&output);
+        let scale = output.current_scale().fractional_scale();
+        let options = Options::clone(&self.options)
+            .with_merged_layout(output_config.as_ref())
+            .with_merged_layout(workspace_config.as_ref().map(|(_, c)| c))
+            .adjusted_for_scale(scale);
+        tile.update_config(view_size, scale, Rc::new(options));
+
+        let mut move_ = InteractiveMoveData {
+            tile,
+            output,
+            pointer_pos_within_output,
+            width,
+            is_full_width,
+            is_floating,
+            pointer_ratio_within_window: data.pointer_ratio_within_window,
+            output_config,
+            workspace_config,
+        };
+
+        if let Some((tile_pos, zoom)) = tile_pos {
+            let new_tile_pos = move_.tile_render_location(zoom);
+            move_
+                .tile
+                .animate_move_from((tile_pos - new_tile_pos).downscale(zoom));
+        }
+
+        move_
+    }
+
+    /// Detaches the in-place source into an owned tile and runs the shared apply — the in-place
+    /// fallback for cross-workspace/output drops and non-swap moves, landing identically to the
+    /// classic detach-and-follow release.
+    fn interactive_move_detach_and_apply(&mut self, data: InPlaceMoveData<W>) {
+        let move_ = self.detach_inplace_into_move(data);
+        self.finish_interactive_move_apply(move_);
+    }
+
+    /// The float toggle's hand-off out of an in-place drag: detach the source into a `Moving`
+    /// follow and flip it to floating (niri's extra capability — it genuinely pulls the window out
+    /// of tiling). One-way: once detached the drag stays a detach-and-follow to release.
+    fn interactive_move_inplace_to_floating(&mut self, data: InPlaceMoveData<W>) {
+        // Detach into a `Moving` follow, install it, then reuse the existing `Moving` float toggle
+        // to flip it to floating (restores the floating size and does the usual dim→opaque fade).
+        let move_ = self.detach_inplace_into_move(data);
+        let window_id = move_.tile.window().id().clone();
+        self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+        self.toggle_window_floating(Some(&window_id));
     }
 
     pub fn interactive_move_is_moving_above_output(&self, output: &Output) -> bool {
@@ -4912,28 +5722,96 @@ impl<W: LayoutElement> Layout<W> {
             error!("clock moved between updating render elements and rendering");
         }
 
-        let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
-            return;
-        };
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => {
+                if &move_.output != output {
+                    return;
+                }
 
-        if &move_.output != output {
+                let scale = Scale::from(move_.output.current_scale().fractional_scale());
+                let zoom = self.overview_zoom();
+                let pos_in_backdrop = move_.tile_render_location(zoom);
+                let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
+
+                move_
+                    .tile
+                    .render(ctx, pos_in_backdrop, xray_pos, true, &mut |elem| {
+                        push(RescaleRenderElement::from_element(
+                            elem,
+                            pos_in_backdrop.to_physical_precise_round(scale),
+                            zoom,
+                        ));
+                    });
+            }
+            Some(InteractiveMoveState::InPlace(data)) => {
+                self.render_in_place_ghost(ctx, output, data, push);
+            }
+            _ => (),
+        }
+    }
+
+    /// Renders the translucent following ghost for an in-place (sway) tiling drag.
+    ///
+    /// The source tile stays in the layout tree and renders normally in its slot; this draws a
+    /// SECOND, dimmer copy following the cursor. We can't tint the live tile (it's shared with the
+    /// in-slot render), so we re-render its elements into [`InPlaceMoveData::ghost_buffer`] and
+    /// composite the whole offscreen at [`INTERACTIVE_MOVE_GHOST_ALPHA`]. Pushed at the same point
+    /// as the detach `Moving` tile (above the workspaces), so both niri.rs call sites get it.
+    fn render_in_place_ghost<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        output: &Output,
+        data: &InPlaceMoveData<W>,
+        push: &mut dyn FnMut(RescaleRenderElement<TileRenderElement<R>>),
+    ) {
+        // The ghost follows the cursor, so it renders on whichever output the pointer is over
+        // (`data.output` tracks that, including across outputs — S6.4).
+        if &data.output != output {
             return;
         }
 
-        let scale = Scale::from(move_.output.current_scale().fractional_scale());
-        let zoom = self.overview_zoom();
-        let pos_in_backdrop = move_.tile_render_location(zoom);
-        let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
+        // The source tile stays in its home tree, which may be on a *different* monitor than the
+        // one the pointer (and hence the ghost) is now over, so search every workspace for it.
+        let Some(tile) = self
+            .workspaces()
+            .find_map(|(_, _, ws)| ws.tiles().find(|tile| tile.window().id() == &data.window_id))
+        else {
+            return;
+        };
 
-        move_
-            .tile
-            .render(ctx, pos_in_backdrop, xray_pos, true, &mut |elem| {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let zoom = self.overview_zoom();
+        let ghost_loc = data.ghost_render_location(tile, zoom);
+
+        // Collect the tile's render elements at the origin, then composite them through the
+        // offscreen so the constant ghost alpha applies uniformly (mirrors Tile::render's
+        // alpha-animation branch, but driven externally with a fixed alpha).
+        let mut gles = ctx.as_gles();
+        let mut elements = Vec::new();
+        tile.render(
+            gles.r(),
+            Point::from((0., 0.)),
+            XrayPos::default(),
+            true,
+            &mut |elem| elements.push(elem),
+        );
+
+        match data.ghost_buffer.render(gles.renderer, scale, &elements) {
+            Ok((elem, _sync, _offscreen_data)) => {
+                let offset = elem.offset();
+                let elem = elem
+                    .with_alpha(INTERACTIVE_MOVE_GHOST_ALPHA)
+                    .with_offset(ghost_loc + offset);
                 push(RescaleRenderElement::from_element(
-                    elem,
-                    pos_in_backdrop.to_physical_precise_round(scale),
+                    elem.into(),
+                    ghost_loc.to_physical_precise_round(scale),
                     zoom,
                 ));
-            });
+            }
+            Err(err) => {
+                warn!("error rendering in-place drag ghost to offscreen: {err:?}");
+            }
+        }
     }
 
     pub fn refresh(&mut self, is_active: bool) {
@@ -4946,7 +5824,7 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let win = move_.tile.window_mut();
 
-            win.set_active_in_column(true);
+            win.set_active_in_section(true);
             win.set_floating(move_.is_floating);
             win.set_activated(true);
 
@@ -4968,6 +5846,11 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
                 !ws.is_floating(window_id)
             });
+        } else if let Some(InteractiveMoveState::InPlace(_)) = &self.interactive_move {
+            // In-place (sway) tiling drags keep the source in the layout tree and are always
+            // tiled/scrolling by nature, so they must keep the view-lock / edge-scroll gestures
+            // alive exactly like the `Moving` tiled case does.
+            ongoing_scrolling_dnd.get_or_insert(true);
         }
 
         match &mut self.monitor_set {
